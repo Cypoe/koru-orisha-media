@@ -64,6 +64,8 @@ def main() -> int:
         st, _, body = http("GET", f"/item/{demo_id}")
         check(st == 200 and b"/watch/" in body, "item page")
         check(b"container: mp4" in body, "item shows container")
+        check(b'class="probe"' in body and b"brand <code>isom</code>" in body, "item shows probe brand")
+        check(b"video codec not probed" in body, "item shows honest unknown codec")
         check(b"/art/" + demo_id.encode() in body, "item links poster art")
         check(b"/library/movie" in body, "item related kind collection")
 
@@ -99,6 +101,7 @@ def main() -> int:
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(st == 200 and b'id="player"' in body, "watch page has player")
         check(b'class="capability"' not in body, "mp4 watch has no capability warning")
+        check(b'class="probe"' in body and b"brand <code>isom</code>" in body, "mp4 watch shows probe brand")
         check(b'id="library-region"' in body and b"More in collection" in body, "watch related shelf")
         check(b'hx-target="#library-region"' in body, "watch shelf hx target")
         player_at = body.find(b'id="player"')
@@ -155,6 +158,9 @@ def main() -> int:
         if arrival and arrival.get("year") == 2016:
             st, _, body = http("GET", f"/item/{arrival['id']}")
             check(st == 200 and b"year: 2016" in body, "item shows year")
+            check(b"video <code>hevc</code>" in body and b"audio <code>aac</code>" in body, "item shows nested codecs")
+            st, _, wbody = http("GET", f"/watch/{arrival['id']}")
+            check(st == 200 and b'class="probe"' in wbody and b"video <code>hevc</code>" in wbody, "watch shows nested codecs")
         else:
             check(False, "Arrival (2016) fixture with year in manifest")
 

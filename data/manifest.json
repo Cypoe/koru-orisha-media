@@ -1,6 +1,13 @@
 {
   "entries": [
     {
+      "audio": [
+        {
+          "channels": 2,
+          "codec": "aac",
+          "language": "eng"
+        }
+      ],
       "bytes": 3,
       "container": "mp4",
       "id": "m_6d5d84",
@@ -9,6 +16,15 @@
       "modified_ns": 1786542947699929300,
       "path": "clips/Arrival (2016).mp4",
       "title": "Arrival (2016)",
+      "video": [
+        {
+          "brand": "isom",
+          "codec": "hevc",
+          "hdr": true,
+          "height": 2160,
+          "width": 3840
+        }
+      ],
       "year": 2016
     },
     {
@@ -20,7 +36,13 @@
       "modified_ns": 1786508368790095000,
       "path": "clips/demo.mp4",
       "poster": "clips/demo.jpg",
-      "title": "demo"
+      "title": "demo",
+      "video": [
+        {
+          "brand": "isom",
+          "codec": "unknown"
+        }
+      ]
     },
     {
       "bytes": 0,

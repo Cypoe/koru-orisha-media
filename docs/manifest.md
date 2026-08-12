@@ -33,7 +33,7 @@ The request process does **not** use `koru/yyjson`. It loads a schema-specific s
 - string fields with basic JSON unescape (`\"`, `\\`, `\n`, `\t`, `\r`, `\/`);
 - duplicate `id` values rejected on load.
 
-Spec twin / unit tests: `scripts/test_manifest_parse.py`. Full JSON (nested `video`/`audio`) is ignored until a view needs it.
+Spec twin / unit tests: `scripts/test_manifest_parse.py`. Nested `video` / `audio` first-track facts (`codec`, `brand`) are loaded for item/watch probe notes; richer nested fields remain ignorable.
 
 ## Publication
 
@@ -43,7 +43,7 @@ The indexer writes a new generation beside the active manifest, validates it, fl
 
 Filename and filesystem facts are cheap and form the initial index. Container and stream probing is optional and belongs to indexing time. Artwork extraction and thumbnail generation are also offline operations.
 
-The request process never probes. The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg; richer codec probes can plug in the same hook later. Nested `video` / `audio` fields are stored in the published manifest; the current Orisha loader ignores them until a view needs them.
+The request process never probes. The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg; richer codec probes can plug in the same hook later. Nested `video` / `audio` fields are stored in the published manifest; Orisha surfaces first-track `brand` / `codec` on item and watch pages as honest probe notes (not a client capability matrix).
 
 The manifest may record whether a file is likely to play natively in a target browser, but this is advisory. The server must not silently transcode when the advisory value is false.
 

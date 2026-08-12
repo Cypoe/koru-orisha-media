@@ -129,7 +129,7 @@ def year_from_name(stem: str) -> Optional[int]:
 def probe_ftyp(path: Path) -> Optional[dict]:
     """Offline ISO BMFF `ftyp` peek (mp4/m4v/mov) — no FFmpeg.
 
-    Records advisory brand facts under `video` so handlers can ignore until needed.
+    Records advisory brand facts under `video` so Orisha item/watch can show probe notes.
     """
     if path.suffix.lower() not in {".mp4", ".m4v", ".mov"}:
         return None

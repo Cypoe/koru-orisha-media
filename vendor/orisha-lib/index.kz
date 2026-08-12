@@ -1569,6 +1569,11 @@ const Entry = struct {
     container: []const u8,
     poster: []const u8,
     year: u32,
+    /// First nested `video[]` track facts from indexer probe (empty if absent).
+    video_codec: []const u8,
+    video_brand: []const u8,
+    /// First nested `audio[]` track codec (empty if absent).
+    audio_codec: []const u8,
 };
 
 var loaded = false;
@@ -1652,6 +1657,11 @@ fn loadManifest() void {
             const modified_ns = extractNumberAfter(obj, "\"modified_ns\"") orelse 0;
             const year_u64 = extractNumberAfter(obj, "\"year\"") orelse 0;
             const year: u32 = if (year_u64 > 9999) 0 else @intCast(year_u64);
+            const video_track = firstArrayObjectSlice(obj, "\"video\"") orelse "";
+            const audio_track = firstArrayObjectSlice(obj, "\"audio\"") orelse "";
+            const video_codec = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"codec\"") orelse "" else "";
+            const video_brand = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"brand\"") orelse "" else "";
+            const audio_codec = if (audio_track.len > 0) extractAfterUnescaped(audio_track, "\"codec\"") orelse "" else "";
             if (id.len == 0 or path.len == 0) continue;
             var dup = false;
             for (entries_buf[0..entry_count]) |e| {
@@ -1673,6 +1683,9 @@ fn loadManifest() void {
                 .container = container,
                 .poster = poster,
                 .year = year,
+                .video_codec = video_codec,
+                .video_brand = video_brand,
+                .audio_codec = audio_codec,
             };
             entry_count += 1;
         }
@@ -1717,16 +1730,46 @@ fn entriesArraySlice(text: []const u8) ?[]const u8 {
 
 /// Limit JSON field scrapes to one object so keys before `"id"` (e.g. container)
 /// are not read from the following entry when keys are sorted.
+/// Walks backward with brace depth so nested `audio`/`video` objects before `"id"`
+/// do not become the slice start.
 fn entryObjectSlice(text: []const u8, id_at: usize) []const u8 {
     var start: usize = 0;
-    if (std.mem.lastIndexOfScalar(u8, text[0..id_at], '{')) |brace| {
-        start = brace;
-    }
     var depth: i32 = 0;
-    var seen_open = false;
     var in_string = false;
+    var i: usize = id_at;
+    while (i > 0) {
+        i -= 1;
+        const ch = text[i];
+        if (in_string) {
+            // Scanning backward: a preceding '\\' escapes this quote.
+            if (ch == '"') {
+                var bs: usize = 0;
+                var j = i;
+                while (j > 0 and text[j - 1] == '\\') : (j -= 1) bs += 1;
+                if (bs % 2 == 1) continue;
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '}') {
+            depth += 1;
+        } else if (ch == '{') {
+            if (depth == 0) {
+                start = i;
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    depth = 0;
+    in_string = false;
     var escape = false;
     var k = start;
+    var seen_open = false;
     while (k < text.len) : (k += 1) {
         const ch = text[k];
         if (in_string) {
@@ -1818,6 +1861,77 @@ fn extractNumberAfter(slice: []const u8, key: []const u8) ?u64 {
     while (end < slice.len and slice[end] >= '0' and slice[end] <= '9') : (end += 1) {}
     if (end == p) return null;
     return std.fmt.parseInt(u64, slice[p..end], 10) catch null;
+}
+
+/// First object inside a top-level array field on an entry (e.g. `"video":[{...}]`).
+/// Scopes nested scrapes so `"codec"` on video does not bleed into `"audio"`.
+fn firstArrayObjectSlice(entry_obj: []const u8, key: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, entry_obj, key) orelse return null;
+    var p = at + key.len;
+    while (p < entry_obj.len and (entry_obj[p] == ' ' or entry_obj[p] == '\t' or entry_obj[p] == '\n' or entry_obj[p] == '\r' or entry_obj[p] == ':')) : (p += 1) {}
+    if (p >= entry_obj.len or entry_obj[p] != '[') return null;
+    var depth: i32 = 0;
+    var in_string = false;
+    var escape = false;
+    var k = p;
+    var first_obj_start: ?usize = null;
+    while (k < entry_obj.len) : (k += 1) {
+        const ch = entry_obj[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '[') {
+            depth += 1;
+            continue;
+        }
+        if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) return null; // empty / no object
+            continue;
+        }
+        if (ch == '{' and depth == 1 and first_obj_start == null) {
+            first_obj_start = k;
+            var obj_depth: i32 = 0;
+            var j = k;
+            var obj_in_string = false;
+            var obj_escape = false;
+            while (j < entry_obj.len) : (j += 1) {
+                const oj = entry_obj[j];
+                if (obj_in_string) {
+                    if (obj_escape) {
+                        obj_escape = false;
+                    } else if (oj == '\\') {
+                        obj_escape = true;
+                    } else if (oj == '"') {
+                        obj_in_string = false;
+                    }
+                    continue;
+                }
+                if (oj == '"') {
+                    obj_in_string = true;
+                    continue;
+                }
+                if (oj == '{') obj_depth += 1;
+                if (oj == '}') {
+                    obj_depth -= 1;
+                    if (obj_depth == 0) return entry_obj[k .. j + 1];
+                }
+            }
+            return null;
+        }
+    }
+    return null;
 }
 
 fn findEntry(id: []const u8) ?Entry {
@@ -2154,6 +2268,63 @@ fn likelyBrowserPlayable(container: []const u8) bool {
     return false;
 }
 
+fn entryHasProbe(e: Entry) bool {
+    return e.video_brand.len > 0 or e.video_codec.len > 0 or e.audio_codec.len > 0;
+}
+
+/// Honest indexer facts only — no invented stream/codec matrix.
+fn formatProbeNote(allocator: std.mem.Allocator, e: Entry, out: []u8) []const u8 {
+    if (!entryHasProbe(e)) return "";
+    const brand = htmlEscaped(allocator, e.video_brand);
+    defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
+    const vcodec = htmlEscaped(allocator, e.video_codec);
+    defer if (vcodec.ptr != e.video_codec.ptr) allocator.free(vcodec);
+    const acodec = htmlEscaped(allocator, e.audio_codec);
+    defer if (acodec.ptr != e.audio_codec.ptr) allocator.free(acodec);
+
+    var joined: [320]u8 = undefined;
+    var w: usize = 0;
+    const append = struct {
+        fn go(dest: []u8, wp: *usize, piece: []const u8) void {
+            if (wp.* > 0) {
+                const sep = " · ";
+                if (wp.* + sep.len > dest.len) return;
+                @memcpy(dest[wp.* .. wp.* + sep.len], sep);
+                wp.* += sep.len;
+            }
+            if (wp.* + piece.len > dest.len) return;
+            @memcpy(dest[wp.* .. wp.* + piece.len], piece);
+            wp.* += piece.len;
+        }
+    }.go;
+
+    if (e.video_brand.len > 0) {
+        var piece: [128]u8 = undefined;
+        const s = std.fmt.bufPrint(&piece, "brand <code>{s}</code>", .{brand}) catch "brand";
+        append(&joined, &w, s);
+    }
+    if (e.video_codec.len > 0) {
+        if (std.mem.eql(u8, e.video_codec, "unknown")) {
+            append(&joined, &w, "video codec not probed");
+        } else {
+            var piece: [128]u8 = undefined;
+            const s = std.fmt.bufPrint(&piece, "video <code>{s}</code>", .{vcodec}) catch "video";
+            append(&joined, &w, s);
+        }
+    }
+    if (e.audio_codec.len > 0) {
+        if (std.mem.eql(u8, e.audio_codec, "unknown")) {
+            append(&joined, &w, "audio codec not probed");
+        } else {
+            var piece: [128]u8 = undefined;
+            const s = std.fmt.bufPrint(&piece, "audio <code>{s}</code>", .{acodec}) catch "audio";
+            append(&joined, &w, s);
+        }
+    }
+    if (w == 0) return "";
+    return std.fmt.bufPrint(out, "<p class=\"probe\" role=\"status\">Indexed: {s}</p>", .{joined[0..w]}) catch "";
+}
+
 fn queryFlag(query: ?[]const u8, name: []const u8) bool {
     const qs = query orelse return false;
     var it = std.mem.splitScalar(u8, qs, '&');
@@ -2188,8 +2359,10 @@ fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         if (e.year >= 1000) {
             year_line = std.fmt.bufPrint(&year_buf, "<p>year: {d}</p>", .{e.year}) catch "";
         }
-        var buf: [2304]u8 = undefined;
-        const html = std.fmt.bufPrint(&buf, "<!doctype html><html><head><title>{s}</title></head><body><h1>{s}</h1>{s}{s}<p>container: {s}</p><p><a href=\"/watch/{s}\">watch</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a> · <a href=\"/library\">library</a></p></body></html>", .{ title, title, art, year_line, container, id_esc, id_esc, kind_esc, kind_esc }) catch "item error";
+        var probe_buf: [512]u8 = undefined;
+        const probe = formatProbeNote(allocator, e, &probe_buf);
+        var buf: [2816]u8 = undefined;
+        const html = std.fmt.bufPrint(&buf, "<!doctype html><html><head><title>{s}</title></head><body><h1>{s}</h1>{s}{s}<p>container: {s}</p>{s}<p><a href=\"/watch/{s}\">watch</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a> · <a href=\"/library\">library</a></p></body></html>", .{ title, title, art, year_line, container, probe, id_esc, id_esc, kind_esc, kind_esc }) catch "item error";
         var link_buf: [384]u8 = undefined;
         const link = if (e.poster.len > 0)
             std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\""
@@ -2220,10 +2393,17 @@ fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         html.appendSlice(allocator, title) catch {};
         html.appendSlice(allocator, "</h1>") catch {};
         if (!likelyBrowserPlayable(e.container)) {
-            var note_buf: [384]u8 = undefined;
-            const note = std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, id_esc }) catch "";
+            var note_buf: [512]u8 = undefined;
+            const note = if (e.video_brand.len > 0) blk: {
+                const brand = htmlEscaped(allocator, e.video_brand);
+                defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
+                break :blk std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file (brand <code>{s}</code>) may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, brand, id_esc }) catch "";
+            } else std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, id_esc }) catch "";
             html.appendSlice(allocator, note) catch {};
         }
+        var probe_buf: [512]u8 = undefined;
+        const probe = formatProbeNote(allocator, e, &probe_buf);
+        if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
         // Player owns identity outside any hx-target / #library-region.
         var player_buf: [384]u8 = undefined;
         const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";

@@ -54,9 +54,40 @@ def entries_array_slice(text: str) -> str | None:
 
 
 def entry_object_slice(text: str, id_at: int) -> str:
-    start = text.rfind("{", 0, id_at)
-    if start < 0:
-        start = 0
+    """Slice the entry object containing `"id"` at id_at.
+
+    Walks backward with brace depth so nested `audio`/`video` objects that
+    appear before `"id"` are not mistaken for the entry start.
+    """
+    start = 0
+    depth = 0
+    in_string = False
+    i = id_at
+    while i > 0:
+        i -= 1
+        ch = text[i]
+        if in_string:
+            if ch == '"':
+                bs = 0
+                j = i
+                while j > 0 and text[j - 1] == "\\":
+                    bs += 1
+                    j -= 1
+                if bs % 2 == 1:
+                    continue
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth == 0:
+                start = i
+                break
+            depth -= 1
+
     depth = 0
     seen_open = False
     in_string = False
@@ -166,6 +197,77 @@ def extract_number_after(slice_: str, key: str) -> int | None:
     return int(slice_[p:end])
 
 
+def first_array_object_slice(entry_obj: str, key: str) -> str | None:
+    """First object inside an entry array field (e.g. `"video":[{...}]`)."""
+    at = entry_obj.find(key)
+    if at < 0:
+        return None
+    p = at + len(key)
+    while p < len(entry_obj) and entry_obj[p] in " \t\r\n:":
+        p += 1
+    if p >= len(entry_obj) or entry_obj[p] != "[":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    k = p
+    while k < len(entry_obj):
+        ch = entry_obj[k]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            k += 1
+            continue
+        if ch == '"':
+            in_string = True
+            k += 1
+            continue
+        if ch == "[":
+            depth += 1
+            k += 1
+            continue
+        if ch == "]":
+            depth -= 1
+            if depth == 0:
+                return None
+            k += 1
+            continue
+        if ch == "{" and depth == 1:
+            obj_depth = 0
+            j = k
+            obj_in_string = False
+            obj_escape = False
+            while j < len(entry_obj):
+                oj = entry_obj[j]
+                if obj_in_string:
+                    if obj_escape:
+                        obj_escape = False
+                    elif oj == "\\":
+                        obj_escape = True
+                    elif oj == '"':
+                        obj_in_string = False
+                    j += 1
+                    continue
+                if oj == '"':
+                    obj_in_string = True
+                    j += 1
+                    continue
+                if oj == "{":
+                    obj_depth += 1
+                elif oj == "}":
+                    obj_depth -= 1
+                    if obj_depth == 0:
+                        return entry_obj[k : j + 1]
+                j += 1
+            return None
+        k += 1
+    return None
+
+
 def load_manifest_entries(text: str) -> list[dict]:
     entries = entries_array_slice(text)
     if entries is None:
@@ -186,6 +288,8 @@ def load_manifest_entries(text: str) -> list[dict]:
                 continue
             seen.add(id_)
             title = extract_after_unescaped(obj, '"title"') or id_
+            video_track = first_array_object_slice(obj, '"video"') or ""
+            audio_track = first_array_object_slice(obj, '"audio"') or ""
             out.append(
                 {
                     "id": id_,
@@ -198,6 +302,9 @@ def load_manifest_entries(text: str) -> list[dict]:
                     "bytes": extract_number_after(obj, '"bytes"') or 0,
                     "modified_ns": extract_number_after(obj, '"modified_ns"') or 0,
                     "year": extract_number_after(obj, '"year"') or 0,
+                    "video_codec": (extract_after_unescaped(video_track, '"codec"') or "") if video_track else "",
+                    "video_brand": (extract_after_unescaped(video_track, '"brand"') or "") if video_track else "",
+                    "audio_codec": (extract_after_unescaped(audio_track, '"codec"') or "") if audio_track else "",
                 }
             )
         i += 1
@@ -217,6 +324,11 @@ class ManifestParseTests(unittest.TestCase):
             self.assertEqual(got["path"], e["path"])
             self.assertEqual(got["bytes"], e["bytes"])
             self.assertEqual(got.get("year", 0) or 0, e.get("year", 0) or 0)
+            video = (e.get("video") or [{}])[0] if e.get("video") else {}
+            audio = (e.get("audio") or [{}])[0] if e.get("audio") else {}
+            self.assertEqual(got["video_codec"], video.get("codec", "") or "")
+            self.assertEqual(got["video_brand"], video.get("brand", "") or "")
+            self.assertEqual(got["audio_codec"], audio.get("codec", "") or "")
 
     def test_ignores_id_outside_entries(self) -> None:
         text = '{"meta":{"id":"noise"},"entries":[{"id":"m_ok","path":"a.mp4","title":"ok","bytes":1}]}'
@@ -249,6 +361,40 @@ class ManifestParseTests(unittest.TestCase):
 
     def test_missing_entries_yields_empty(self) -> None:
         self.assertEqual(load_manifest_entries('{"items":[{"id":"x","path":"a"}]}'), [])
+
+    def test_nested_video_audio_first_track(self) -> None:
+        text = (
+            '{"entries":[{'
+            '"id":"m_1","path":"a.mp4","title":"a","bytes":1,'
+            '"video":[{"codec":"hevc","brand":"isom"},{"codec":"ignored"}],'
+            '"audio":[{"codec":"aac"},{"codec":"ignored"}]'
+            "}]}"
+        )
+        scraped = load_manifest_entries(text)
+        self.assertEqual(len(scraped), 1)
+        self.assertEqual(scraped[0]["video_codec"], "hevc")
+        self.assertEqual(scraped[0]["video_brand"], "isom")
+        self.assertEqual(scraped[0]["audio_codec"], "aac")
+
+    def test_nested_object_before_id_still_loads(self) -> None:
+        text = (
+            '{"entries":[{'
+            '"audio":[{"codec":"aac"}],'
+            '"id":"m_1","path":"a.mp4","title":"a","bytes":1,'
+            '"video":[{"codec":"hevc","brand":"isom"}]'
+            "}]}"
+        )
+        scraped = load_manifest_entries(text)
+        self.assertEqual(len(scraped), 1)
+        self.assertEqual(scraped[0]["id"], "m_1")
+        self.assertEqual(scraped[0]["video_codec"], "hevc")
+        self.assertEqual(scraped[0]["audio_codec"], "aac")
+
+    def test_empty_video_array_yields_empty_probe(self) -> None:
+        text = '{"entries":[{"id":"m_1","path":"a.mp4","title":"a","bytes":1,"video":[]}]}'
+        scraped = load_manifest_entries(text)
+        self.assertEqual(scraped[0]["video_codec"], "")
+        self.assertEqual(scraped[0]["video_brand"], "")
 
 
 if __name__ == "__main__":

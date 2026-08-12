@@ -65,7 +65,7 @@
 Not more docs. Ranked concrete features:
 
 1. **Richer library UX** — first slice landed: `/library/{kind}` self/up Links + title, row watch/year affordances, pagination preserves `sort`/`q`, `#library-region` swap root. Still open: playlist/queue only if useful; subtitle resource only with a real fixture.
-2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Still open: richer codec/stream probes, Orisha views that *use* nested `video`/`audio`, and auto-moving sidecars on rename.
+2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Orisha item/watch now surface nested first-track `video`/`audio` brand/codec probe notes. Still open: richer codec/stream probes, and auto-moving sidecars on rename.
 3. **Browser Step 9 hardening** — first slice landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch. Still open: measured koru/dom only if marks justify it.
 
 Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
