@@ -50,6 +50,7 @@ def main() -> int:
         check(st == 200, f"GET /library -> {st}")
         check(f"/item/{demo_id}".encode() in body, "library links to item")
         check(b"sort title" in body and b"fragment" in body, "sort/filter/fragment affordances")
+        check(b'hx-get=' in body and b'hx-target="#library-list"' in body, "library hx-* attrs")
         check(b"<form" in body and b'name="q"' in body, "library search form")
         check("link" in hdrs and "self" in hdrs["link"], f"Link header on library: {hdrs.get('link')}")
 
@@ -69,6 +70,10 @@ def main() -> int:
         st, _, prefer_body = http("GET", "/library?q=demo", headers={"Prefer": "return=minimal"})
         check(st == 200 and b'id="library-list"' in prefer_body, "Prefer return=minimal fragment")
         check(b"<h1>Library</h1>" not in prefer_body, "Prefer fragment is not full page")
+
+        st, _, hx_body = http("GET", "/library?q=demo", headers={"HX-Request": "true"})
+        check(st == 200 and b'id="library-list"' in hx_body, "HX-Request fragment")
+        check(b"<h1>Library</h1>" not in hx_body, "HX-Request fragment is not full page")
 
         st, _, frag = http("GET", "/fragments/library")
         check(st == 200 and b'id="library-list"' in frag, "library fragment")
@@ -146,7 +151,7 @@ def main() -> int:
         check(st == 200 and b'id="koru-list"' in body and b"/koru-dom-enhance.js" in body, "enhance-demo.html served")
 
         st, _, body = http("GET", "/library")
-        check(b"/enhance.js" in body and b'data-enhance="fragment"' in body, "library progressive enhance hooks")
+        check(b"/enhance.js" in body and b"hx-get=" in body, "library progressive enhance hooks")
 
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body, "watch resume hooks")

@@ -35,9 +35,9 @@
 ## Phase 4: browser enhancement
 
 - Keep complete-page navigation as the baseline.
-- Shipped: `public/enhance.js` (resume + fragment swap); player stays outside replaceable regions.
+- Shipped: [`public/enhance.js`](public/enhance.js) — HTMX-dialect host (`hx-get` / `hx-target` / `HX-Request`) + localStorage resume; player stays outside replaceable regions.
 - Optional koru/dom keyed list: `browser/main.k` + `scripts/build-browser.sh` → `public/koru-dom-enhance.js` + `/enhance-demo.html`.
-- Persist resume position locally (localStorage) before considering server-side state.
+- See [docs/upstream-candidates.md](docs/upstream-candidates.md) for the vaxis → dom → HTMX story.
 
 ## Phase 5: lifecycle
 

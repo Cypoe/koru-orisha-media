@@ -1,5 +1,10 @@
 /*! koru-orisha-media progressive enhancement (optional).
- * No-JS browsers keep full-page links. Does not touch #player on fragment swaps.
+ * HTMX-dialect host: honors hx-get / hx-target / hx-swap / hx-push-url.
+ * Sends HX-Request (and Prefer) so /library can return a fragment.
+ * Does not touch #player on swaps. No-JS browsers keep plain href/forms.
+ *
+ * This is the vaxis/dom lesson applied to navigation: declare the request on
+ * the element; the host loop does the work. Stock HTMX can replace this file.
  */
 (function () {
   "use strict";
@@ -50,49 +55,84 @@
     } catch (_) {}
   }
 
-  function fragmentUrlFromLink(a) {
-    var href = a.getAttribute("href");
-    if (!href) return null;
+  function hxHeaders() {
+    return {
+      Accept: "text/html",
+      "HX-Request": "true",
+      Prefer: "return=minimal",
+    };
+  }
+
+  function swapInto(targetSel, html, pushUrl) {
+    var tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    var next = tmp.querySelector(targetSel) || tmp.querySelector("ul");
+    if (!next) return false;
+    var cur = document.querySelector(targetSel);
+    if (!cur) return false;
+    cur.replaceWith(next);
+    if (pushUrl) history.pushState({}, "", pushUrl);
+    return true;
+  }
+
+  function hxGetUrl(el) {
+    var raw = el.getAttribute("hx-get");
+    if (!raw) return null;
     try {
-      var u = new URL(href, location.origin);
-      if (u.pathname.indexOf("/library") !== 0) return null;
-      var frag = "/fragments" + u.pathname.replace(/^\/library/, "/library");
-      // /library -> /fragments/library ; /library/movie -> /fragments/library/movie
-      if (u.pathname === "/library" || u.pathname === "/library/") frag = "/fragments/library";
-      else if (u.pathname.indexOf("/library/") === 0)
-        frag = "/fragments/library/" + u.pathname.slice("/library/".length);
-      return frag + u.search;
+      var u = new URL(raw, location.href);
+      if (el.tagName === "FORM") {
+        var fd = new FormData(el);
+        fd.forEach(function (v, k) {
+          u.searchParams.set(k, String(v));
+        });
+      }
+      return u.pathname + u.search;
     } catch (_) {
-      return null;
+      return raw;
     }
   }
 
-  function enhanceLibrary() {
-    var list = document.getElementById("library-list");
-    if (!list) return;
+  function enhanceHtmx() {
     document.addEventListener("click", function (ev) {
-      var a = ev.target.closest && ev.target.closest("a[data-enhance=fragment]");
+      var a = ev.target.closest && ev.target.closest("a[hx-get]");
       if (!a) return;
-      var frag = fragmentUrlFromLink(a);
-      if (!frag) return;
+      var url = hxGetUrl(a);
+      var target = a.getAttribute("hx-target") || "#library-list";
+      if (!url) return;
       ev.preventDefault();
-      fetch(frag, { headers: { Accept: "text/html", Prefer: "return=minimal" } })
+      fetch(url, { headers: hxHeaders() })
         .then(function (r) {
           return r.text();
         })
         .then(function (html) {
-          // Response may be full HTTP if mis-parsed; prefer inner ul
-          var tmp = document.createElement("div");
-          tmp.innerHTML = html;
-          var ul = tmp.querySelector("#library-list") || tmp.querySelector("ul");
-          if (!ul) return;
-          var target = document.getElementById("library-list");
-          if (!target) return;
-          target.replaceWith(ul);
-          history.pushState({}, "", a.getAttribute("href"));
+          var push =
+            a.getAttribute("hx-push-url") === "true"
+              ? a.getAttribute("href") || url
+              : null;
+          if (!swapInto(target, html, push)) location.href = a.getAttribute("href") || url;
         })
         .catch(function () {
-          location.href = a.getAttribute("href");
+          location.href = a.getAttribute("href") || url;
+        });
+    });
+
+    document.addEventListener("submit", function (ev) {
+      var form = ev.target.closest && ev.target.closest("form[hx-get]");
+      if (!form) return;
+      var url = hxGetUrl(form);
+      var target = form.getAttribute("hx-target") || "#library-list";
+      if (!url) return;
+      ev.preventDefault();
+      fetch(url, { headers: hxHeaders() })
+        .then(function (r) {
+          return r.text();
+        })
+        .then(function (html) {
+          var push = form.getAttribute("hx-push-url") === "true" ? url : null;
+          if (!swapInto(target, html, push)) location.href = url;
+        })
+        .catch(function () {
+          location.href = url;
         });
     });
   }
@@ -100,10 +140,10 @@
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
       enhancePlayer();
-      enhanceLibrary();
+      enhanceHtmx();
     });
   } else {
     enhancePlayer();
-    enhanceLibrary();
+    enhanceHtmx();
   }
 })();

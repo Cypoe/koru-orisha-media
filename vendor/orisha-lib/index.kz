@@ -47,6 +47,7 @@ pub const Request = struct {
     range: ?[]const u8 = null,
     query: ?[]const u8 = null,
     prefer: ?[]const u8 = null,
+    hx_request: bool = false,
 
     // For param extraction by router
     allocator: std.mem.Allocator,
@@ -193,6 +194,9 @@ fn idleSecs() ?u32 {
         }
     }
 
+    // HTMX: HX-Request: true → same fragment opt-in as Prefer: return=minimal.
+    const hx_request = std.ascii.indexOfIgnoreCase(request_data, "\r\nHX-Request:") != null;
+
     // Allocate request
     const req = allocator.create(Request) catch {
         conn.stream.close();
@@ -207,6 +211,7 @@ fn idleSecs() ?u32 {
         .range = if (range_hdr) |r| allocator.dupe(u8, r) catch r else null,
         .query = if (query_hdr) |q| allocator.dupe(u8, q) catch q else null,
         .prefer = if (prefer_hdr) |p| allocator.dupe(u8, p) catch p else null,
+        .hx_request = hx_request,
         .allocator = allocator,
     };
 
@@ -1885,30 +1890,32 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
     }
     out.appendSlice(allocator, "</ul>") catch {};
     if (limit > 0 and items.len > end) {
-        var nb: [128]u8 = undefined;
-        const next = std.fmt.bufPrint(&nb, "<p class=\"pagination\"><a data-enhance=\"fragment\" href=\"?limit={d}&offset={d}\">next</a></p>", .{ limit, end }) catch "";
+        var nb: [256]u8 = undefined;
+        const next = std.fmt.bufPrint(&nb, "<p class=\"pagination\"><a href=\"?limit={d}&offset={d}\" hx-get=\"?limit={d}&offset={d}\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">next</a></p>", .{ limit, end, limit, end }) catch "";
         out.appendSlice(allocator, next) catch {};
     }
     if (limit > 0 and start > 0) {
         const prev_off = if (start > limit) start - limit else 0;
-        var pb: [128]u8 = undefined;
-        const prev = std.fmt.bufPrint(&pb, "<p class=\"pagination\"><a data-enhance=\"fragment\" href=\"?limit={d}&offset={d}\">prev</a></p>", .{ limit, prev_off }) catch "";
+        var pb: [256]u8 = undefined;
+        const prev = std.fmt.bufPrint(&pb, "<p class=\"pagination\"><a href=\"?limit={d}&offset={d}\" hx-get=\"?limit={d}&offset={d}\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">prev</a></p>", .{ limit, prev_off, limit, prev_off }) catch "";
         out.appendSlice(allocator, prev) catch {};
     }
 }
 
 fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8) void {
+    // HTMX dialect: hx-get + hx-target + hx-swap. Lowercase attrs are opaque HTML —
+    // the same passthrough rule koru/dom inherits from vaxis markup.
     out.appendSlice(allocator, "<nav class=\"affordances\"><p>") catch {};
     if (kind_filter) |k| {
-        var buf: [640]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "<a data-enhance=\"fragment\" href=\"/library/{s}?sort=title\">sort title</a> · <a data-enhance=\"fragment\" href=\"/library/{s}?sort=id\">sort id</a> · <a data-enhance=\"fragment\" href=\"/library/{s}?q=demo\">filter demo</a> · <a data-enhance=\"fragment\" href=\"/library/{s}?limit=2\">page size 2</a> · <a href=\"/fragments/library/{s}\">fragment</a>", .{ k, k, k, k, k }) catch "";
+        var buf: [1024]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "<a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library/{s}?sort=id\" hx-get=\"/library/{s}?sort=id\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library/{s}?q=demo\" hx-get=\"/library/{s}?q=demo\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library/{s}?limit=2\" hx-get=\"/library/{s}?limit=2\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library/{s}\">fragment</a>", .{ k, k, k, k, k, k, k, k, k }) catch "";
         out.appendSlice(allocator, s) catch {};
-        var form: [256]u8 = undefined;
-        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>", .{k}) catch "";
+        var form: [384]u8 = undefined;
+        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\" hx-get=\"/library/{s}\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>", .{ k, k }) catch "";
         out.appendSlice(allocator, f) catch {};
     } else {
-        out.appendSlice(allocator, "<a data-enhance=\"fragment\" href=\"/library?sort=title\">sort title</a> · <a data-enhance=\"fragment\" href=\"/library?sort=id\">sort id</a> · <a data-enhance=\"fragment\" href=\"/library?q=demo\">filter demo</a> · <a data-enhance=\"fragment\" href=\"/library?limit=2\">page size 2</a> · <a href=\"/fragments/library\">fragment</a>") catch {};
-        out.appendSlice(allocator, "</p><form method=\"get\" action=\"/library\" class=\"search\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>") catch {};
+        out.appendSlice(allocator, "<a href=\"/library?sort=title\" hx-get=\"/library?sort=title\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library?sort=id\" hx-get=\"/library?sort=id\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library?q=demo\" hx-get=\"/library?q=demo\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library?limit=2\" hx-get=\"/library?limit=2\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library\">fragment</a>") catch {};
+        out.appendSlice(allocator, "</p><form method=\"get\" action=\"/library\" class=\"search\" hx-get=\"/library\" hx-target=\"#library-list\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>") catch {};
     }
     out.appendSlice(allocator, "<a href=\"/library/movie\">movies</a> · <a href=\"/\">home</a></p></nav>") catch {};
 }
@@ -1920,6 +1927,10 @@ fn scriptEnhance() []const u8 {
 fn preferMinimal(prefer: ?[]const u8) bool {
     const p = prefer orelse return false;
     return std.ascii.indexOfIgnoreCase(p, "return=minimal") != null;
+}
+
+fn wantsFragment(req_prefer: ?[]const u8, hx_request: bool) bool {
+    return hx_request or preferMinimal(req_prefer);
 }
 
 fn renderHttpHtml(allocator: std.mem.Allocator, link: []const u8, html: []const u8) []const u8 {
@@ -2236,7 +2247,7 @@ fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticB
     }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/library")) {
-        const body = if (preferMinimal(req.prefer))
+        const body = if (wantsFragment(req.prefer, req.hx_request))
             libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset)
         else
             libraryHtml(allocator, null, pq.sort, pq.q, pq.limit, pq.offset);
@@ -2253,7 +2264,7 @@ fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticB
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/library/")) {
         const kind = path["/library/".len..];
-        const body = if (preferMinimal(req.prefer))
+        const body = if (wantsFragment(req.prefer, req.hx_request))
             libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset)
         else
             libraryHtml(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset);
