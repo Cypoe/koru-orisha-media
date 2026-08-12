@@ -81,7 +81,7 @@ def main() -> int:
 
         st, _, body = http("GET", f"/item/{demo_id}")
         check(st == 200 and b"/watch/" in body, "item page")
-        check(b"container: mp4" in body, "item shows container")
+        check(b"container" in body and b"<code>mp4</code>" in body, "item shows container")
         check(b'class="probe"' in body and b"brand <code>isom</code>" in body, "item shows probe brand")
         check(b"video codec not probed" in body, "item shows honest unknown codec")
         check(b"/art/" + demo_id.encode() in body, "item links poster art")
@@ -193,7 +193,7 @@ def main() -> int:
         arrival = next((e for e in manifest["entries"] if "2016" in e.get("title", "")), None)
         if arrival and arrival.get("year") == 2016:
             st, _, body = http("GET", f"/item/{arrival['id']}")
-            check(st == 200 and b"year: 2016" in body, "item shows year")
+            check(st == 200 and b"year 2016" in body, "item shows year")
             check(b"video <code>hevc</code>" in body and b"audio <code>aac</code>" in body, "item shows nested codecs")
             st, _, wbody = http("GET", f"/watch/{arrival['id']}")
             check(st == 200 and b'class="probe"' in wbody and b"video <code>hevc</code>" in wbody, "watch shows nested codecs")
@@ -206,6 +206,13 @@ def main() -> int:
         check(b"#library-region" in body and b"performance.mark" in body, "enhance region + measure marks")
         check(b"application/javascript" in hdrs.get("content-type", "").encode() or "javascript" in hdrs.get("content-type", ""), "enhance content-type")
 
+        st, hdrs, body = http("GET", "/app.css")
+        check(st == 200 and b"--ink" in body, "app.css served")
+        check("text/css" in hdrs.get("content-type", ""), "app.css content-type")
+
+        st, _, body = http("GET", "/")
+        check(st == 200 and b"Koru Media" in body and b"/app.css" in body and b"Open library" in body, "home brand surface")
+
         st, _, body = http("GET", "/koru-dom-enhance.js")
         check(st == 200 and b"__koru_dom_track" in body, "koru-dom-enhance.js served")
 
@@ -213,10 +220,13 @@ def main() -> int:
         check(st == 200 and b'id="koru-list"' in body and b"/koru-dom-enhance.js" in body, "enhance-demo.html served")
 
         st, _, body = http("GET", "/library")
-        check(b"/enhance.js" in body and b"hx-get=" in body, "library progressive enhance hooks")
+        check(b"/enhance.js" in body and b"/app.css" in body and b"hx-get=" in body, "library progressive enhance hooks")
+
+        st, _, body = http("GET", f"/item/{demo_id}")
+        check(b"/enhance.js" in body and b"/app.css" in body and b"item-actions" in body, "item page enhance + css")
 
         st, _, body = http("GET", f"/watch/{demo_id}")
-        check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body, "watch resume hooks")
+        check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body and b"/app.css" in body, "watch resume hooks")
         check(b'id="resume-ui"' in body and b'id="player"' in body, "watch resume-ui beside player")
         player_at = body.find(b'id="player"')
         resume_at = body.find(b'id="resume-ui"')

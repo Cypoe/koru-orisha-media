@@ -1,0 +1,362 @@
+/* koru-orisha-media — product surface
+   Direction: ink on cool paper, teal accent, brand-first library. */
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;600&display=swap");
+
+:root {
+  --ink: #1a2421;
+  --muted: #4a5a55;
+  --paper: #e8ece9;
+  --paper-deep: #d5ddd8;
+  --surface: #f4f7f5;
+  --accent: #0d6e6e;
+  --accent-hot: #0a5555;
+  --line: #b8c4be;
+  --danger: #8b3a2f;
+  --radius: 2px;
+  --font-display: "Fraunces", "Palatino Linotype", Palatino, serif;
+  --font-body: "Source Sans 3", "Segoe UI", sans-serif;
+  --max: 52rem;
+  --player-max: 56rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 112.5%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: var(--font-body);
+  line-height: 1.55;
+  background:
+    radial-gradient(120% 80% at 10% -10%, #c5d4ce 0%, transparent 55%),
+    radial-gradient(90% 60% at 100% 0%, #b9cfc8 0%, transparent 45%),
+    linear-gradient(180deg, var(--paper) 0%, var(--paper-deep) 100%);
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  color: var(--accent-hot);
+}
+
+code {
+  font-size: 0.9em;
+  background: var(--surface);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius);
+}
+
+/* —— Home —— */
+.home {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 3.5rem 1.25rem 4rem;
+}
+
+.home .brand {
+  font-family: var(--font-display);
+  font-size: clamp(2.6rem, 8vw, 4.2rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+}
+
+.home .lede {
+  font-size: 1.15rem;
+  color: var(--muted);
+  max-width: 28rem;
+  margin: 0 0 2rem;
+}
+
+.home .cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+}
+
+.home .cta a.primary {
+  display: inline-block;
+  padding: 0.65rem 1.25rem;
+  background: var(--ink);
+  color: var(--surface);
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: var(--radius);
+}
+
+.home .cta a.primary:hover {
+  background: var(--accent-hot);
+  color: #fff;
+}
+
+.home .cta a.quiet {
+  color: var(--muted);
+}
+
+/* —— App shell (library / item / watch) —— */
+.app-shell {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+.app-shell.watch {
+  max-width: var(--player-max);
+}
+
+.site-brand {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 1.25rem;
+}
+
+.site-brand a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.site-brand a:hover {
+  color: var(--accent);
+}
+
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(1.75rem, 4vw, 2.35rem);
+  line-height: 1.15;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  margin: 2rem 0 0.75rem;
+}
+
+nav.affordances {
+  margin: 0 0 1.25rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+nav.affordances .kinds strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+form.search {
+  margin: 0.75rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+form.search input[type="search"] {
+  font: inherit;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 12rem;
+}
+
+form.search button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--surface);
+  cursor: pointer;
+}
+
+form.search button:hover {
+  background: var(--accent-hot);
+}
+
+#library-region,
+.library-region {
+  margin-top: 0.5rem;
+}
+
+.library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.library-list li {
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+}
+
+.library-list a.title {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  flex: 1 1 12rem;
+}
+
+.library-list a.title:hover {
+  color: var(--accent);
+}
+
+.library-list .meta {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.pagination {
+  margin: 1.25rem 0 0;
+}
+
+.empty {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+/* —— Item —— */
+.item-layout {
+  display: grid;
+  gap: 1.25rem;
+}
+
+@media (min-width: 40rem) {
+  .item-layout.has-poster {
+    grid-template-columns: 12rem 1fr;
+    align-items: start;
+  }
+}
+
+.item-poster img {
+  display: block;
+  width: 100%;
+  max-width: 12rem;
+  height: auto;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(26, 36, 33, 0.12);
+}
+
+.item-actions {
+  margin-top: 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+}
+
+.item-actions a.primary {
+  display: inline-block;
+  padding: 0.55rem 1.1rem;
+  background: var(--ink);
+  color: var(--surface);
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: var(--radius);
+}
+
+.item-actions a.primary:hover {
+  background: var(--accent-hot);
+  color: #fff;
+}
+
+.meta-line {
+  margin: 0.35rem 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.probe,
+.capability,
+.resume {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+}
+
+.capability {
+  border-left: 3px solid var(--danger);
+}
+
+.probe {
+  border-left: 3px solid var(--accent);
+}
+
+/* —— Watch —— */
+#player {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: #0e1210;
+  border-radius: var(--radius);
+  margin: 1rem 0;
+}
+
+.watch-nav {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+section.related {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.shelf-affordances {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+
+#resume-ui:not([hidden]) {
+  display: block;
+}
+
+#resume-ui button {
+  font: inherit;
+  margin-left: 0.5rem;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.55rem;
+  color: var(--accent);
+}
+
+#resume-ui button:hover {
+  border-color: var(--accent);
+}
