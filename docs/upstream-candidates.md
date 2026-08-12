@@ -70,7 +70,7 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 |-------|-------------|-----------------|----------|
 | HTMX-dialect progressive enhance | `public/enhance.js` | Tiny host that honors `hx-*` (or stock HTMX) + preserves `#player` | Prefer HTMX attrs over a private `data-enhance` vocabulary |
 | Keyed list identity (`koru/dom`) | `browser/` + `test_keyed_list` | Local store-driven DOM; complements HTMX, does not replace it | Keep as `koru/dom` consumer / gauntlet sibling |
-| Atomic JSON publish + opaque path IDs | `scripts/index_media.py` | Generic offline index pattern | Reimplement in Koru when file/JSON ergonomics win |
+| Atomic JSON publish + opaque path IDs | `scripts/index_media.py` | Generic offline index pattern | Reimplement as a Koru one-shot; prefer **yyjson** (`W:\src\koru-libs\yyjson` / system `libyyjson`) over forever-Python. Do not vendor `yyjson.c` into the media binary by default — lift or link first |
 | HTML escape + Link/OPTIONS helpers | Zig in vendor handler | Shared hypermedia utilities | Wait for Koru server HTML projection; do not invent a second template stack |
 
 ## Stay app-local (this repo)
@@ -79,17 +79,21 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 - `/art/{id}`, media MIME/capability policy, download disposition UX
 - Manifest schema fields that are media-domain (`poster`, `container`, `kind`)
 - Docker build wrappers and personal-library fixtures
+- Synology Indexer / File Station **catalog feed** adapter (when built): app-local ingest into opaque IDs + atomic manifest publish — not an Orisha-core concern
+- Offline `ffprobe` probe hook (when built): indexer/batch only; never an Orisha request-handler dependency
 
 ## Suggested extraction order
 
 1. **Orisha Request parse + raw send + STREAM** — highest reuse, clearest review boundary. **Prep done in this repo** (`parseHttpRequest` + seam markers); next step is the upstream patch.
 2. **Document `run-accept-loop` as the Zig serve path** — unblocks other Orisha apps without waiting for pump emit fix.
 3. **HTMX dialect on Orisha HTML** (`HX-Request` → fragment; `hx-*` on links) — proves the vaxis/dom passthrough claim; optional stock HTMX later.
-4. **Indexer as a Koru one-shot** — only when Koru file/JSON ergonomics beat the Python reference.
+4. **Indexer as a Koru one-shot + yyjson** — replace `scripts/index_media.py` when Koru file/JSON ergonomics win; use the Koru yyjson lift, not a permanent Python indexer. Synology Indexer as catalog source and offline ffprobe for rich metadata are **later product adapters** on that publish path (see ROADMAP / GOAL deferred indexer), not extraction prerequisites.
 
 ## Non-goals for contribution
 
 - Transcoding, HLS, DB-backed catalogs
+- FFmpeg or ffprobe inside Orisha request handlers
 - A general web framework on top of Orisha
 - Premature sendfile/mmap before STREAM has a second consumer
 - A private progressive-enhance vocabulary that forks HTMX without cause
+- Vendoring `yyjson.c` into this app “just in case” while the schema-specific loader and Python stopgap still suffice

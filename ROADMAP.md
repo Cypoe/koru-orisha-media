@@ -18,10 +18,12 @@
 
 - Walk configured roots in a separate executable or command.
 - Record path, size, mtime, MIME, container; optional sidecar poster (`*.jpg` / `poster.jpg`).
-- Injectable offline probe hook (`--probe ftyp` / `index_root(..., probe=)`); no FFmpeg-in-request. Full stream/codec probe still optional/pluggable.
+- Injectable offline probe hook (`--probe ftyp` / `index_root(..., probe=)`); no FFmpeg in Orisha request handlers. Full stream/codec probe still optional/pluggable.
 - Persistent sidecar IDs (`*.id`) across renames when `--write-id-sidecars` is used.
 - Publish manifests atomically.
 - Hot reload when manifest mtime changes and no media streams are active.
+
+**Stopgap vs endgame (docs only — not implemented yet):** today’s Python walker + `--probe ftyp` is the personal-milestone path. Later catalog feed should follow the Synology Indexer / File Station indexing pattern (consume Synology’s media index the way Radarr/Jellyfin do — not a permanent in-process walker as the long-term design). Richer metadata gathering later uses **ffmpeg/ffprobe in the offline indexer or Synology-fed batch only**, never in request handlers. Prefer **yyjson** (Koru lift / system `libyyjson`) over forever-`scripts/index_media.py` for the long-term manifest + indexer JSON stack. Opaque IDs + atomic publish stay.
 
 ## Phase 3: hypermedia interaction
 
@@ -65,11 +67,22 @@
 Not more docs. Ranked concrete features:
 
 1. **Richer library UX** — first slice landed: `/library/{kind}` self/up Links + title, row watch/year affordances, pagination preserves `sort`/`q`, `#library-region` swap root. Still open: playlist/queue only if useful; subtitle resource only with a real fixture.
-2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Orisha item/watch now surface nested first-track `video`/`audio` brand/codec probe notes. Still open: richer codec/stream probes, and auto-moving sidecars on rename.
+2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Orisha item/watch now surface nested first-track `video`/`audio` brand/codec probe notes. Still open for the *stopgap* Python path: auto-moving sidecars on rename. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
 3. **Browser Step 9 hardening** — first slice landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch. Still open: measured koru/dom only if marks justify it.
 
-Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
+Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
 
 ## Explicitly deferred
 
 Transcoding, HLS/DASH, background metadata services, recommendation systems, remote media discovery, and a large client compatibility layer.
+
+### Deferred future indexer (endgame; no code this pass)
+
+Documented so Phase 2 / GOAL stay coherent with packaging notes:
+
+| Concern | Endgame | Constraint |
+|---------|---------|------------|
+| Catalog source | Synology Indexer / File Station indexing feed (Radarr/Jellyfin-style), not a permanent in-process walker | Still publishes opaque IDs + atomic manifest snapshots Orisha already loads |
+| Probe / metadata | `ffmpeg` / `ffprobe` in the **offline indexer** or Synology-fed batch | **Never** in Orisha request handlers or the HTTP media path |
+| Today’s probe | `--probe ftyp` + nested `video`/`audio` | Stopgap for the personal milestone without requiring FFmpeg on the server path |
+| JSON stack | Prefer **yyjson** via `W:\src\koru-libs\yyjson` (system `libyyjson` / Koru lift) for indexer publish + richer parse | Do not vendor `yyjson.c` into this binary yet; Python `scripts/index_media.py` remains the working reference until a Koru one-shot replaces it |

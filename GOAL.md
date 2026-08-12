@@ -73,6 +73,18 @@ The indexer is a short-lived command or executable. It walks configured roots, d
 
 The indexer must never be required for an ordinary library request. It may be run manually, from an external scheduler, or later from a low-frequency filesystem-triggered job.
 
+#### Deferred / future indexer (endgame)
+
+The first milestone’s walker (`scripts/index_media.py` with optional `--probe ftyp`) is a **stopgap**. It must not freeze the long-term design into a permanent in-process directory walk inside Orisha or a forever-Python indexer.
+
+Later, prefer this shape (still outside the request plane):
+
+1. **Catalog source — Synology Indexer.** Consume Synology’s media index / File Station indexing story the way Radarr and Jellyfin already do on Synology. The media app ingests an external catalog feed into the same opaque-ID + atomic-manifest publish path; it does not invent a resident walker as the durable architecture.
+2. **Probe / metadata — ffmpeg/ffprobe offline only.** Real container and stream probing belongs in the offline indexer or a Synology-fed batch job. Orisha request handlers must never spawn FFmpeg, remux, or probe. Today’s injectable `ftyp` peek and nested `video`/`audio` fields remain the personal-milestone path that does not require FFmpeg on the server HTTP path.
+3. **JSON — prefer yyjson.** Long-term indexing and richer manifest parse should use **yyjson** through the Koru lift at `W:\src\koru-libs\yyjson` (system `libyyjson` / `pkg-config`), not remain on Python forever. Do not treat vendoring `yyjson.c` into this media binary as the default; lift or link first. The request process may keep a schema-specific loader until that stack is ready.
+
+Invariants that do not change: opaque IDs at the HTTP boundary, atomic manifest publish, immutable snapshots for in-flight requests, and no directory walk or probe on a library/media request.
+
 ### Orisha request plane
 
 Orisha loads one complete manifest snapshot and exposes HTTP routes. Request handlers resolve IDs and collection selections against that snapshot, render HTML or JSON, and stream files. A request must not enumerate the media directory, invoke a probe process, query remote metadata, or construct a database schema.
@@ -346,7 +358,7 @@ The local coding agent must:
 2. Prefer the smallest compilable vertical slice over broad speculative abstractions.
 3. Keep Koru/Orisha changes and project code easy to review separately.
 4. Avoid adding dependencies unless the current language/runtime cannot reasonably provide the behavior.
-5. Never add FFmpeg, HLS, transcoding, or a database merely because it is familiar media-server architecture.
+5. Never add FFmpeg, HLS, transcoding, or a database merely because it is familiar media-server architecture. Offline ffprobe in a future indexer batch is allowed only outside Orisha handlers and only when explicitly scheduled as indexer work.
 6. Preserve ordinary HTTP semantics and progressive enhancement.
 7. Treat paths, IDs, escaping, ranges, and capabilities as security boundaries.
 8. Add a fixture and a test with each new protocol behavior.

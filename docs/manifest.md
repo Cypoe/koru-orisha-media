@@ -43,7 +43,17 @@ The indexer writes a new generation beside the active manifest, validates it, fl
 
 Filename and filesystem facts are cheap and form the initial index. Container and stream probing is optional and belongs to indexing time. Artwork extraction and thumbnail generation are also offline operations.
 
-The request process never probes. The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg; richer codec probes can plug in the same hook later. Nested `video` / `audio` fields are stored in the published manifest; Orisha surfaces first-track `brand` / `codec` on item and watch pages as honest probe notes (not a client capability matrix).
+The request process never probes. **FFmpeg / ffprobe must never run in Orisha request handlers** (library, item, watch, or `/media` range serving).
+
+### Stopgap (current)
+
+The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg — enough for the personal milestone without requiring FFmpeg on the server path. Nested `video` / `audio` fields are stored in the published manifest; Orisha surfaces first-track `brand` / `codec` on item and watch pages as honest probe notes (not a client capability matrix).
+
+### Endgame (deferred; not implemented here)
+
+- **Catalog feed:** prefer Synology Indexer / File Station indexing as the long-term source (same pattern Radarr/Jellyfin use on Synology), publishing into this manifest shape with opaque IDs and atomic rename. Do not treat a permanent in-process walker as the durable design.
+- **Rich probe:** use `ffmpeg` / `ffprobe` only inside the offline indexer or a Synology-fed batch to fill richer `video` / `audio` (and related) facts. Same publication rules; still no request-path probe.
+- **JSON stack:** prefer **yyjson** (`W:\src\koru-libs\yyjson` — system `libyyjson` / Koru lift) for indexer emit and richer parse over forever-Python. Orisha’s schema-specific loader above remains valid until that lands; do not vendor `yyjson.c` into this binary by default.
 
 The manifest may record whether a file is likely to play natively in a target browser, but this is advisory. The server must not silently transcode when the advisory value is false.
 
