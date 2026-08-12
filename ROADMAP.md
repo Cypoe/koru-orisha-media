@@ -19,7 +19,7 @@
 - Walk configured roots in a separate executable or command.
 - Record path, size, mtime, MIME, container; optional sidecar poster (`*.jpg` / `poster.jpg`).
 - Injectable offline probe hook (`--probe ftyp` / `index_root(..., probe=)`); no FFmpeg in Orisha request handlers. Full stream/codec probe still optional/pluggable.
-- Persistent sidecar IDs (`*.id`) across renames when `--write-id-sidecars` is used.
+- Persistent sidecar IDs (`*.id`) across renames when `--write-id-sidecars` is used; orphaned sidecars auto-move onto renamed/moved media when identity matches uniquely.
 - Publish manifests atomically.
 - Hot reload when manifest mtime changes and no media streams are active.
 
@@ -67,7 +67,7 @@
 Not more docs. Ranked concrete features:
 
 1. **Richer library UX** — first slice landed: `/library/{kind}` self/up Links + title, row watch/year affordances, pagination preserves `sort`/`q`, `#library-region` swap root. Still open: playlist/queue only if useful; subtitle resource only with a real fixture.
-2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Orisha item/watch now surface nested first-track `video`/`audio` brand/codec probe notes. Still open for the *stopgap* Python path: auto-moving sidecars on rename. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
+2. **Indexer depth** — landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars` + auto-move of orphaned `*.id` sidecars on rename/move (fingerprint or same-dir 1:1). Orisha item/watch surface nested first-track `video`/`audio` brand/codec probe notes. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
 3. **Browser Step 9 hardening** — first slice landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch. Still open: measured koru/dom only if marks justify it.
 
 Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.

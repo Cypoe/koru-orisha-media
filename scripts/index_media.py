@@ -41,9 +41,16 @@ def id_sidecar_path(media: Path) -> Path:
     return Path(str(media) + ID_SIDECAR_SUFFIX)
 
 
-def read_id_sidecar(media: Path) -> Optional[str]:
-    """Return a previously persisted opaque id, or None."""
-    side = id_sidecar_path(media)
+def media_path_for_sidecar(side: Path) -> Path:
+    """`clip.mp4.id` → `clip.mp4`."""
+    name = side.name
+    if name.endswith(ID_SIDECAR_SUFFIX):
+        return side.with_name(name[: -len(ID_SIDECAR_SUFFIX)])
+    return side
+
+
+def _parse_id_sidecar(side: Path) -> Optional[Dict[str, Any]]:
+    """Parse a `*.id` sidecar; returns at least `{"id": ...}` or None."""
     if not side.is_file():
         return None
     try:
@@ -53,15 +60,149 @@ def read_id_sidecar(media: Path) -> Optional[str]:
     if not isinstance(data, dict):
         return None
     eid = data.get("id")
-    if isinstance(eid, str) and eid.startswith("m_") and len(eid) >= 3:
-        return eid
-    return None
+    if not (isinstance(eid, str) and eid.startswith("m_") and len(eid) >= 3):
+        return None
+    out: Dict[str, Any] = {"id": eid}
+    size = data.get("bytes")
+    mtime_ns = data.get("modified_ns")
+    if isinstance(size, int) and isinstance(mtime_ns, int):
+        out["bytes"] = size
+        out["modified_ns"] = mtime_ns
+    return out
 
 
-def write_id_sidecar(media: Path, eid: str) -> None:
+def read_id_sidecar(media: Path) -> Optional[str]:
+    """Return a previously persisted opaque id, or None."""
+    meta = _parse_id_sidecar(id_sidecar_path(media))
+    return meta["id"] if meta else None
+
+
+def write_id_sidecar(
+    media: Path,
+    eid: str,
+    *,
+    size: Optional[int] = None,
+    mtime_ns: Optional[int] = None,
+) -> None:
     side = id_sidecar_path(media)
-    payload = json.dumps({"id": eid}, indent=2, sort_keys=True) + "\n"
-    side.write_text(payload, encoding="utf-8")
+    payload: Dict[str, Any] = {"id": eid}
+    if size is not None and mtime_ns is not None:
+        payload["bytes"] = size
+        payload["modified_ns"] = mtime_ns
+    side.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _is_media_filename(name: str) -> bool:
+    if name.endswith(ID_SIDECAR_SUFFIX):
+        return False
+    return Path(name).suffix.lower() in VIDEO_EXT | AUDIO_EXT
+
+
+def reclaim_orphaned_id_sidecars(root: Path) -> int:
+    """Move orphan `*.id` sidecars onto renamed/moved media when identity is unique.
+
+    Matching preference:
+    1. unique `(bytes, modified_ns)` fingerprint recorded in the sidecar;
+    2. same-directory 1:1 when fingerprint is absent or ambiguous.
+    """
+    media_files: List[Path] = []
+    sidecars: List[Path] = []
+    for dirpath, _, filenames in os.walk(root):
+        base = Path(dirpath)
+        for name in filenames:
+            full = base / name
+            if name.endswith(ID_SIDECAR_SUFFIX):
+                sidecars.append(full)
+            elif _is_media_filename(name):
+                media_files.append(full)
+
+    paired_media: set[Path] = set()
+    orphans: List[tuple[Path, Dict[str, Any]]] = []
+    for side in sidecars:
+        media = media_path_for_sidecar(side)
+        meta = _parse_id_sidecar(side)
+        if meta is None:
+            continue
+        if media.is_file() and _is_media_filename(media.name):
+            paired_media.add(media.resolve())
+            continue
+        orphans.append((side, meta))
+
+    unmatched: List[tuple[Path, int, int]] = []
+    for media in media_files:
+        if media.resolve() in paired_media:
+            continue
+        if id_sidecar_path(media).is_file():
+            continue
+        try:
+            st = media.stat()
+        except OSError:
+            continue
+        unmatched.append((media, st.st_size, st.st_mtime_ns))
+
+    if not orphans or not unmatched:
+        return 0
+
+    by_fp: Dict[tuple[int, int], List[tuple[Path, int, int]]] = {}
+    for item in unmatched:
+        key = (item[1], item[2])
+        by_fp.setdefault(key, []).append(item)
+
+    moved = 0
+    claimed: set[Path] = set()
+
+    # Pass 1: fingerprint unique matches.
+    for side, meta in orphans:
+        if "bytes" not in meta or "modified_ns" not in meta:
+            continue
+        key = (meta["bytes"], meta["modified_ns"])
+        cands = [c for c in by_fp.get(key, []) if c[0] not in claimed]
+        if len(cands) != 1:
+            continue
+        target = cands[0][0]
+        dest = id_sidecar_path(target)
+        if dest.exists():
+            continue
+        try:
+            os.replace(side, dest)
+        except OSError:
+            continue
+        claimed.add(target)
+        moved += 1
+
+    remaining_orphans = [(s, m) for s, m in orphans if s.is_file()]
+    remaining_unmatched = [u for u in unmatched if u[0] not in claimed]
+
+    # Pass 2: same-directory 1:1 for leftovers (covers legacy id-only sidecars).
+    by_dir_orphans: Dict[Path, List[Path]] = {}
+    for side, _meta in remaining_orphans:
+        by_dir_orphans.setdefault(side.parent, []).append(side)
+    by_dir_media: Dict[Path, List[Path]] = {}
+    for media, _sz, _mt in remaining_unmatched:
+        by_dir_media.setdefault(media.parent, []).append(media)
+
+    for parent, orphan_list in by_dir_orphans.items():
+        media_list = by_dir_media.get(parent, [])
+        if len(orphan_list) != 1 or len(media_list) != 1:
+            continue
+        side = orphan_list[0]
+        target = media_list[0]
+        if target in claimed:
+            continue
+        dest = id_sidecar_path(target)
+        if dest.exists():
+            continue
+        try:
+            os.replace(side, dest)
+        except OSError:
+            continue
+        claimed.add(target)
+        moved += 1
+
+    return moved
 
 
 def resolve_entry_id(
@@ -75,10 +216,12 @@ def resolve_entry_id(
     """Prefer sidecar identity so renames keep the same opaque id."""
     existing = read_id_sidecar(media)
     if existing:
+        if write_sidecars:
+            write_id_sidecar(media, existing, size=size, mtime_ns=mtime_ns)
         return existing
     eid = opaque_id(rel, size, mtime_ns)
     if write_sidecars:
-        write_id_sidecar(media, eid)
+        write_id_sidecar(media, eid, size=size, mtime_ns=mtime_ns)
     return eid
 
 
@@ -174,13 +317,15 @@ def index_root(
 ) -> list:
     entries = []  # type: List[Dict[str, Any]]
     seen: set[str] = set()
+    # Reclaim orphaned *.id files onto renamed/moved media before resolving ids.
+    reclaim_orphaned_id_sidecars(root)
     for dirpath, _, filenames in os.walk(root):
         for name in sorted(filenames):
             # Skip identity sidecars and non-media.
             if name.endswith(ID_SIDECAR_SUFFIX):
                 continue
             full = Path(dirpath) / name
-            if full.suffix.lower() not in VIDEO_EXT | AUDIO_EXT:
+            if not _is_media_filename(name):
                 continue
             rel = full.relative_to(root).as_posix()
             # Reject escapes (walk shouldn't produce them; belt-and-suspenders).
@@ -245,7 +390,10 @@ def main() -> int:
     ap.add_argument(
         "--write-id-sidecars",
         action="store_true",
-        help=f"Persist opaque ids beside media files (*{ID_SIDECAR_SUFFIX}) so renames keep identity",
+        help=(
+            f"Persist opaque ids beside media files (*{ID_SIDECAR_SUFFIX}); "
+            "orphaned sidecars are auto-moved onto renamed media when identity matches"
+        ),
     )
     ap.add_argument(
         "--probe",

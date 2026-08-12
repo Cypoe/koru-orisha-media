@@ -117,13 +117,18 @@ class IndexerTests(unittest.TestCase):
             finally:
                 mod.opaque_id = orig
 
-    def test_id_sidecar_survives_rename(self) -> None:
+    def _load_indexer(self):
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("index_media", INDEXER)
         mod = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(mod)
+        return mod
+
+    def test_id_sidecar_survives_rename(self) -> None:
+        """Same-dir rename: orphan sidecar is auto-moved onto the new media path."""
+        mod = self._load_indexer()
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
@@ -137,10 +142,66 @@ class IndexerTests(unittest.TestCase):
             self.assertTrue((clips / "show.mp4.id").is_file())
             renamed = clips / "renamed.mp4"
             media.rename(renamed)
-            (clips / "show.mp4.id").rename(clips / "renamed.mp4.id")
+            # Leave show.mp4.id in place — indexer must reclaim it.
+            self.assertFalse((clips / "renamed.mp4.id").exists())
             after = mod.index_root(root)
             self.assertEqual(after[0]["path"], "clips/renamed.mp4")
             self.assertEqual(after[0]["id"], eid)
+            self.assertTrue((clips / "renamed.mp4.id").is_file())
+            self.assertFalse((clips / "show.mp4.id").exists())
+
+    def test_id_sidecar_survives_cross_dir_move(self) -> None:
+        """Cross-directory move: fingerprint in sidecar uniquely reclaim identity."""
+        mod = self._load_indexer()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            other = root / "other"
+            clips.mkdir(parents=True)
+            other.mkdir(parents=True)
+            media = clips / "show.mp4"
+            media.write_bytes(b"move-bytes")
+            before = mod.index_root(root, write_id_sidecars=True)
+            eid = before[0]["id"]
+            side_meta = json.loads((clips / "show.mp4.id").read_text(encoding="utf-8"))
+            self.assertEqual(side_meta["id"], eid)
+            self.assertIn("bytes", side_meta)
+            self.assertIn("modified_ns", side_meta)
+
+            dest = other / "moved.mp4"
+            media.rename(dest)
+            # Orphan remains under clips/; media is under other/.
+            self.assertTrue((clips / "show.mp4.id").is_file())
+            after = mod.index_root(root, write_id_sidecars=True)
+            self.assertEqual(after[0]["path"], "other/moved.mp4")
+            self.assertEqual(after[0]["id"], eid)
+            self.assertTrue((other / "moved.mp4.id").is_file())
+            self.assertFalse((clips / "show.mp4.id").exists())
+
+    def test_id_sidecar_ambiguous_same_dir_not_moved(self) -> None:
+        """Two orphans + two unmatched in one dir: do not guess."""
+        mod = self._load_indexer()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            clips.mkdir(parents=True)
+            a = clips / "a.mp4"
+            b = clips / "b.mp4"
+            a.write_bytes(b"aaa")
+            b.write_bytes(b"bbb")
+            # Legacy id-only sidecars (no fingerprint) for both.
+            (clips / "a.mp4.id").write_text('{"id": "m_aaaaaa"}\n', encoding="utf-8")
+            (clips / "b.mp4.id").write_text('{"id": "m_bbbbbb"}\n', encoding="utf-8")
+            a.rename(clips / "x.mp4")
+            b.rename(clips / "y.mp4")
+            moved = mod.reclaim_orphaned_id_sidecars(root)
+            self.assertEqual(moved, 0)
+            self.assertTrue((clips / "a.mp4.id").is_file())
+            self.assertTrue((clips / "b.mp4.id").is_file())
+            self.assertFalse((clips / "x.mp4.id").exists())
+            self.assertFalse((clips / "y.mp4.id").exists())
 
     def test_injectable_probe_merges_fields(self) -> None:
         import importlib.util

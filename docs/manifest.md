@@ -59,7 +59,7 @@ The manifest may record whether a file is likely to play natively in a target br
 
 ## Identity policy
 
-The initial ID may be derived from normalized relative path, size, and modification time. The indexer can persist IDs in sidecars (`<path>.id` JSON `{"id":"m_…"}`) via `--write-id-sidecars` so renames retain identity when the sidecar moves with the file. IDs must be opaque at the HTTP boundary and must not expose filesystem layout.
+The initial ID may be derived from normalized relative path, size, and modification time. The indexer can persist IDs in sidecars (`<path>.id` JSON `{"id":"m_…","bytes":…,"modified_ns":…}`) via `--write-id-sidecars`. On each index pass, orphaned `*.id` files are auto-moved onto renamed/moved media when identity is unique (fingerprint match, or same-directory 1:1 for legacy id-only sidecars). IDs must be opaque at the HTTP boundary and must not expose filesystem layout.
 
 ## Invariants
 
