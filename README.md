@@ -35,12 +35,12 @@ bash scripts/bench_baseline.sh   # Step 10 baselines
 
 ## Browser enhancement (Step 9)
 
-- Shipped for media UI: [`public/enhance.js`](public/enhance.js) — localStorage resume on `#player`, fragment swap for `data-enhance=fragment` (player never in a replaceable region).
+- Shipped for media UI: [`public/enhance.js`](public/enhance.js) — HTMX-dialect (`hx-get` / `hx-target` / `HX-Request`) + localStorage resume on `#player` (player never in a replaceable region).
 - Optional koru/dom keyed list: [`browser/main.k`](browser/main.k) + [`browser/main.kjs`](browser/main.kjs) → `bash scripts/build-browser.sh` → [`public/koru-dom-enhance.js`](public/koru-dom-enhance.js). Demo: `/enhance-demo.html`. Asserted by `scripts/test_keyed_list.mjs` (insert / remove / reorder + stable `__koru_key`).
 
 `koruc --lang=js` emits JS correctly when Zig is on `PATH` and options precede the input (`koruc --lang=js main.k`). A bare `FileNotFound` during “Building executable…” usually means Zig was missing from `PATH`, not a failed JS emitter.
 
-No-JS clients keep full-page navigation.
+See [docs/upstream-candidates.md](docs/upstream-candidates.md) for the vaxis → koru/dom → HTMX extraction story.
 
 ## Run
 
