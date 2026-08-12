@@ -4,7 +4,24 @@ Honest map of what this media server has proven that could later leave the app t
 
 Do **not** extract until the seam has tests and a second consumer. The first consumer is this repo.
 
-**In-repo gate (Phase 7):** `parseHttpRequest` shared by `accept|zig` and `answer|zig`, plus `EXTRACT:orisha-core` / `APP:media-handler` markers in `vendor/orisha-lib/index.kz`. Existing HTTP suite covers Range / Prefer / `HX-Request` on the accept-loop path. Upstream PR to `W:\src\orisha` comes after that gate — without shipping the media HTML handler.
+**In-repo gate (Phase 7):** `parseHttpRequest` shared by `accept|zig` and `answer|zig`, plus `EXTRACT:orisha-core` / `APP:media-handler` and `SPLIT→` future-file banners in `vendor/orisha-lib/index.kz`. Existing HTTP suite covers Range / Prefer / `HX-Request` on the accept-loop path. Upstream PR to `W:\src\orisha` comes after that gate — without shipping the media HTML handler.
+
+### File-segment map (vendor `index.kz`)
+
+| Segment | EXTRACT / APP | Notes |
+|---------|---------------|-------|
+| `request-parse` | EXTRACT | Unified Request parse |
+| `accept-loop` | EXTRACT | Replaces pump serve for this app |
+| `send-stream` | EXTRACT | STREAM:v1 + raw HTTP |
+| `answer` | EXTRACT | Pump path still uses this upstream |
+| `router-static` | EXTRACT | Matches upstream today |
+| `manifest-load` | APP | Schema JSON (`entries` + unescape); not Orisha |
+| `html-views` | APP | Library / item / watch |
+| `media-http` | APP | Byte / art resources |
+| `handler` | APP | Route table |
+
+Full banners: [vendor/README.md](../vendor/README.md).
+
 
 ## The HTMX insight (koru/vaxis → koru/dom)
 
@@ -36,12 +53,14 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 
 | Piece | Where today | Why extractable | Blockers |
 |-------|-------------|-----------------|----------|
-| `orisha:run-accept-loop` | `vendor/orisha-lib` | Avoids koruc double-emit of multi-`run|*` pumps; already the working serve path | Document as the recommended Zig serve shape until pump emission is fixed |
+| `orisha:run-accept-loop` | `vendor/orisha-lib` | Working Zig serve path; avoids koruc multi-`run|*` pump double-emit (still reproduces post-2026-08-12 pull) | Keep until Request/STREAM also exist on pump `answer`/`reply`; then optionally migrate |
 | Request extras: `range`, `query`, `prefer`, `hx_request`, `if_none_match` | `parseHttpRequest` in `index.kz` | Generic HTTP, not media-specific | In-repo: accept/answer unified. Upstream: land the helper + fields |
 | Raw `HTTP/1.` body passthrough in `send` | `send|zig` | Needed for pre-rendered responses and STREAM framing | Keep API: body starting with `HTTP/1.` is a complete head |
 | `STREAM:v1` chunked file send | `send|zig` + media handler | Bounded streaming without full-file buffer; reusable for any large static asset | Stabilize framing; optional future `sendfile` backend behind same shape |
 | Idle exit + active-stream lease | accept poll + `active_streams` | Matches Orisha “tiny process / exit when quiet” story | Supervisor story (systemd socket activation) still separate |
 | Fragment opt-in (`Prefer` / `HX-Request`) | handler | Protocol opt-in, not HTML-specific | Keep `/fragments/...` as explicit alternate URL |
+
+**Post-pull note (Orisha `main`, koru `5c64de27`, koruc via `koru-build`):** upstream still documents and develops `orisha:serve` + pump; this media app must not switch yet — pump emit still fails Zig with duplicate members, and STREAM/Request live on the accept-loop path.
 
 **Contribution shape:** prefer patches to `W:\src\orisha` once `run-accept-loop` + Request parse + STREAM send are reviewable without the media HTML handler. Media HTML stays out of Orisha.
 

@@ -1,12 +1,12 @@
 # Current Koru / Orisha APIs
 
-Recorded against local checkouts on 2026-08-12:
+Recorded against local checkouts on 2026-08-12 (re-verified after pulls of Orisha / koru / koru-libs the same day):
 
-| Tree | Path |
-|------|------|
-| Koru | `W:\src\koru` |
-| Orisha | `W:\src\orisha` |
-| koru-libs | `W:\src\koru-libs` |
+| Tree | Path | Note |
+|------|------|------|
+| Koru | `W:\src\koru` | `5c64de27` (parser/emitter work); project builds with `$HOME/src/koru-build` koruc |
+| Orisha | `W:\src\orisha` | `main` — pump/serve still canonical; benches active |
+| koru-libs | `W:\src\koru-libs` | yyjson lift unchanged (system `libyyjson`) |
 
 This note is the integration boundary for `koru-orisha-media`. Prefer these facts over design docs when they disagree.
 
@@ -176,14 +176,14 @@ Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/o
 | `Last-Modified` | From manifest `modified_ns` when present |
 | Path traversal | Reject `..` / absolute; require path under `KORU_MEDIA_ROOT` |
 | Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST` env (defaults: `fixtures/media`, `data/manifest.json`) |
-| Upstream `orisha:serve` / pump | Omitted (koruc companion double-emit); use `orisha:run-accept-loop` |
+| Upstream `orisha:serve` / pump | Still upstream-canonical; **omit in vendor** — koruc multi-`run|*` emit still produces Zig `duplicate struct member` (re-probed 2026-08-12). Use `orisha:run-accept-loop`. Do not migrate for STREAM alone. |
 
 Prefer contributing Range/streaming upstream; keep vendor diffs documented in [vendor/README.md](../vendor/README.md).
 
 ## koru-libs relevance
 
 - **`koru/dom`** (`W:\src\koru-libs\dom`): JS-target keyed DOM (`component`, `run`, `drop`). For GOAL Step 9 only — not the first milestone.
-- **`yyjson`**: candidate for manifest JSON parse/emit if hand-rolled parsing is insufficient.
+- **`yyjson`** (`W:\src\koru-libs\yyjson`): Koru lift over **system** `libyyjson` (`pkg-config`, phantom `Doc<open!>`). Wrong layer for today’s Zig `handler|zig` scrape. Manifest path now uses a **schema-specific** loader (`entries` array + unescape) in vendor — see `scripts/test_manifest_parse.py`. Next PR-sized step if needed: vendor single-file `yyjson.c` behind `loadManifest` only after fixture scale or escape edge cases outgrow the dedicated parser — do not pull full `koru/yyjson` into the media binary yet.
 - No server-side HTML view package yet; first milestone renders HTML as strings from Orisha handlers.
 
 ## Tests

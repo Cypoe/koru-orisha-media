@@ -54,9 +54,20 @@
 
 ## Phase 7: Orisha extraction prep (in-repo)
 
-- Unified `parseHttpRequest` for `accept` and `answer`; `EXTRACT:` / `APP:` seam markers in [`vendor/orisha-lib/index.kz`](vendor/orisha-lib/index.kz)
+- Unified `parseHttpRequest` for `accept` and `answer`; `EXTRACT:` / `APP:` / `SPLIT→` seam markers in [`vendor/orisha-lib/index.kz`](vendor/orisha-lib/index.kz)
 - Vendor / current-apis docs match the real `Request` + `STREAM:v1` surface
+- Schema-specific manifest loader (`entries` + unescape) + `scripts/test_manifest_parse.py`
 - Next **out-of-repo**: patch `W:\src\orisha` with Request parse + raw send + STREAM + `run-accept-loop` docs — media `handler` stays in this vendor tree
+
+## Next REAL product work (after Phase 7 prep)
+
+Not more docs. Ranked concrete features:
+
+1. **Richer library UX still missing from GOAL resource model** — e.g. `/library/{kind}` as first-class collection URLs if not already solid, playlist/queue affordances, or subtitle resource only if a real fixture needs it.
+2. **Indexer depth** — optional container/codec probe behind an injectable offline step (still no FFmpeg-in-request); persistent sidecar IDs across renames.
+3. **Browser Step 9 hardening** — keep player identity under HTMX swaps in more flows; measure before more koru/dom surface.
+
+Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (still broken under koruc + missing STREAM/Request), sendfile/mmap, or another extraction-only doc pass.
 
 ## Explicitly deferred
 
