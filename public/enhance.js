@@ -22,6 +22,36 @@
     return "koru-media-resume:" + id;
   }
 
+  function formatResumeTime(secs) {
+    var t = Math.max(0, Math.floor(secs || 0));
+    var m = Math.floor(t / 60);
+    var s = t % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function showResumeUi(player, id, t) {
+    var ui = document.getElementById("resume-ui");
+    if (!ui || ui.getAttribute("data-bound") === "1") return;
+    ui.setAttribute("data-bound", "1");
+    ui.hidden = false;
+    ui.textContent = "";
+    var label = document.createElement("span");
+    label.textContent = "Resumed from " + formatResumeTime(t) + " · ";
+    var restart = document.createElement("button");
+    restart.type = "button";
+    restart.textContent = "Restart";
+    restart.addEventListener("click", function () {
+      player.currentTime = 0;
+      try {
+        localStorage.removeItem(resumeKey(id));
+      } catch (_) {}
+      ui.hidden = true;
+      ui.textContent = "";
+    });
+    ui.appendChild(label);
+    ui.appendChild(restart);
+  }
+
   function enhancePlayer() {
     var player = document.getElementById("player");
     if (!player) return;
@@ -31,11 +61,14 @@
       var saved = localStorage.getItem(resumeKey(id));
       if (saved) {
         var t = parseFloat(saved);
-        if (!isNaN(t) && t > 0) {
+        if (!isNaN(t) && t > 2) {
           player.addEventListener(
             "loadedmetadata",
             function () {
-              if (t < (player.duration || Infinity) - 1) player.currentTime = t;
+              if (t < (player.duration || Infinity) - 1) {
+                player.currentTime = t;
+                showResumeUi(player, id, t);
+              }
             },
             { once: true }
           );
@@ -55,6 +88,16 @@
         }
       });
       player.addEventListener("pause", save);
+      player.addEventListener("ended", function () {
+        try {
+          localStorage.removeItem(resumeKey(id));
+        } catch (_) {}
+        var ui = document.getElementById("resume-ui");
+        if (ui) {
+          ui.hidden = true;
+          ui.textContent = "";
+        }
+      });
       window.addEventListener("pagehide", save);
     } catch (_) {}
   }

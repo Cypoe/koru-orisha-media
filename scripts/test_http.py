@@ -59,7 +59,17 @@ def main() -> int:
         st, hdrs, body = http("GET", "/library/movie")
         check(st == 200 and "Library — movie".encode() in body, "kind collection title")
         check("link" in hdrs and "/library/movie" in hdrs["link"] and "self" in hdrs["link"], f"kind Link self: {hdrs.get('link')}")
-        check(b"collection self" in body and b'href="/library"' in body, "kind up/self affordances")
+        check(b"<strong>movies</strong>" in body and b'href="/library/audio"' in body, "kind nav marks movies + audio")
+        check(b'href="/library"' in body and b"class=\"kinds\"" in body, "kind up/all affordances")
+
+        st, _, body = http("GET", "/library/audio")
+        check(st == 200 and b'class="empty"' in body and b"No items in this collection" in body, "empty kind collection state")
+        check(b"<strong>audio</strong>" in body, "audio kind marked active")
+
+        st, _, body = http("GET", "/library?q=zzznomatch")
+        check(st == 200 and b'class="empty"' in body and b"No titles match" in body, "search zero state")
+        check(b"Clear search" in body or b"clear search" in body, "search zero clear link")
+        check(b'value="zzznomatch"' in body, "search form preserves q")
 
         st, _, body = http("GET", f"/item/{demo_id}")
         check(st == 200 and b"/watch/" in body, "item page")
@@ -181,6 +191,13 @@ def main() -> int:
 
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body, "watch resume hooks")
+        check(b'id="resume-ui"' in body and b'id="player"' in body, "watch resume-ui beside player")
+        player_at = body.find(b'id="player"')
+        resume_at = body.find(b'id="resume-ui"')
+        check(player_at != -1 and resume_at != -1 and player_at < resume_at, "player precedes resume-ui")
+
+        st, _, body = http("GET", "/enhance.js")
+        check(b"showResumeUi" in body and b"resume-ui" in body, "enhance resume UI helper")
 
         arrival = next((e for e in manifest["entries"] if e.get("year") == 2016), None)
         if arrival:

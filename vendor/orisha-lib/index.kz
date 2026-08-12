@@ -2123,6 +2123,40 @@ fn formatLibraryQuery(buf: []u8, sort: SortMode, q: ?[]const u8, limit: u32, off
     return std.fmt.bufPrint(buf, "?sort={s}&limit={d}&offset={d}", .{ sort_s, limit, offset }) catch "?";
 }
 
+fn libraryBasePath(buf: []u8, kind_filter: ?[]const u8) []const u8 {
+    if (kind_filter) |k| {
+        return std.fmt.bufPrint(buf, "/library/{s}", .{k}) catch "/library";
+    }
+    return "/library";
+}
+
+fn appendLibraryEmpty(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, total: usize) void {
+    var base_buf: [96]u8 = undefined;
+    const base = libraryBasePath(&base_buf, kind_filter);
+    if (q) |needle| {
+        if (needle.len > 0 and total == 0) {
+            const q_esc = htmlEscaped(allocator, needle);
+            defer if (q_esc.ptr != needle.ptr) allocator.free(q_esc);
+            var msg: [768]u8 = undefined;
+            const line = std.fmt.bufPrint(&msg, "<p class=\"empty\" role=\"status\">No titles match “{s}”. <a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">Clear search</a></p>", .{ q_esc, base, base }) catch {
+                out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No titles match this search.</p>") catch {};
+                return;
+            };
+            out.appendSlice(allocator, line) catch {};
+            return;
+        }
+    }
+    if (total == 0) {
+        if (kind_filter) |_| {
+            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No items in this collection. <a href=\"/library\">Browse all</a></p>") catch {};
+        } else {
+            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">Library is empty.</p>") catch {};
+        }
+        return;
+    }
+    out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No more items on this page.</p>") catch {};
+}
+
 fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: SortMode, q: ?[]const u8, limit: u32, offset: u32) void {
     var tmp: [64]Entry = undefined;
     const items = collectFiltered(kind_filter, q, sort, &tmp);
@@ -2130,24 +2164,28 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
     const end: usize = if (limit == 0) items.len else @min(items.len, start + @as(usize, limit));
     // Single swap root: list + pagination. Never include #player here.
     out.appendSlice(allocator, "<div id=\"library-region\">") catch {};
-    out.appendSlice(allocator, "<ul id=\"library-list\">") catch {};
-    for (items[start..end]) |e| {
-        const title = htmlEscaped(allocator, e.title);
-        defer if (title.ptr != e.title.ptr) allocator.free(title);
-        const id_esc = htmlEscaped(allocator, e.id);
-        defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
-        const kind_esc = htmlEscaped(allocator, e.kind);
-        defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
-        var year_bit: []const u8 = "";
-        var year_buf: [24]u8 = undefined;
-        if (e.year >= 1000) {
-            year_bit = std.fmt.bufPrint(&year_buf, " · {d}", .{e.year}) catch "";
+    if (start >= end) {
+        appendLibraryEmpty(allocator, out, kind_filter, q, items.len);
+    } else {
+        out.appendSlice(allocator, "<ul id=\"library-list\">") catch {};
+        for (items[start..end]) |e| {
+            const title = htmlEscaped(allocator, e.title);
+            defer if (title.ptr != e.title.ptr) allocator.free(title);
+            const id_esc = htmlEscaped(allocator, e.id);
+            defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+            const kind_esc = htmlEscaped(allocator, e.kind);
+            defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
+            var year_bit: []const u8 = "";
+            var year_buf: [24]u8 = undefined;
+            if (e.year >= 1000) {
+                year_bit = std.fmt.bufPrint(&year_buf, " · {d}", .{e.year}) catch "";
+            }
+            var line_buf: [1024]u8 = undefined;
+            const line = std.fmt.bufPrint(&line_buf, "<li><a href=\"/item/{s}\">{s}</a> <span>({s}{s})</span> · <a href=\"/watch/{s}\">watch</a></li>", .{ id_esc, title, kind_esc, year_bit, id_esc }) catch continue;
+            out.appendSlice(allocator, line) catch {};
         }
-        var line_buf: [1024]u8 = undefined;
-        const line = std.fmt.bufPrint(&line_buf, "<li><a href=\"/item/{s}\">{s}</a> <span>({s}{s})</span> · <a href=\"/watch/{s}\">watch</a></li>", .{ id_esc, title, kind_esc, year_bit, id_esc }) catch continue;
-        out.appendSlice(allocator, line) catch {};
+        out.appendSlice(allocator, "</ul>") catch {};
     }
-    out.appendSlice(allocator, "</ul>") catch {};
     if (limit > 0 and items.len > end) {
         var qb: [192]u8 = undefined;
         const qs = formatLibraryQuery(&qb, sort, q, limit, @as(u32, @intCast(end)));
@@ -2170,26 +2208,52 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
 // SPLIT→ html-views.kz — library / item / watch HTML + fragments + Link helpers
 // ============================================================================
 
-fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8) void {
+fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8) void {
     // HTMX dialect: hx-get + hx-target + hx-swap. Lowercase attrs are opaque HTML —
     // the same passthrough rule koru/dom inherits from vaxis markup.
     // Targets #library-region (list+pagination), never a region that owns #player.
+    const q_val: []const u8 = if (q) |qv| qv else "";
+    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
+    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
+
     out.appendSlice(allocator, "<nav class=\"affordances\"><p>") catch {};
     if (kind_filter) |k| {
         var buf: [1280]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "<a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library/{s}?sort=id\" hx-get=\"/library/{s}?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library/{s}?q=demo\" hx-get=\"/library/{s}?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library/{s}?limit=2\" hx-get=\"/library/{s}?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library/{s}\">fragment</a>", .{ k, k, k, k, k, k, k, k, k }) catch "";
         out.appendSlice(allocator, s) catch {};
-        var form: [448]u8 = undefined;
-        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>", .{ k, k }) catch "";
+        var form: [640]u8 = undefined;
+        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{ k, k, q_esc }) catch "";
         out.appendSlice(allocator, f) catch {};
-        var up: [256]u8 = undefined;
-        const u = std.fmt.bufPrint(&up, "<a href=\"/library\">all</a> · <a href=\"/library/{s}\">collection self</a> · ", .{k}) catch "";
-        out.appendSlice(allocator, u) catch {};
+        if (q_val.len > 0) {
+            var clear: [256]u8 = undefined;
+            const clear_link = std.fmt.bufPrint(&clear, "<a href=\"/library/{s}\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ", .{ k, k }) catch "";
+            out.appendSlice(allocator, clear_link) catch {};
+        }
     } else {
         out.appendSlice(allocator, "<a href=\"/library?sort=title\" hx-get=\"/library?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library?sort=id\" hx-get=\"/library?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library?q=demo\" hx-get=\"/library?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library?limit=2\" hx-get=\"/library?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library\">fragment</a>") catch {};
-        out.appendSlice(allocator, "</p><form method=\"get\" action=\"/library\" class=\"search\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\"/></label> <button type=\"submit\">Go</button></form><p>") catch {};
+        var form: [512]u8 = undefined;
+        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library\" class=\"search\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{q_esc}) catch "";
+        out.appendSlice(allocator, f) catch {};
+        if (q_val.len > 0) {
+            out.appendSlice(allocator, "<a href=\"/library\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ") catch {};
+        }
     }
-    out.appendSlice(allocator, "<a href=\"/library/movie\">movies</a> · <a href=\"/\">home</a></p></nav>") catch {};
+    // Kind collection nav: mark the active projection; keep audio discoverable.
+    const on_movie = if (kind_filter) |k| std.mem.eql(u8, k, "movie") else false;
+    const on_audio = if (kind_filter) |k| std.mem.eql(u8, k, "audio") else false;
+    if (kind_filter == null) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><strong>all</strong> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (on_movie) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <strong>movies</strong> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (on_audio) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <strong>audio</strong></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (kind_filter) |k| {
+        const k_esc = htmlEscaped(allocator, k);
+        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
+        var kinds: [384]u8 = undefined;
+        const line = std.fmt.bufPrint(&kinds, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a> · <strong>{s}</strong></span> · <a href=\"/\">home</a></p></nav>", .{k_esc}) catch "<a href=\"/\">home</a></p></nav>";
+        out.appendSlice(allocator, line) catch {};
+    }
 }
 
 fn scriptEnhance() []const u8 {
@@ -2232,7 +2296,7 @@ fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: Sor
         html.appendSlice(allocator, k_esc) catch {};
     }
     html.appendSlice(allocator, "</h1>") catch {};
-    libraryAffordances(allocator, &html, kind_filter);
+    libraryAffordances(allocator, &html, kind_filter, q);
     appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset);
     html.appendSlice(allocator, "</body></html>") catch {};
     const body = html.toOwnedSlice(allocator) catch "library error";
@@ -2408,6 +2472,8 @@ fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         var player_buf: [384]u8 = undefined;
         const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";
         html.appendSlice(allocator, player) catch {};
+        // Filled by enhance.js when a saved resume position exists; never replaces #player.
+        html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
         var nav_buf: [384]u8 = undefined;
         const nav = std.fmt.bufPrint(&nav_buf, "<p><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, kind_esc, kind_esc }) catch "";
         html.appendSlice(allocator, nav) catch {};
