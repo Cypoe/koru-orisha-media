@@ -50,9 +50,16 @@ def main() -> int:
         check(st == 200, f"GET /library -> {st}")
         check(f"/item/{demo_id}".encode() in body, "library links to item")
         check(b"sort title" in body and b"fragment" in body, "sort/filter/fragment affordances")
-        check(b'hx-get=' in body and b'hx-target="#library-list"' in body, "library hx-* attrs")
+        check(b'hx-get=' in body and b'hx-target="#library-region"' in body, "library hx-* attrs")
+        check(b'id="library-region"' in body and b'id="library-list"' in body, "library-region wraps list")
+        check(f"/watch/{demo_id}".encode() in body, "library row watch affordance")
         check(b"<form" in body and b'name="q"' in body, "library search form")
         check("link" in hdrs and "self" in hdrs["link"], f"Link header on library: {hdrs.get('link')}")
+
+        st, hdrs, body = http("GET", "/library/movie")
+        check(st == 200 and "Library — movie".encode() in body, "kind collection title")
+        check("link" in hdrs and "/library/movie" in hdrs["link"] and "self" in hdrs["link"], f"kind Link self: {hdrs.get('link')}")
+        check(b"collection self" in body and b'href="/library"' in body, "kind up/self affordances")
 
         st, _, body = http("GET", f"/item/{demo_id}")
         check(st == 200 and b"/watch/" in body, "item page")
@@ -66,17 +73,23 @@ def main() -> int:
 
         st, _, body = http("GET", "/library?limit=2")
         check(st == 200 and b"pagination" in body and b"next" in body, "pagination next link")
+        check(b"sort=title" in body and b"offset=2" in body, "pagination preserves sort")
+
+        st, _, body = http("GET", "/library?sort=id&q=demo&limit=2")
+        check(st == 200, "paginated filtered library")
+        if b"pagination" in body:
+            check(b"sort=id" in body and b"q=demo" in body, "pagination preserves sort+q")
 
         st, _, prefer_body = http("GET", "/library?q=demo", headers={"Prefer": "return=minimal"})
-        check(st == 200 and b'id="library-list"' in prefer_body, "Prefer return=minimal fragment")
+        check(st == 200 and b'id="library-region"' in prefer_body, "Prefer return=minimal fragment")
         check(b"<h1>Library</h1>" not in prefer_body, "Prefer fragment is not full page")
 
         st, _, hx_body = http("GET", "/library?q=demo", headers={"HX-Request": "true"})
-        check(st == 200 and b'id="library-list"' in hx_body, "HX-Request fragment")
+        check(st == 200 and b'id="library-region"' in hx_body, "HX-Request fragment")
         check(b"<h1>Library</h1>" not in hx_body, "HX-Request fragment is not full page")
 
         st, _, frag = http("GET", "/fragments/library")
-        check(st == 200 and b'id="library-list"' in frag, "library fragment")
+        check(st == 200 and b'id="library-region"' in frag and b'id="library-list"' in frag, "library fragment")
         check(b'id="player"' not in frag, "fragment has no player")
 
         st, hdrs, body = http("GET", f"/media/{demo_id}?download=1")
@@ -86,6 +99,11 @@ def main() -> int:
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(st == 200 and b'id="player"' in body, "watch page has player")
         check(b'class="capability"' not in body, "mp4 watch has no capability warning")
+        check(b'id="library-region"' in body and b"More in collection" in body, "watch related shelf")
+        check(b'hx-target="#library-region"' in body, "watch shelf hx target")
+        player_at = body.find(b'id="player"')
+        region_at = body.find(b'id="library-region"')
+        check(player_at != -1 and region_at != -1 and player_at < region_at, "player precedes library-region")
 
         st, hdrs, body = http("GET", f"/media/{demo_id}")
         check(st == 200 and body == b"hello world\n", "GET media body")
@@ -142,6 +160,8 @@ def main() -> int:
 
         st, hdrs, body = http("GET", "/enhance.js")
         check(st == 200 and b"localStorage" in body, "enhance.js served")
+        check(b"isSafeSwapTarget" in body and b"playerIdentityOk" in body, "enhance player identity guards")
+        check(b"#library-region" in body and b"performance.mark" in body, "enhance region + measure marks")
         check(b"application/javascript" in hdrs.get("content-type", "").encode() or "javascript" in hdrs.get("content-type", ""), "enhance content-type")
 
         st, _, body = http("GET", "/koru-dom-enhance.js")
@@ -155,6 +175,13 @@ def main() -> int:
 
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body, "watch resume hooks")
+
+        arrival = next((e for e in manifest["entries"] if e.get("year") == 2016), None)
+        if arrival:
+            st, _, body = http("GET", "/library")
+            check(" · 2016".encode() in body, "library row shows year")
+        else:
+            check(False, "year fixture for library row")
 
     elif mode == "security":
         st, _, body = http("GET", "/library")

@@ -36,7 +36,7 @@
 ## Phase 4: browser enhancement
 
 - Keep complete-page navigation as the baseline.
-- Shipped: [`public/enhance.js`](public/enhance.js) — HTMX-dialect host (`hx-get` / `hx-target` / `HX-Request`) + localStorage resume; player stays outside replaceable regions.
+- Shipped: [`public/enhance.js`](public/enhance.js) — HTMX-dialect host (`hx-get` / `hx-target` / `HX-Request`) + localStorage resume; swaps `#library-region` only; refuses targets that own `#player`; watch related shelf keeps player outside replaceable regions.
 - Optional koru/dom keyed list: `browser/main.k` + `scripts/build-browser.sh` → `public/koru-dom-enhance.js` + `/enhance-demo.html`.
 - See [docs/upstream-candidates.md](docs/upstream-candidates.md) for the vaxis → dom → HTMX story.
 
@@ -64,9 +64,9 @@
 
 Not more docs. Ranked concrete features:
 
-1. **Richer library UX still missing from GOAL resource model** — e.g. `/library/{kind}` as first-class collection URLs if not already solid, playlist/queue affordances, or subtitle resource only if a real fixture needs it.
+1. **Richer library UX** — first slice landed: `/library/{kind}` self/up Links + title, row watch/year affordances, pagination preserves `sort`/`q`, `#library-region` swap root. Still open: playlist/queue only if useful; subtitle resource only with a real fixture.
 2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Still open: richer codec/stream probes, Orisha views that *use* nested `video`/`audio`, and auto-moving sidecars on rename.
-3. **Browser Step 9 hardening** — keep player identity under HTMX swaps in more flows; measure before more koru/dom surface.
+3. **Browser Step 9 hardening** — first slice landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch. Still open: measured koru/dom only if marks justify it.
 
 Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
 
