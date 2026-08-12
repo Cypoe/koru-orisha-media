@@ -117,6 +117,71 @@ class IndexerTests(unittest.TestCase):
             finally:
                 mod.opaque_id = orig
 
+    def test_id_sidecar_survives_rename(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("index_media", INDEXER)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            clips.mkdir(parents=True)
+            media = clips / "show.mp4"
+            media.write_bytes(b"vid-bytes")
+            before = mod.index_root(root, write_id_sidecars=True)
+            self.assertEqual(len(before), 1)
+            eid = before[0]["id"]
+            self.assertTrue((clips / "show.mp4.id").is_file())
+            renamed = clips / "renamed.mp4"
+            media.rename(renamed)
+            (clips / "show.mp4.id").rename(clips / "renamed.mp4.id")
+            after = mod.index_root(root)
+            self.assertEqual(after[0]["path"], "clips/renamed.mp4")
+            self.assertEqual(after[0]["id"], eid)
+
+    def test_injectable_probe_merges_fields(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("index_media", INDEXER)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.mp4").write_bytes(b"x")
+
+            def probe(_p: Path) -> dict:
+                return {"video": [{"codec": "probe-test", "width": 1280, "height": 720}]}
+
+            entries = mod.index_root(root, probe=probe)
+            self.assertEqual(entries[0]["video"][0]["codec"], "probe-test")
+
+    def test_ftyp_probe_reads_brand(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("index_media", INDEXER)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+
+        # Minimal ISO BMFF: size(16) + 'ftyp' + major('isom') + minor(0)
+        ftyp = (
+            b"\x00\x00\x00\x10"
+            + b"ftyp"
+            + b"isom"
+            + b"\x00\x00\x00\x00"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "clip.mp4").write_bytes(ftyp + b"\x00" * 8)
+            entries = mod.index_root(root, probe=mod.probe_ftyp)
+            self.assertEqual(entries[0]["video"][0]["brand"], "isom")
+            self.assertEqual(entries[0]["video"][0]["codec"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

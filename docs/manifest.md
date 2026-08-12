@@ -43,11 +43,13 @@ The indexer writes a new generation beside the active manifest, validates it, fl
 
 Filename and filesystem facts are cheap and form the initial index. Container and stream probing is optional and belongs to indexing time. Artwork extraction and thumbnail generation are also offline operations.
 
+The request process never probes. The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg; richer codec probes can plug in the same hook later. Nested `video` / `audio` fields are stored in the published manifest; the current Orisha loader ignores them until a view needs them.
+
 The manifest may record whether a file is likely to play natively in a target browser, but this is advisory. The server must not silently transcode when the advisory value is false.
 
 ## Identity policy
 
-The initial ID may be derived from normalized relative path, size, and modification time. A later indexer can persist IDs in sidecars or a metadata file so renames retain identity. IDs must be opaque at the HTTP boundary and must not expose filesystem layout.
+The initial ID may be derived from normalized relative path, size, and modification time. The indexer can persist IDs in sidecars (`<path>.id` JSON `{"id":"m_…"}`) via `--write-id-sidecars` so renames retain identity when the sidecar moves with the file. IDs must be opaque at the HTTP boundary and must not expose filesystem layout.
 
 ## Invariants
 

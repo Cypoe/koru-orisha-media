@@ -18,7 +18,8 @@
 
 - Walk configured roots in a separate executable or command.
 - Record path, size, mtime, MIME, container; optional sidecar poster (`*.jpg` / `poster.jpg`).
-- Stream/codec probe still deferred (no FFmpeg).
+- Injectable offline probe hook (`--probe ftyp` / `index_root(..., probe=)`); no FFmpeg-in-request. Full stream/codec probe still optional/pluggable.
+- Persistent sidecar IDs (`*.id`) across renames when `--write-id-sidecars` is used.
 - Publish manifests atomically.
 - Hot reload when manifest mtime changes and no media streams are active.
 
@@ -64,10 +65,10 @@
 Not more docs. Ranked concrete features:
 
 1. **Richer library UX still missing from GOAL resource model** — e.g. `/library/{kind}` as first-class collection URLs if not already solid, playlist/queue affordances, or subtitle resource only if a real fixture needs it.
-2. **Indexer depth** — optional container/codec probe behind an injectable offline step (still no FFmpeg-in-request); persistent sidecar IDs across renames.
+2. **Indexer depth** — first slice landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars`. Still open: richer codec/stream probes, Orisha views that *use* nested `video`/`audio`, and auto-moving sidecars on rename.
 3. **Browser Step 9 hardening** — keep player identity under HTMX swaps in more flows; measure before more koru/dom surface.
 
-Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (still broken under koruc + missing STREAM/Request), sendfile/mmap, or another extraction-only doc pass.
+Do **not** next: vendoring yyjson into Docker, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
 
 ## Explicitly deferred
 
