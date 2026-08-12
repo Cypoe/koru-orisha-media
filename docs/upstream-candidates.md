@@ -53,14 +53,14 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 
 | Piece | Where today | Why extractable | Blockers |
 |-------|-------------|-----------------|----------|
-| `orisha:run-accept-loop` | `vendor/orisha-lib` | Working Zig serve path; avoids koruc multi-`run|*` pump double-emit (still reproduces post-2026-08-12 pull) | Keep until Request/STREAM also exist on pump `answer`/`reply`; then optionally migrate |
+| `orisha:run-accept-loop` | `vendor/orisha-lib` | Working Zig serve path with STREAM/Request | Keep until Request/STREAM also exist on pump `answer`/`reply`; then optionally migrate |
 | Request extras: `range`, `query`, `prefer`, `hx_request`, `if_none_match` | `parseHttpRequest` in `index.kz` | Generic HTTP, not media-specific | In-repo: accept/answer unified. Upstream: land the helper + fields |
 | Raw `HTTP/1.` body passthrough in `send` | `send|zig` | Needed for pre-rendered responses and STREAM framing | Keep API: body starting with `HTTP/1.` is a complete head |
 | `STREAM:v1` chunked file send | `send|zig` + media handler | Bounded streaming without full-file buffer; reusable for any large static asset | Stabilize framing; optional future `sendfile` backend behind same shape |
 | Idle exit + active-stream lease | accept poll + `active_streams` | Matches Orisha “tiny process / exit when quiet” story | Supervisor story (systemd socket activation) still separate |
 | Fragment opt-in (`Prefer` / `HX-Request`) | handler | Protocol opt-in, not HTML-specific | Keep `/fragments/...` as explicit alternate URL |
 
-**Post-pull note (Orisha `main`, koru `5c64de27`, koruc via `koru-build`):** upstream still documents and develops `orisha:serve` + pump; this media app must not switch yet — pump emit still fails Zig with duplicate members, and STREAM/Request live on the accept-loop path.
+**Post-rebuild probe (Orisha `main`, koru `5c64de27`, fresh `koruc` via `bash /mnt/w/tools/build-koruc.sh` → `$HOME/src/koru-build/zig-out/bin/koruc`):** minimal upstream `orisha:serve` **compiles and links** under Zig 0.15.1 (zlib headers required for static gzip paths). Prior `duplicate struct member` no longer reproduces. Migration is still a **port**, not a drop-in: STREAM/Request remain on accept-loop/`send`.
 
 **Contribution shape:** prefer patches to `W:\src\orisha` once `run-accept-loop` + Request parse + STREAM send are reviewable without the media HTML handler. Media HTML stays out of Orisha.
 

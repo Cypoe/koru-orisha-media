@@ -14,11 +14,11 @@ Upstream Orisha (`W:\src\orisha\lib`, `main` as of 2026-08-12 pull) still ships:
 
 Upstream **has not removed pump**; recent Orisha work is pump/bench performance (`perf(pump):…`). Canonical examples still call `orisha:serve`.
 
-**This vendor deliberately omits `pump.k` / `pump.kz`.** With the koruc this project builds against (`$HOME/src/koru-build`, Zig 0.15.1), importing upstream `orisha` (which pulls `orisha/pump`) still **double-emits** multi-`~proc run|*` bodies into one Zig struct → `duplicate struct member` errors (`openListener`, `MAX_WORKERS`, `fill_event`, …). Frontend emit succeeds; Zig backend fails. Until koruc emits only the selected pump variant’s body (or isolates shared helpers once), apps here use `orisha:run-accept-loop` (`listen` → recursive `accept` → `handler` → `send`) — see `main.k`.
+**This vendor still omits `pump.k` / `pump.kz` for product reasons, not because koruc cannot emit them.** Re-probe after rebuilding koruc (`bash /mnt/w/tools/build-koruc.sh` → `$HOME/src/koru-build/zig-out/bin/koruc` 0.1.7 from `W:\src\koru` `5c64de27`, Zig 0.15.1): a minimal upstream `orisha:serve` app **links successfully** — the old multi-`run|*` `duplicate struct member` failure no longer reproduces. Apps here continue to use `orisha:run-accept-loop` (`listen` → recursive `accept` → `handler` → `send`) — see `main.k`.
 
-### Should this app migrate to pump/serve if koruc is fixed?
+### Should this app migrate to pump/serve now that koruc links?
 
-**Not as the next step.** Even after a koruc pump-emit fix, keep `run-accept-loop` until these land upstream (or are ported onto `answer`/`reply`):
+**Not as the next step.** Keep `run-accept-loop` until these land upstream (or are ported onto `answer`/`reply`):
 
 - `Request` extras + `parseHttpRequest` (`range` / `query` / `prefer` / `hx_request`)
 - `STREAM:v1` + raw `HTTP/1.` in `send` (pump path uses `reply(head,body)`, not `send`)

@@ -176,7 +176,7 @@ Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/o
 | `Last-Modified` | From manifest `modified_ns` when present |
 | Path traversal | Reject `..` / absolute; require path under `KORU_MEDIA_ROOT` |
 | Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST` env (defaults: `fixtures/media`, `data/manifest.json`) |
-| Upstream `orisha:serve` / pump | Still upstream-canonical; **omit in vendor** — koruc multi-`run|*` emit still produces Zig `duplicate struct member` (re-probed 2026-08-12). Use `orisha:run-accept-loop`. Do not migrate for STREAM alone. |
+| Upstream `orisha:serve` / pump | Upstream-canonical. **Re-probed after rebuild** (`koruc` 0.1.7 from `W:\src\koru` `5c64de27` via `$HOME/src/koru-build`, Zig 0.15.1): minimal `orisha:serve` **links successfully** — prior `duplicate struct member` no longer reproduces. Still **do not migrate** this app yet: `Request` extras + `STREAM:v1` live on the accept-loop/`send` path, not pump `answer`/`reply`. Keep `orisha:run-accept-loop` until that port exists. |
 
 Prefer contributing Range/streaming upstream; keep vendor diffs documented in [vendor/README.md](../vendor/README.md).
 
