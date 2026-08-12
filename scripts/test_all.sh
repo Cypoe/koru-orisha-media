@@ -9,6 +9,10 @@ echo "== unit: indexer =="
 python3 scripts/test_indexer.py -v
 echo "== unit: range =="
 python3 scripts/test_range.py -v
+echo "== unit: semantic =="
+python3 scripts/test_semantic.py -v
+echo "== unit: enrich_tvdb =="
+python3 scripts/test_enrich_tvdb.py -v
 echo "== unit: manifest parse =="
 python3 scripts/test_manifest_parse.py -v
 

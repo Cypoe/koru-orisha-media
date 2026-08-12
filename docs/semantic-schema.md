@@ -295,15 +295,28 @@ Provider adapters must document:
 - whether data may be persisted locally;
 - whether data may be redistributed.
 
-Do not bundle provider credentials in the repository. Do not make indexing fail merely because an optional provider is unavailable. A provider failure should produce an enrichment diagnostic and leave the physical library usable.
+Do not bundle provider credentials in the repository. Use a gitignored `.env` (see [`.env.example`](../.env.example)) or the process environment (`TVDB_API_KEY`). Do not make indexing fail merely because an optional provider is unavailable. A provider failure should produce an enrichment diagnostic and leave the physical library usable.
+
+### TVDB adapter (offline)
+
+```bash
+# CI / no key — recorded payload:
+python3 scripts/enrich_tvdb.py --in fixtures/semantic.json --out /tmp/semantic.json \
+  --fixture fixtures/tvdb/series_121361.json
+
+# Live (key never committed):
+export TVDB_API_KEY=...   # or load from .env
+python3 scripts/enrich_tvdb.py --live --in data/semantic.json --out data/semantic.json \
+  --entity series.fixture-demo --series-id 121361
+```
 
 ## Implementation stages
 
-1. Define local `Asset`, `Entity`, `ProviderIdentity`, and `Assertion` types with no network access.
-2. Add Schema.org/JSON-LD projection for one movie and one music recording.
-3. Add deterministic fixture-based identity resolution.
-4. Add provider identity storage without provider API calls.
-5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest.
+1. Define local `Asset`, `Entity`, `ProviderIdentity`, and `Assertion` types with no network access. **Done** — [`scripts/semantic_schema.py`](../scripts/semantic_schema.py) + [`fixtures/semantic.json`](../fixtures/semantic.json).
+2. Add Schema.org/JSON-LD projection for one movie and one music recording. **Done** — `project_jsonld` (Arrival + beep).
+3. Add deterministic fixture-based identity resolution. **Done** — `resolve_asset`.
+4. Add provider identity storage without provider API calls. **Done** — hand-linked IMDb/TVDB on fixtures.
+5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Started** — [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) (fixture path in CI; `--live` needs `TVDB_API_KEY` from env / `.env`, never the repo).
 6. Add provenance-aware conflict resolution.
 7. Precompute collection projections for Orisha requests.
 8. Expose provider links and capability affordances only when data and permission exist.

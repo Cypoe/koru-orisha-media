@@ -10,6 +10,11 @@ scripts/.pw/
 # Local compose library mount (see compose.yaml)
 media/
 
+# Secrets (provider keys — never commit)
+.env
+.env.*
+!.env.example
+
 # Editor / OS
 .DS_Store
 Thumbs.db

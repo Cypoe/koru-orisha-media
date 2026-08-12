@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Offline TVDB enrichment for the semantic snapshot (stage 5).
+
+Reads TVDB_API_KEY from the environment. Never called from Orisha handlers.
+
+Usage:
+  # Apply recorded fixture response (no network) — default for CI:
+  python3 scripts/enrich_tvdb.py --fixture fixtures/tvdb/series_121361.json \\
+      --in fixtures/semantic.json --out /tmp/semantic.out.json
+
+  # Live enrich (requires TVDB_API_KEY):
+  TVDB_API_KEY=... python3 scripts/enrich_tvdb.py --live --series-id 121361 \\
+      --entity series.fixture-demo --in data/semantic.json --out data/semantic.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from semantic_schema import (  # noqa: E402
+    Assertion,
+    ProviderIdentity,
+    SemanticSnapshot,
+)
+
+TVDB_API = "https://api4.thetvdb.com/v4"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def login(api_key: str) -> str:
+    req = urllib.request.Request(
+        f"{TVDB_API}/login",
+        data=json.dumps({"apikey": api_key}).encode(),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+    token = payload.get("data", {}).get("token")
+    if not token:
+        raise RuntimeError("TVDB login did not return a token")
+    return token
+
+
+def fetch_series(token: str, series_id: str) -> dict:
+    req = urllib.request.Request(
+        f"{TVDB_API}/series/{series_id}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+
+def apply_series_payload(
+    snap: SemanticSnapshot,
+    *,
+    entity_id: str,
+    series_id: str,
+    payload: dict,
+) -> SemanticSnapshot:
+    data = payload.get("data") or payload
+    name = data.get("name") or data.get("Name")
+    year = None
+    yraw = data.get("year") or data.get("firstAired") or data.get("first_air_time")
+    if isinstance(yraw, str) and len(yraw) >= 4 and yraw[:4].isdigit():
+        year = int(yraw[:4])
+    elif isinstance(yraw, int):
+        year = yraw
+
+    ent = next((e for e in snap.entities if e.id == entity_id), None)
+    if ent is None:
+        raise SystemExit(f"entity not found: {entity_id}")
+
+    # Refresh / insert TVDB provider identity
+    others = [p for p in ent.provider_ids if not (p.provider == "tvdb" and p.namespace == "series")]
+    slug = data.get("slug")
+    url = f"https://thetvdb.com/series/{slug}" if slug else f"https://thetvdb.com/?tab=series&id={series_id}"
+    others.append(
+        ProviderIdentity(
+            provider="tvdb",
+            namespace="series",
+            value=str(series_id),
+            url=url,
+            retrieved_at=_now(),
+            confidence=0.95,
+            source="provider",
+        )
+    )
+    ent.provider_ids = others
+
+    if name:
+        ent.title = name
+        ent.assertions = [
+            a for a in ent.assertions if not (a.property == "name" and a.source.get("provider") == "tvdb")
+        ]
+        ent.assertions.append(
+            Assertion(
+                entity=entity_id,
+                property="name",
+                value=name,
+                source={
+                    "kind": "provider",
+                    "provider": "tvdb",
+                    "namespace": "series",
+                    "value": str(series_id),
+                },
+                retrieved_at=_now(),
+                confidence=0.95,
+                status="accepted",
+            )
+        )
+    if year:
+        ent.year = year
+    return snap
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--in", dest="infile", type=Path, required=True)
+    ap.add_argument("--out", dest="outfile", type=Path, required=True)
+    ap.add_argument("--entity", default="series.fixture-demo")
+    ap.add_argument("--series-id", default="121361")
+    ap.add_argument("--fixture", type=Path, help="Recorded TVDB JSON (no network)")
+    ap.add_argument("--live", action="store_true", help="Call TVDB API (needs TVDB_API_KEY)")
+    args = ap.parse_args()
+
+    snap = SemanticSnapshot.from_dict(json.loads(args.infile.read_text(encoding="utf-8")))
+
+    if args.live:
+        key = os.environ.get("TVDB_API_KEY", "").strip()
+        if not key:
+            print("TVDB_API_KEY is required for --live", file=sys.stderr)
+            return 2
+        try:
+            token = login(key)
+            payload = fetch_series(token, args.series_id)
+        except urllib.error.HTTPError as e:
+            print(f"TVDB HTTP error: {e}", file=sys.stderr)
+            return 1
+    else:
+        fix = args.fixture or (ROOT / "fixtures" / "tvdb" / "series_121361.json")
+        if not fix.is_file():
+            print(f"fixture missing: {fix}", file=sys.stderr)
+            return 2
+        payload = json.loads(fix.read_text(encoding="utf-8"))
+
+    snap = apply_series_payload(
+        snap, entity_id=args.entity, series_id=args.series_id, payload=payload
+    )
+    args.outfile.parent.mkdir(parents=True, exist_ok=True)
+    args.outfile.write_text(json.dumps(snap.to_dict(), indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {args.outfile}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

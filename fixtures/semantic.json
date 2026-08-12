@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "id": "m_6d5d84",
+      "path": "clips/Arrival (2016).mp4",
+      "kind": "movie",
+      "role": "main",
+      "entity_ids": ["work.movie.arrival-2016"]
+    },
+    {
+      "id": "m_31afda",
+      "path": "clips/beep.wav",
+      "kind": "audio",
+      "role": "main",
+      "entity_ids": ["music.recording.beep"]
+    },
+    {
+      "id": "m_ca931e",
+      "path": "clips/demo.mp4",
+      "kind": "movie",
+      "role": "main",
+      "entity_ids": []
+    }
+  ],
+  "entities": [
+    {
+      "id": "work.movie.arrival-2016",
+      "type": "Movie",
+      "title": "Arrival",
+      "year": 2016,
+      "description": "Fixture movie with hand-linked provider identities (no live API).",
+      "asset_ids": ["m_6d5d84"],
+      "provider_ids": [
+        {
+          "provider": "imdb",
+          "namespace": "title",
+          "value": "tt2543164",
+          "url": "https://www.imdb.com/title/tt2543164/",
+          "source": "user",
+          "confidence": 1.0
+        },
+        {
+          "provider": "tvdb",
+          "namespace": "movie",
+          "value": "0",
+          "url": null,
+          "source": "user",
+          "confidence": 0.0,
+          "retrieved_at": null
+        }
+      ],
+      "assertions": [
+        {
+          "entity": "work.movie.arrival-2016",
+          "property": "name",
+          "value": "Arrival",
+          "source": {
+            "kind": "user",
+            "provider": "fixture",
+            "namespace": "title",
+            "value": "Arrival"
+          },
+          "status": "accepted",
+          "confidence": 1.0
+        }
+      ]
+    },
+    {
+      "id": "music.recording.beep",
+      "type": "MusicRecording",
+      "title": "beep",
+      "year": null,
+      "asset_ids": ["m_31afda"],
+      "provider_ids": [],
+      "assertions": []
+    },
+    {
+      "id": "series.fixture-demo",
+      "type": "TVSeries",
+      "title": "Fixture Demo Series",
+      "year": 2020,
+      "asset_ids": [],
+      "provider_ids": [
+        {
+          "provider": "tvdb",
+          "namespace": "series",
+          "value": "121361",
+          "url": "https://thetvdb.com/series/game-of-thrones",
+          "source": "user",
+          "confidence": 0.5
+        }
+      ],
+      "assertions": []
+    }
+  ]
+}

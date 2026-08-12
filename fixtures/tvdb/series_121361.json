@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "data": {
+    "id": 121361,
+    "name": "Game of Thrones",
+    "slug": "game-of-thrones",
+    "year": "2011",
+    "overview": "Recorded TVDB series payload for offline enrichment tests."
+  }
+}
