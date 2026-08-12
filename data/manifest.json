@@ -1,0 +1,45 @@
+{
+  "entries": [
+    {
+      "bytes": 12,
+      "container": "mp4",
+      "id": "m_ca931e",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786508368790095000,
+      "path": "clips/demo.mp4",
+      "poster": "clips/demo.jpg",
+      "title": "demo"
+    },
+    {
+      "bytes": 0,
+      "container": "mp4",
+      "id": "m_47e0b2",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786505274825093800,
+      "path": "clips/empty.mp4",
+      "title": "empty"
+    },
+    {
+      "bytes": 3,
+      "container": "mkv",
+      "id": "m_371e5f",
+      "kind": "movie",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786541732922929200,
+      "path": "clips/odd.mkv",
+      "title": "odd"
+    },
+    {
+      "bytes": 1,
+      "container": "mp4",
+      "id": "m_efc746",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786505274827093600,
+      "path": "clips/onebyte.mp4",
+      "title": "onebyte"
+    }
+  ]
+}

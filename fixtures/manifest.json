@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "bytes": 12,
+      "id": "m_994718",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786499369765093600,
+      "path": "clips/demo.mp4",
+      "title": "demo"
+    },
+    {
+      "bytes": 0,
+      "id": "m_47e0b2",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786505274825093800,
+      "path": "clips/empty.mp4",
+      "title": "empty"
+    },
+    {
+      "bytes": 1,
+      "id": "m_efc746",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786505274827093600,
+      "path": "clips/onebyte.mp4",
+      "title": "onebyte"
+    }
+  ]
+}
