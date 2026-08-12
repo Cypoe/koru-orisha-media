@@ -17,23 +17,34 @@
 ## Phase 2: indexer
 
 - Walk configured roots in a separate executable or command.
-- Record path, size, mtime, MIME, container, streams, and optional artwork references.
+- Record path, size, mtime, MIME, container; optional sidecar poster (`*.jpg` / `poster.jpg`).
+- Stream/codec probe still deferred (no FFmpeg).
 - Publish manifests atomically.
-- Reload snapshots without invalidating in-flight requests.
+- Hot reload when manifest mtime changes and no media streams are active.
 
 ## Phase 3: hypermedia interaction
 
-- Add sort, filter, search, and pagination links.
+- Add sort, filter, search, and pagination links (`limit` / `offset`).
 - Add fragment representations for enhanced navigation.
+- Opt-in `Prefer: return=minimal` on `/library` returns a fragment.
 - Add forms for any future mutating operations.
 - Add `Link` headers and a minimal `OPTIONS` implementation.
+- `/art/{id}` serves precomputed poster sidecars when present.
+- Honest watch capability note for awkward containers; `?download=1` sets `Content-Disposition: attachment`.
 
 ## Phase 4: browser enhancement
 
 - Keep complete-page navigation as the baseline.
-- Add Koru-generated keyed updates where profiling demonstrates value.
-- Keep the player element outside replaceable regions.
-- Persist resume position locally before considering server-side state.
+- Shipped: `public/enhance.js` (resume + fragment swap); player stays outside replaceable regions.
+- Optional koru/dom keyed list: `browser/main.k` + `scripts/build-browser.sh` → `public/koru-dom-enhance.js` + `/enhance-demo.html`.
+- Persist resume position locally (localStorage) before considering server-side state.
+
+## Phase 5: lifecycle
+
+- `scripts/bench_baseline.sh` for cold/steady latency + RSS
+- `KORU_IDLE_SECS` idle exit when no media streams are active
+- Hot manifest reload (mtime, quiet streams) — see [docs/lifecycle.md](docs/lifecycle.md)
+- sendfile/mmap / socket activation still deferred
 
 ## Explicitly deferred
 
