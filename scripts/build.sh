@@ -25,7 +25,7 @@ Cflags: -I\${includedir}
 EOF
 export PKG_CONFIG_PATH="${HOME}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
-REPO_WIN="/mnt/c/Users/fabi0/repos/koru-orisha-media"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${HOME}/src/koru-orisha-media-build"
 KORUC="${HOME}/src/koru-build/zig-out/bin/koruc"
 
@@ -36,7 +36,7 @@ rsync -a --delete \
   --exclude 'a.out' \
   --exclude 'output_emitted.zig' \
   --exclude 'generated' \
-  "$REPO_WIN/" "$BUILD/"
+  "$ROOT/" "$BUILD/"
 
 cat > "$BUILD/koru.json" <<EOF
 {
@@ -53,7 +53,7 @@ EOF
 
 cd "$BUILD"
 "$KORUC" main.k
-mkdir -p "$REPO_WIN/bin"
-cp -f a.out "$REPO_WIN/a.out"
-cp -f a.out "$REPO_WIN/bin/media-server"
+mkdir -p "$ROOT/bin"
+cp -f a.out "$ROOT/a.out"
+cp -f a.out "$ROOT/bin/media-server"
 echo "built $(pwd)/a.out"

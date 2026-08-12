@@ -2,8 +2,8 @@
 # Unit + HTTP integration suite for koru-orisha-media.
 set -euo pipefail
 
-REPO_MNT=/mnt/c/Users/fabi0/repos/koru-orisha-media
-cd "$REPO_MNT"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 echo "== unit: indexer =="
 python3 scripts/test_indexer.py -v
@@ -28,10 +28,10 @@ cleanup
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=fixtures/media \
   -e KORU_MANIFEST=data/manifest.json \
-  -v "$REPO_MNT/bin/media-server:/app/media-server:ro" \
-  -v "$REPO_MNT/data:/app/data:ro" \
-  -v "$REPO_MNT/fixtures:/app/fixtures:ro" \
-  -v "$REPO_MNT/public:/app/public:ro" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/data:/app/data:ro" \
+  -v "$ROOT/fixtures:/app/fixtures:ro" \
+  -v "$ROOT/public:/app/public:ro" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 
 for i in $(seq 1 50); do
@@ -39,8 +39,8 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 
-cd "$REPO_MNT"
-KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=fixture python3 "$REPO_MNT/scripts/test_http.py"
+cd "$ROOT"
+KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=fixture python3 "$ROOT/scripts/test_http.py"
 
 echo "== http: escape + traversal =="
 cleanup
@@ -75,7 +75,7 @@ JSON
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=media \
   -e KORU_MANIFEST=manifest.json \
-  -v "$REPO_MNT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$SEC:/app" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 
@@ -84,8 +84,8 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 
-cd "$REPO_MNT"
-KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=security python3 "$REPO_MNT/scripts/test_http.py"
+cd "$ROOT"
+KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=security python3 "$ROOT/scripts/test_http.py"
 
 echo "== idle exit =="
 bash scripts/test_idle.sh

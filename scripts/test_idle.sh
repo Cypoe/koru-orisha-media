@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # GOAL Step 10 — idle exit when KORU_IDLE_SECS elapses with no active streams.
 set -euo pipefail
-REPO_MNT=/mnt/c/Users/fabi0/repos/koru-orisha-media
-cd "$REPO_MNT"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 if [[ ! -f bin/media-server ]]; then
   echo "bin/media-server missing" >&2
   exit 2
@@ -17,10 +17,10 @@ docker run -d --name "$CONTAINER" \
   -e KORU_MEDIA_ROOT=fixtures/media \
   -e KORU_MANIFEST=data/manifest.json \
   -e KORU_IDLE_SECS=2 \
-  -v "$REPO_MNT/bin/media-server:/app/media-server:ro" \
-  -v "$REPO_MNT/data:/app/data:ro" \
-  -v "$REPO_MNT/fixtures:/app/fixtures:ro" \
-  -v "$REPO_MNT/public:/app/public:ro" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/data:/app/data:ro" \
+  -v "$ROOT/fixtures:/app/fixtures:ro" \
+  -v "$ROOT/public:/app/public:ro" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 
 # Wait up to 15s for clean exit (idle 2s + poll slack).

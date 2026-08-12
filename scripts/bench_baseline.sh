@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Baseline latency / RSS for koru-orisha-media (GOAL Step 10).
 set -euo pipefail
-REPO_MNT=/mnt/c/Users/fabi0/repos/koru-orisha-media
-cd "$REPO_MNT"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 CONTAINER=koru-media-bench
 PORT=3092
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
@@ -20,10 +20,10 @@ START=$(date +%s%3N)
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=fixtures/media \
   -e KORU_MANIFEST=data/manifest.json \
-  -v "$REPO_MNT/bin/media-server:/app/media-server:ro" \
-  -v "$REPO_MNT/data:/app/data:ro" \
-  -v "$REPO_MNT/fixtures:/app/fixtures:ro" \
-  -v "$REPO_MNT/public:/app/public:ro" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/data:/app/data:ro" \
+  -v "$ROOT/fixtures:/app/fixtures:ro" \
+  -v "$ROOT/public:/app/public:ro" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 
 for i in $(seq 1 100); do

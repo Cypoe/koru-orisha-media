@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hot manifest reload: title change is visible without restarting the process.
 set -euo pipefail
-REPO_MNT=/mnt/c/Users/fabi0/repos/koru-orisha-media
-cd "$REPO_MNT"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 if [[ ! -f bin/media-server ]]; then
   echo "bin/media-server missing" >&2
   exit 2
@@ -39,7 +39,7 @@ JSON
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=media \
   -e KORU_MANIFEST=manifest.json \
-  -v "$REPO_MNT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$WORKDIR:/app" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 

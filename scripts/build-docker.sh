@@ -3,10 +3,10 @@
 set -euo pipefail
 
 IMG="koru-orisha-media-build:local"
-REPO=/mnt/c/Users/fabi0/repos/koru-orisha-media
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KORU_BUILD=/home/cypoe/src/koru-build
 
-docker build -t "$IMG" -f - "$REPO" <<'DOCKERFILE'
+docker build -t "$IMG" -f - "$ROOT" <<'DOCKERFILE'
 FROM debian:bookworm-slim
 ARG ZIG_VERSION=0.15.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,7 +27,7 @@ docker run --rm \
   -v "$KORU_BUILD/koru_std:/usr/local/koru_std:ro" \
   -v /mnt/w/src/koru:/src/koru:ro \
   -v /mnt/w/src/koru-libs:/src/koru-libs:ro \
-  -v "$REPO:/work" \
+  -v "$ROOT:/work" \
   -e HOME=/tmp \
   "$IMG" \
   bash -lc 'set -euo pipefail

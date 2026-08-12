@@ -2,7 +2,7 @@
 # Build optional koru/dom JS → public/koru-dom-enhance.js
 # Requires: koruc with --lang=js, zig 0.15.1 on PATH.
 set -euo pipefail
-REPO=/mnt/c/Users/fabi0/repos/koru-orisha-media
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="${HOME}/tools/zig-0.15.1:${HOME}/src/koru-build/zig-out/bin:${PATH}"
 KORUC="$(command -v koruc)"
 STD="${HOME}/src/koru-build/koru_std"
@@ -22,8 +22,8 @@ cat > "$OUTDIR/koru.json" <<EOF
   }
 }
 EOF
-cp "$REPO/browser/main.k" "$OUTDIR/main.k"
-cp "$REPO/browser/main.kjs" "$OUTDIR/main.kjs"
+cp "$ROOT/browser/main.k" "$OUTDIR/main.k"
+cp "$ROOT/browser/main.kjs" "$OUTDIR/main.kjs"
 cd "$OUTDIR"
 
 # Option must precede the input file: koruc [options] <input> [command]
@@ -34,6 +34,6 @@ if [[ ! -f output_emitted.js ]]; then
   ls -la >&2
   exit 1
 fi
-mkdir -p "$REPO/public"
-cp -f output_emitted.js "$REPO/public/koru-dom-enhance.js"
-echo "wrote $REPO/public/koru-dom-enhance.js ($(wc -c < output_emitted.js) bytes)"
+mkdir -p "$ROOT/public"
+cp -f output_emitted.js "$ROOT/public/koru-dom-enhance.js"
+echo "wrote $ROOT/public/koru-dom-enhance.js ($(wc -c < output_emitted.js) bytes)"
