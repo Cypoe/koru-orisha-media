@@ -70,7 +70,7 @@ Not more docs. Ranked concrete features:
 2. **Indexer depth** — landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars` + auto-move of orphaned `*.id` sidecars on rename/move (fingerprint or same-dir 1:1) + WebVTT subtitle sidecar path. Orisha item/watch surface nested first-track `video`/`audio` brand/codec probe notes. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
 3. **Browser Step 9 hardening** — landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch; watch `#resume-ui` (Resumed from / Restart) without recreating `#player`. Still open: measured koru/dom only if marks justify it.
 
-Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass.
+Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass. Live catalogue enrichment uses **offline TMDB** (`scripts/enrich_tmdb.py`); TVDB remains optional.
 
 ## Explicitly deferred
 

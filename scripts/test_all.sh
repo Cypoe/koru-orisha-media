@@ -13,6 +13,8 @@ echo "== unit: semantic =="
 python3 scripts/test_semantic.py -v
 echo "== unit: enrich_tvdb =="
 python3 scripts/test_enrich_tvdb.py -v
+echo "== unit: enrich_tmdb =="
+python3 scripts/test_enrich_tmdb.py -v
 echo "== unit: manifest parse =="
 python3 scripts/test_manifest_parse.py -v
 

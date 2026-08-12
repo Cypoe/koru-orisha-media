@@ -166,7 +166,9 @@ Cover Art Archive references may be attached as artwork provenance, but artwork 
 
 IMDb identifiers are useful for linking movies, series, episodes, and people. Treat an IMDb ID as an external assertion, not as a guarantee that the external record is complete or permanently available.
 
-Store the type of the linked entity and the source URL where permitted. Do not assume that an IMDb page is an unrestricted metadata API. Provider access, licensing, attribution, and scraping rules must be handled by the adapter and documented separately.
+There is no public IMDb metadata API for this project. Jellyseerr, Radarr, and Jellyfin typically **do not call IMDb**. They call **TMDB** (or a Servarr proxy) and copy `external_ids.imdb_id` onto the local record. We do the same in [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py).
+
+Store the type of the linked entity and the source URL where permitted. Do not scrape IMDb pages.
 
 ### TVDB
 
@@ -174,9 +176,26 @@ TVDB is useful for television series, seasons, episodes, people, artwork, and al
 
 A TVDB link should therefore include the relation and ordering scheme when that information affects matching.
 
-### TMDB and other catalogues
+### TMDB (preferred catalogue adapter)
 
-TMDB, TVMaze, AniList, Wikidata, Open Library, Discogs, and other providers may be added through the same adapter boundary. A provider must not become a required dependency of the request path.
+TMDB covers movies **and** TV, stays free for personal API keys, and is the first live adapter. Auth is **one of**:
+
+- `TMDB_API_TOKEN` — API Read Access Token, sent as `Authorization: Bearer …` (works on v3 and v4)
+- `TMDB_API_KEY` — v3 `api_key` query parameter
+
+You do not need both. Prefer the token.
+
+```bash
+# CI / no key — recorded payload:
+python3 scripts/enrich_tmdb.py --in fixtures/semantic.json --out /tmp/semantic.json \
+  --fixture fixtures/tmdb/movie_329865.json
+
+# Live (token or key from .env):
+python3 scripts/enrich_tmdb.py --live --kind movie --tmdb-id 329865 \
+  --entity work.movie.arrival-2016 --in data/semantic.json --out data/semantic.json
+```
+
+TVMaze, AniList, Wikidata, Open Library, Discogs, and other providers may be added through the same adapter boundary. A provider must not become a required dependency of the request path.
 
 When multiple sources supply a value, retain provenance and a resolution decision rather than silently overwriting one source with another.
 
@@ -295,19 +314,15 @@ Provider adapters must document:
 - whether data may be persisted locally;
 - whether data may be redistributed.
 
-Do not bundle provider credentials in the repository. Use a gitignored `.env` (see [`.env.example`](../.env.example)) or the process environment (`TVDB_API_KEY`). Do not make indexing fail merely because an optional provider is unavailable. A provider failure should produce an enrichment diagnostic and leave the physical library usable.
+Do not bundle provider credentials in the repository. Use a gitignored `.env` (see [`.env.example`](../.env.example)) or the process environment (`TMDB_API_TOKEN` / `TMDB_API_KEY`). Do not make indexing fail merely because an optional provider is unavailable. A provider failure should produce an enrichment diagnostic and leave the physical library usable.
 
-### TVDB adapter (offline)
+### TVDB adapter (optional)
+
+TVDB v4 now expects a paid/subscriber key for many accounts. Keep [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) for fixture/CI and anyone who still has a v4 key; prefer TMDB for live enrichment.
 
 ```bash
-# CI / no key — recorded payload:
 python3 scripts/enrich_tvdb.py --in fixtures/semantic.json --out /tmp/semantic.json \
   --fixture fixtures/tvdb/series_121361.json
-
-# Live (key never committed):
-export TVDB_API_KEY=...   # or load from .env
-python3 scripts/enrich_tvdb.py --live --in data/semantic.json --out data/semantic.json \
-  --entity series.fixture-demo --series-id 121361
 ```
 
 ## Implementation stages
@@ -316,7 +331,7 @@ python3 scripts/enrich_tvdb.py --live --in data/semantic.json --out data/semanti
 2. Add Schema.org/JSON-LD projection for one movie and one music recording. **Done** — `project_jsonld` (Arrival + beep).
 3. Add deterministic fixture-based identity resolution. **Done** — `resolve_asset`.
 4. Add provider identity storage without provider API calls. **Done** — hand-linked IMDb/TVDB on fixtures.
-5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Started** — [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) (fixture path in CI; `--live` needs `TVDB_API_KEY` from env / `.env`, never the repo).
+5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Started** — [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py) (preferred live path; fixture in CI). [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) remains for recorded TVDB payloads / optional v4 keys.
 6. Add provenance-aware conflict resolution.
 7. Precompute collection projections for Orisha requests.
 8. Expose provider links and capability affordances only when data and permission exist.
