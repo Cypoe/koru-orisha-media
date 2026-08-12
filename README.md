@@ -9,7 +9,7 @@ A small, direct-play media library built around Koru and Orisha.
 
 ## Status
 
-GOAL Steps 1–10 plus follow-ons: richer indexer, `/art/{id}`, pagination, Prefer fragments, hot manifest reload, watch capability notes, and `?download=1`.
+GOAL Steps 1–10 plus follow-ons (indexer/art/pagination/Prefer, hot reload, capability, download). Phase 6: search form, year, 304, and [docs/upstream-candidates.md](docs/upstream-candidates.md).
 
 ## Build (Docker)
 

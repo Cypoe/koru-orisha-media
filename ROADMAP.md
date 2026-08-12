@@ -46,6 +46,11 @@
 - Hot manifest reload (mtime, quiet streams) — see [docs/lifecycle.md](docs/lifecycle.md)
 - sendfile/mmap / socket activation still deferred
 
+## Phase 6: hypermedia polish + extraction map
+
+- Library GET search form; item `year` + collection `Link`; media `304` on `If-None-Match`
+- [docs/upstream-candidates.md](docs/upstream-candidates.md) — what can become Orisha/Koru libs later
+
 ## Explicitly deferred
 
 Transcoding, HLS/DASH, background metadata services, recommendation systems, remote media discovery, and a large client compatibility layer.
