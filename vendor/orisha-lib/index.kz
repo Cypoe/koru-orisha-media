@@ -9,6 +9,11 @@
 // The two files share a stem and are ONE module. A `~pub tor` may not be
 // declared here while that companion exists (KORU111): the public surface is
 // the contract's job.
+//
+// EXTRACT:orisha-core — listen / accept / send / answer / Request / router
+// (roughly through the media section banner below). Media HTML + handler stay
+// APP:media-handler. Shared lease: `active_streams` (idle exit, STREAM:v1,
+// manifest reload).
 
 ~std/compiler:requires {
     exe.linkSystemLibrary("z");
@@ -63,7 +68,7 @@ pub const ConnHandle = struct {
     allocator: std.mem.Allocator,
 };
 
-var active_streams: std.atomic.Value(u32) = .init(0);
+var active_streams: std.atomic.Value(u32) = .init(0); // EXTRACT+APP lease: idle / STREAM / reload
 
 fn idleSecs() ?u32 {
     const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
@@ -134,84 +139,24 @@ fn idleSecs() ?u32 {
         return .{ .failed = .{ .msg = "Empty request", .server = server } };
     }
 
-    // Parse HTTP request line: "GET /path HTTP/1.1"
     const request_data = buffer[0..bytes_read];
-    var method: []const u8 = "GET";
-    var path: []const u8 = "/";
-    var query_hdr: ?[]const u8 = null;
-
-    if (std.mem.indexOf(u8, request_data, " ")) |method_end| {
-        method = request_data[0..method_end];
-        const after_method = request_data[method_end + 1..];
-        if (std.mem.indexOf(u8, after_method, " ")) |path_end| {
-            // Same seam as `answer` below — a query string and percent-encoding
-            // both belong to the request target, not to the resource name.
-            const target = after_method[0..path_end];
-            if (std.mem.indexOfScalar(u8, target, '?')) |q| {
-                query_hdr = target[q + 1 ..];
-            }
-            path = requestPathKey(allocator, target);
-        }
-    }
-
-    // Parse body from request data
-    var body: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |header_end| {
-        const body_start = header_end + 4;
-        if (body_start < request_data.len) {
-            body = request_data[body_start..];
-        }
-    }
-
-    // Parse optional Range header (single range only for media milestone).
-    var range_hdr: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nRange: ")) |range_start| {
-        const val_start = range_start + 9;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |range_end| {
-            range_hdr = request_data[val_start .. val_start + range_end];
-        }
-    }
-
-    // Prefer: return=minimal → library may emit a fragment (opt-in enhancement).
-    var prefer_hdr: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nPrefer: ")) |prefer_start| {
-        const val_start = prefer_start + 10;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |prefer_end| {
-            prefer_hdr = request_data[val_start .. val_start + prefer_end];
-        }
-    }
-
-    var if_none_match_hdr: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nIf-None-Match: ")) |etag_start| {
-        const val_start = etag_start + "\r\nIf-None-Match: ".len;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |etag_end| {
-            var etag_raw: []const u8 = request_data[val_start .. val_start + etag_end];
-            etag_raw = std.mem.trim(u8, etag_raw, " \t");
-            if (etag_raw.len >= 2 and etag_raw[0] == '"' and etag_raw[etag_raw.len - 1] == '"') {
-                etag_raw = etag_raw[1 .. etag_raw.len - 1];
-            }
-            if_none_match_hdr = etag_raw;
-        }
-    }
-
-    // HTMX: HX-Request: true → same fragment opt-in as Prefer: return=minimal.
-    const hx_request = std.ascii.indexOfIgnoreCase(request_data, "\r\nHX-Request:") != null;
+    const parts = parseHttpRequest(allocator, request_data);
 
     // Allocate request
     const req = allocator.create(Request) catch {
         conn.stream.close();
         return .{ .failed = .{ .msg = "Failed to allocate request", .server = server } };
     };
-    const duped_body: ?[]const u8 = if (body) |b| allocator.dupe(u8, b) catch b else null;
+    const duped_body: ?[]const u8 = if (parts.body) |b| allocator.dupe(u8, b) catch b else null;
     req.* = .{
-        .method = allocator.dupe(u8, method) catch method,
-        .path = allocator.dupe(u8, path) catch path,
+        .method = allocator.dupe(u8, parts.method) catch parts.method,
+        .path = allocator.dupe(u8, parts.path) catch parts.path,
         .body = duped_body,
-        .if_none_match = if (if_none_match_hdr) |e| allocator.dupe(u8, e) catch e else null,
-        .range = if (range_hdr) |r| allocator.dupe(u8, r) catch r else null,
-        .query = if (query_hdr) |q| allocator.dupe(u8, q) catch q else null,
-        .prefer = if (prefer_hdr) |p| allocator.dupe(u8, p) catch p else null,
-        .hx_request = hx_request,
+        .if_none_match = if (parts.if_none_match) |e| allocator.dupe(u8, e) catch e else null,
+        .range = if (parts.range) |r| allocator.dupe(u8, r) catch r else null,
+        .query = if (parts.query) |q| allocator.dupe(u8, q) catch q else null,
+        .prefer = if (parts.prefer) |p| allocator.dupe(u8, p) catch p else null,
+        .hx_request = parts.hx_request,
         .allocator = allocator,
     };
 
@@ -460,48 +405,100 @@ fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
     return out[0..w];
 }
 
-~proc answer|zig {
-    const req_allocator = $mod.requestAllocator();
+/// EXTRACT:orisha-core — one Request-field parse for accept|zig and answer|zig.
+/// Slices point into `request_data` (except `path`, which may allocate via requestPathKey).
+const ParsedHttpRequest = struct {
+    method: []const u8,
+    path: []const u8,
+    query: ?[]const u8 = null,
+    body: ?[]const u8 = null,
+    range: ?[]const u8 = null,
+    prefer: ?[]const u8 = null,
+    if_none_match: ?[]const u8 = null,
+    hx_request: bool = false,
+};
+
+fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) ParsedHttpRequest {
     var method: []const u8 = "GET";
     var path: []const u8 = "/";
+    var query: ?[]const u8 = null;
 
-    var i: usize = 0;
-    while (i < raw.len and raw[i] != ' ') : (i += 1) {}
-    if (i < raw.len) {
-        method = raw[0..i];
-        i += 1;
-        var j: usize = i;
-        while (j < raw.len and raw[j] != ' ') : (j += 1) {}
-        if (j > i) {
-            path = $mod.requestPathKey(req_allocator, raw[i..j]);
-        }
-    }
-
-    var client_etag: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, raw, "If-None-Match: ")) |etag_start| {
-        const etag_val_start = etag_start + 15;
-        if (std.mem.indexOf(u8, raw[etag_val_start..], "\r\n")) |etag_end| {
-            var etag_raw = raw[etag_val_start .. etag_val_start + etag_end];
-            if (etag_raw.len >= 2 and etag_raw[0] == '"' and etag_raw[etag_raw.len - 1] == '"') {
-                etag_raw = etag_raw[1 .. etag_raw.len - 1];
+    if (std.mem.indexOf(u8, request_data, " ")) |method_end| {
+        method = request_data[0..method_end];
+        const after_method = request_data[method_end + 1 ..];
+        if (std.mem.indexOf(u8, after_method, " ")) |path_end| {
+            const target = after_method[0..path_end];
+            if (std.mem.indexOfScalar(u8, target, '?')) |q| {
+                query = target[q + 1 ..];
             }
-            client_etag = etag_raw;
+            path = requestPathKey(allocator, target);
         }
     }
 
     var body: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, raw, "\r\n\r\n")) |header_end| {
+    if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |header_end| {
         const body_start = header_end + 4;
-        if (body_start < raw.len) {
-            body = raw[body_start..];
+        if (body_start < request_data.len) {
+            body = request_data[body_start..];
         }
     }
 
-    var req = Request{
+    var range: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, request_data, "\r\nRange: ")) |range_start| {
+        const val_start = range_start + 9;
+        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |range_end| {
+            range = request_data[val_start .. val_start + range_end];
+        }
+    }
+
+    var prefer: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, request_data, "\r\nPrefer: ")) |prefer_start| {
+        const val_start = prefer_start + 10;
+        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |prefer_end| {
+            prefer = request_data[val_start .. val_start + prefer_end];
+        }
+    }
+
+    var if_none_match: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, request_data, "\r\nIf-None-Match: ")) |etag_start| {
+        const val_start = etag_start + "\r\nIf-None-Match: ".len;
+        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |etag_end| {
+            var etag_raw: []const u8 = request_data[val_start .. val_start + etag_end];
+            etag_raw = std.mem.trim(u8, etag_raw, " \t");
+            if (etag_raw.len >= 2 and etag_raw[0] == '"' and etag_raw[etag_raw.len - 1] == '"') {
+                etag_raw = etag_raw[1 .. etag_raw.len - 1];
+            }
+            if_none_match = etag_raw;
+        }
+    }
+
+    const hx_request = std.ascii.indexOfIgnoreCase(request_data, "\r\nHX-Request:") != null;
+
+    return .{
         .method = method,
         .path = path,
+        .query = query,
         .body = body,
-        .if_none_match = client_etag,
+        .range = range,
+        .prefer = prefer,
+        .if_none_match = if_none_match,
+        .hx_request = hx_request,
+    };
+}
+
+~proc answer|zig {
+    const req_allocator = $mod.requestAllocator();
+    const parts = parseHttpRequest(req_allocator, raw);
+
+    var req = Request{
+        .method = parts.method,
+        .path = parts.path,
+        .body = parts.body,
+        .if_none_match = parts.if_none_match,
+        .range = parts.range,
+        .query = parts.query,
+        .prefer = parts.prefer,
+        .hx_request = parts.hx_request,
         .allocator = req_allocator,
     };
 
@@ -1522,7 +1519,7 @@ fn generateNamedRoutesFile(allocator: std.mem.Allocator, routes_const: []const P
 }
 
 // ============================================================================
-// MEDIA APP HANDLER (koru-orisha-media vendor extension)
+// APP:media-handler — koru-orisha-media vendor extension (stay out of upstream)
 // ============================================================================
 
 const DEFAULT_MEDIA_ROOT = "fixtures/media";

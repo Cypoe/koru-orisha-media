@@ -4,6 +4,8 @@ Honest map of what this media server has proven that could later leave the app t
 
 Do **not** extract until the seam has tests and a second consumer. The first consumer is this repo.
 
+**In-repo gate (Phase 7):** `parseHttpRequest` shared by `accept|zig` and `answer|zig`, plus `EXTRACT:orisha-core` / `APP:media-handler` markers in `vendor/orisha-lib/index.kz`. Existing HTTP suite covers Range / Prefer / `HX-Request` on the accept-loop path. Upstream PR to `W:\src\orisha` comes after that gate — without shipping the media HTML handler.
+
 ## The HTMX insight (koru/vaxis → koru/dom)
 
 `koru/dom` is explicitly **the vaxis `run` shape retargeted at the browser** (`dom/index.k`):
@@ -35,7 +37,7 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 | Piece | Where today | Why extractable | Blockers |
 |-------|-------------|-----------------|----------|
 | `orisha:run-accept-loop` | `vendor/orisha-lib` | Avoids koruc double-emit of multi-`run|*` pumps; already the working serve path | Document as the recommended Zig serve shape until pump emission is fixed |
-| Request extras: `range`, `query`, `prefer`, `hx_request`, `if_none_match` | accept parse in `index.kz` | Generic HTTP, not media-specific | Unify with `answer` path so one Request builder exists |
+| Request extras: `range`, `query`, `prefer`, `hx_request`, `if_none_match` | `parseHttpRequest` in `index.kz` | Generic HTTP, not media-specific | In-repo: accept/answer unified. Upstream: land the helper + fields |
 | Raw `HTTP/1.` body passthrough in `send` | `send|zig` | Needed for pre-rendered responses and STREAM framing | Keep API: body starting with `HTTP/1.` is a complete head |
 | `STREAM:v1` chunked file send | `send|zig` + media handler | Bounded streaming without full-file buffer; reusable for any large static asset | Stabilize framing; optional future `sendfile` backend behind same shape |
 | Idle exit + active-stream lease | accept poll + `active_streams` | Matches Orisha “tiny process / exit when quiet” story | Supervisor story (systemd socket activation) still separate |
@@ -61,7 +63,7 @@ vaxis and dom stay the **local reactive** surface; HTMX stays the **server HTML 
 
 ## Suggested extraction order
 
-1. **Orisha Request parse + raw send + STREAM** — highest reuse, clearest review boundary.
+1. **Orisha Request parse + raw send + STREAM** — highest reuse, clearest review boundary. **Prep done in this repo** (`parseHttpRequest` + seam markers); next step is the upstream patch.
 2. **Document `run-accept-loop` as the Zig serve path** — unblocks other Orisha apps without waiting for pump emit fix.
 3. **HTMX dialect on Orisha HTML** (`HX-Request` → fragment; `hx-*` on links) — proves the vaxis/dom passthrough claim; optional stock HTMX later.
 4. **Indexer as a Koru one-shot** — only when Koru file/JSON ergonomics beat the Python reference.

@@ -50,6 +50,13 @@
 
 - Library GET search form; item `year` + collection `Link`; media `304` on `If-None-Match`
 - [docs/upstream-candidates.md](docs/upstream-candidates.md) — what can become Orisha/Koru libs later
+- **Done**
+
+## Phase 7: Orisha extraction prep (in-repo)
+
+- Unified `parseHttpRequest` for `accept` and `answer`; `EXTRACT:` / `APP:` seam markers in [`vendor/orisha-lib/index.kz`](vendor/orisha-lib/index.kz)
+- Vendor / current-apis docs match the real `Request` + `STREAM:v1` surface
+- Next **out-of-repo**: patch `W:\src\orisha` with Request parse + raw send + STREAM + `run-accept-loop` docs — media `handler` stays in this vendor tree
 
 ## Explicitly deferred
 

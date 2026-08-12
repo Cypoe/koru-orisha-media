@@ -9,7 +9,7 @@ A small, direct-play media library built around Koru and Orisha.
 
 ## Status
 
-GOAL Steps 1–10 plus follow-ons (indexer/art/pagination/Prefer, hot reload, capability, download). Phase 6: search form, year, 304, and [docs/upstream-candidates.md](docs/upstream-candidates.md).
+GOAL Steps 1–10 plus follow-ons (indexer/art/pagination/Prefer, hot reload, capability, download). Phase 6 done (search/year/304 + upstream map). Phase 7: Orisha extraction prep (`parseHttpRequest` seam). On Windows/WSL, see [docs/dev-windows.md](docs/dev-windows.md) (native git for push/pull; WSL for bash/Docker scripts).
 
 ## Build (Docker)
 

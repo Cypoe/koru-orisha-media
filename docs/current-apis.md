@@ -102,7 +102,24 @@ Handlers return only:
 
 `answer` (`index.kz`) writes `Content-Type`, `Content-Length`, `Date`, `Connection: keep-alive`. If `body` already starts with `"HTTP/1."`, it is sent as a pre-rendered head with empty body (static-router path).
 
-`Request` fields currently exposed: `method`, `path` (query stripped, percent-decoded), `body`, `if_none_match`, `allocator`.
+`send|zig` (accept-loop path) also accepts:
+
+- raw bodies starting with `HTTP/1.` (complete response head, used for Range/304/416)
+- `STREAM:v1\n<path>\n<start>\n<end>\n\n<HTTP headers>` — chunked file send (64 KiB); holds `active_streams` for the duration
+
+`Request` fields (both `accept|zig` and `answer|zig` via `parseHttpRequest`):
+
+| Field | Notes |
+|-------|--------|
+| `method` | From request line |
+| `path` | Query stripped, percent-decoded (`requestPathKey`) |
+| `query` | Raw query string without `?`, or null |
+| `body` | Bytes after `\r\n\r\n`, or null |
+| `if_none_match` | Quoted ETag stripped when present |
+| `range` | Single `Range` header value |
+| `prefer` | `Prefer` header value |
+| `hx_request` | True when `HX-Request` header is present |
+| `allocator` | Request arena / connection allocator |
 
 ### Router syntax
 
