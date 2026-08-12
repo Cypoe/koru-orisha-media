@@ -1,0 +1,22 @@
+// Host |js facet for the Step 9 keyed list.
+// make-title is deterministic so the demo/harness can assert row text.
+// swap-rows moves DOM nodes by store handle (koruDomNode) — reorder without
+// destroying identity.
+
+const titles = ["demo", "empty", "onebyte", "extra", "clip"];
+
+~proc make-title|js {
+    const i = (typeof globalThis.__koru_title_i === "number") ? globalThis.__koru_title_i : 0;
+    globalThis.__koru_title_i = i + 1;
+    return titles[i % titles.length];
+}
+
+~proc swap-rows|js {
+    const ta = koruDomNode(a);
+    const tb = koruDomNode(b);
+    if (ta === undefined || tb === undefined) return;
+    const parent = ta.parentNode;
+    const afterB = tb.nextSibling;
+    parent.insertBefore(tb, ta);
+    parent.insertBefore(ta, afterB === ta ? tb : afterB);
+}

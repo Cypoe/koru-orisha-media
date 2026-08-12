@@ -1,0 +1,577 @@
+const __koru_len = { get() { return this.length; }, configurable: true };
+Object.defineProperty(String.prototype, "len", __koru_len);
+Object.defineProperty(Array.prototype, "len", __koru_len);
+// koru/dom |js facet — the host bodies for the events declared in index.k.
+// Same facet layout the suite pins in 140_009/140_010: one stem, per-target
+// implementation files, merged at import.
+// The keyed element registry. A component declaring `key` records what it
+// painted; `drop` detaches it. This is the library's own book, never the
+// consumer's — an app using the markup surface writes no lookup code at all,
+// which is the difference between a DOM library and a DOM convention.
+//
+// Keyed by whatever the caller supplies. From a store that is a row HANDLE,
+// which survives compaction: `take` swap-removes the last row into the freed
+// slot, so a row's position changes under it while its handle does not.
+const __koru_dom_reg = new Map();
+// Both directions, because the paint is the one moment both are in hand.
+//
+// The map answers "which element does this key own" — that is what a repaint
+// and a drop need. The property on the element answers the inverse, "which key
+// painted this", which is what a CLICK needs, and recording it here is the
+// whole reason a consumer no longer has to write its rows' identity into the
+// page as text for the delegation to parse back out.
+//
+// The reference does exactly this and nothing more (`tr.data_id = data.id`,
+// vanillajs Main.js:352). An expando on a node the library created is not
+// state anyone else can collide with.
+function __koru_dom_track(key, node) {
+    __koru_dom_reg.set(key, node);
+    node.__koru_key = key;
+}
+// The library's HOST surface: host code in the same module addresses the
+// element a key owns, instead of searching the page for it.
+//
+// This exists because mutating text in place is still host work. A row's text
+// column can be READ from Koru but not EXTENDED — building "old + suffix"
+// needs an allocating string instance, since the cheap page-allocated form is
+// a read-only view, and on a hot path that is one allocation per row per
+// update. Until a text column can grow in place, the read-modify-write lives
+// here, and the only thing it needs from the library is WHICH element.
+//
+// Returns undefined for a key nothing was painted under; a caller that has a
+// live handle from the store cannot be in that position.
+function koruDomNode(key) {
+    return __koru_dom_reg.get(key);
+}
+// Host |js facet for the Step 9 keyed list.
+// make-title is deterministic so the demo/harness can assert row text.
+// swap-rows moves DOM nodes by store handle (koruDomNode) — reorder without
+// destroying identity.
+const titles = ["demo", "empty", "onebyte", "extra", "clip"];
+const __koru_dom_tpl_LibRow_0 = (() => { const t = document.createElement("template"); t.innerHTML = "<li data-row-id=\"{{ id:d }}\"><span class=\"title\"></span><button type=\"button\" data-action=\"7\" aria-label=\"remove\">remove</button></li>"; return t.content.firstChild; })();
+let __koru_store_rows = {
+  id: new Array(64).fill(0),
+  pos: new Array(64).fill(0),
+  title: new Array(64).fill(""),
+  len: 0,
+  __koru_hslot_row: new Array(64).fill(0),
+  __koru_hslot_gen: new Array(64).fill(0),
+  __koru_row_hslot: new Array(64).fill(0),
+  __koru_hslot_free: new Array(64).fill(0),
+  __koru_hslot_free_len: 0,
+  __koru_hslot_next: 0,
+  __koru_brand: 1,
+  __koru_row_of(h) {
+    if (h < 0) return null;
+    const gen = Math.floor(h / 4294967296);
+    const low = h - gen * 4294967296;
+    if (Math.floor(low / 16777216) !== this.__koru_brand) return null;
+    const slot = low % 16777216;
+    if (slot >= this.__koru_hslot_next) return null;
+    if (gen !== this.__koru_hslot_gen[slot]) return null;
+    return this.__koru_hslot_row[slot];
+  },
+  __koru_resolve(h) {
+    const r = this.__koru_row_of(h);
+    // Row 0 is a real row and `null` is the only absence — a
+    // truthiness test here would reject the first row of every
+    // store.
+    if (r !== null) return r;
+    if (h >= 0) {
+      const gen = Math.floor(h / 4294967296);
+      const low = h - gen * 4294967296;
+      const slot = low % 16777216;
+      if (Math.floor(low / 16777216) === this.__koru_brand && slot < this.__koru_hslot_next && gen !== this.__koru_hslot_gen[slot]) {
+        throw new Error("std/store: stale row handle into store 'rows' - the row it addressed was removed (stale-handle trap pinned at 690_115)");
+      }
+    }
+    throw new Error("std/store: 'rows[...]' does not address a row - the value is not a handle this store issued (handles come from `| row` and row cursors)");
+  },
+  __koru_handle_of(dense) {
+    const slot = this.__koru_row_hslot[dense];
+    return slot + this.__koru_brand * 16777216 + this.__koru_hslot_gen[slot] * 4294967296;
+  },
+};
+let __koru_store_seq = { next: 1 };
+let __koru_store_cnt = { n: 0 };
+let __koru_store_op = { code: 0, a: 0, b: 0, ida: 0, idb: 0 };
+const main_module = {
+  make_title_event: {
+    handler(__koru_input) {
+      const i = (typeof globalThis.__koru_title_i === "number") ? globalThis.__koru_title_i : 0;
+      globalThis.__koru_title_i = i + 1;
+      return titles[i % titles.length];
+    },
+  },
+  swap_rows_event: {
+    handler(__koru_input) {
+      const a = __koru_input.a;
+      const b = __koru_input.b;
+      const ta = koruDomNode(a);
+      const tb = koruDomNode(b);
+      if (ta === undefined || tb === undefined) return;
+      const parent = ta.parentNode;
+      const afterB = tb.nextSibling;
+      parent.insertBefore(tb, ta);
+      parent.insertBefore(ta, afterB === ta ? tb : afterB);
+    },
+  },
+  clear_event: {
+    handler(__koru_input) {
+      {
+        for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
+        __koru_store_rows.__koru_hslot_gen[__koru_i] = (__koru_store_rows.__koru_hslot_gen[__koru_i] + 1) % 2097152;
+        }
+        __koru_store_rows.len = 0;
+        __koru_store_rows.__koru_hslot_free_len = 0;
+        __koru_store_rows.__koru_hslot_next = 0;
+        main_module.__store_cleared_rows_0_event.handler({});
+      }
+    },
+  },
+  seed_event: {
+    handler(__koru_input) {
+      const n = __koru_input.n;
+for (let __koru_item = 0; __koru_item < n; __koru_item++) {
+        { const _auto_0 = __koru_item;         const t = main_module.make_title_event.handler({});
+        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, title: t, __site_line: 38 });
+        if (result_0.tag === "row") {
+          const _auto_1 = result_0.row;
+          main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
+          main_module.__store_write_cnt_event.handler({ field: 0, value: __koru_store_cnt.n + 1 });
+        }
+        if (result_0.tag === "full") {
+        }
+ }
+        
+    }
+    },
+  },
+  LibRow_event: {
+    handler(__koru_input) {
+      const parent = __koru_input.parent;
+      const key = __koru_input.key;
+      const title = __koru_input.title;
+      const __root = __koru_dom_tpl_LibRow_0.cloneNode(true);
+      __root.children[0].textContent = String(title);
+      document.querySelector(parent).appendChild(__root);
+      __koru_dom_track(key, __root);
+    },
+  },
+  __store_insertf_rows_event: {
+    handler(__koru_input) {
+      const id = __koru_input.id;
+      const pos = __koru_input.pos;
+      const title = __koru_input.title;
+      const __site_line = __koru_input.__site_line;
+      if (__koru_store_rows.len >= 64) return { tag: "full", full: {} };
+      if (__koru_store_rows.len >= 64) throw new Error("std/store: store 'rows' is full (capacity 64) - declared capacity and the `| full` branch are pinned at 690_011");
+      const __koru_new_row = __koru_store_rows.len;
+      let __koru_hslot;
+      if (__koru_store_rows.__koru_hslot_free_len > 0) {
+      __koru_store_rows.__koru_hslot_free_len -= 1;
+      __koru_hslot = __koru_store_rows.__koru_hslot_free[__koru_store_rows.__koru_hslot_free_len];
+      } else {
+      __koru_hslot = __koru_store_rows.__koru_hslot_next;
+      __koru_store_rows.__koru_hslot_next += 1;
+      }
+      __koru_store_rows.__koru_hslot_row[__koru_hslot] = __koru_new_row;
+      __koru_store_rows.__koru_row_hslot[__koru_new_row] = __koru_hslot;
+      __koru_store_rows.id[__koru_new_row] = id;
+      __koru_store_rows.pos[__koru_new_row] = pos;
+      __koru_store_rows.title[__koru_new_row] = title.slice(0, 48);
+      __koru_store_rows.len += 1;
+      main_module.__store_inserted_rows_0_event.handler({ id: id, title: title, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
+      if (__site_line > 42) {
+      main_module.__store_qrow_rows_L42_event.handler({ row: __koru_new_row });
+      }
+      return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
+    },
+  },
+  __store_apply_rows_event: {
+    handler(__koru_input) {
+      const row = __koru_input.row;
+      const field = __koru_input.field;
+      const value_0 = __koru_input.value_0;
+      const value_1 = __koru_input.value_1;
+      const value_2 = __koru_input.value_2;
+      const __koru_r = row;
+      switch (field) {
+      case 0: { __koru_store_rows.id[__koru_r] = value_0; return { tag: "id", id: value_0 }; }
+      case 1: { __koru_store_rows.pos[__koru_r] = value_1; return { tag: "pos", pos: value_1 }; }
+      case 2: { __koru_store_rows.title[__koru_r] = value_2.slice(0, 48); return { tag: "title", title: value_2 }; }
+      }
+      throw new Error("__store_apply_rows: field index " + field + " is not a column of store 'rows'");
+    },
+  },
+  __store_write_rows_event: {
+    handler(__koru_input) {
+      const row = __koru_input.row;
+      const field = __koru_input.field;
+      const value_0 = __koru_input.value_0;
+      const value_1 = __koru_input.value_1;
+      const value_2 = __koru_input.value_2;
+      const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1, value_2: value_2 });
+      if (result_1.tag === "id") {
+        const _auto_5 = result_1.id;
+      }
+      if (result_1.tag === "pos") {
+        const _auto_6 = result_1.pos;
+      }
+      if (result_1.tag === "title") {
+        const _auto_7 = result_1.title;
+      }
+    },
+  },
+  __store_qrow_rows_L42_event: {
+    handler(__koru_input) {
+      const row = __koru_input.row;
+      const __koru_r = row;
+      const h = __koru_store_rows.__koru_handle_of(__koru_r);
+      main_module.__store_qbody_rows_L42_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      return;
+    },
+  },
+  __store_qbody_rows_L42_event: {
+    handler(__koru_input) {
+      const __koru_qrow = __koru_input.__koru_qrow;
+      const h = __koru_input.h;
+if (__koru_store_op.code == 6) {
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
+        {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b, value_2: "" });
+          main_module.__store_write_op_event.handler({ field: 3, value: h });
+ }
+    } else {
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.b) {
+        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a, value_2: "" });
+            main_module.__store_write_op_event.handler({ field: 4, value: h });
+ }
+    } else {
+        {  }
+    }
+ }
+    }
+ }
+    } else {
+        { if (__koru_store_op.code == 77) {
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] > __koru_store_op.b) {
+        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1, value_2: "" });
+ }
+    } else {
+        {  }
+    }
+ }
+    } else {
+        {  }
+    }
+ }
+    }
+    },
+  },
+  __store_qsweep_rows_L42_event: {
+    handler(__koru_input) {
+      let __koru_i = 0;
+      while (__koru_i < __koru_store_rows.len) {
+      const __koru_len_before = __koru_store_rows.len;
+      main_module.__store_qrow_rows_L42_event.handler({ row: __koru_i });
+      if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
+      }
+      return;
+    },
+  },
+  __store_take_rows_event: {
+    handler(__koru_input) {
+      const row = __koru_input.row;
+      const __koru_r = __koru_store_rows.__koru_row_of(row);
+      if (__koru_r === null) return { tag: "empty", empty: {} };
+      const __koru_gone_slot = __koru_store_rows.__koru_row_hslot[__koru_r];
+      const __koru_out_id = __koru_store_rows.id[__koru_r];
+      const __koru_out_pos = __koru_store_rows.pos[__koru_r];
+      const __koru_out_title = __koru_store_rows.title[__koru_r];
+      main_module.__store_removed_rows_0_event.handler({ h: __koru_store_rows.__koru_handle_of(__koru_r) });
+      const __koru_last = __koru_store_rows.len - 1;
+      if (__koru_r != __koru_last) {
+      __koru_store_rows.id[__koru_r] = __koru_store_rows.id[__koru_last];
+      __koru_store_rows.pos[__koru_r] = __koru_store_rows.pos[__koru_last];
+      __koru_store_rows.title[__koru_r] = __koru_store_rows.title[__koru_last];
+      const __koru_mv_slot = __koru_store_rows.__koru_row_hslot[__koru_last];
+      __koru_store_rows.__koru_hslot_row[__koru_mv_slot] = __koru_r;
+      __koru_store_rows.__koru_row_hslot[__koru_r] = __koru_mv_slot;
+      }
+      __koru_store_rows.len = __koru_last;
+      __koru_store_rows.__koru_hslot_gen[__koru_gone_slot] = (__koru_store_rows.__koru_hslot_gen[__koru_gone_slot] + 1) % 2097152;
+      __koru_store_rows.__koru_hslot_free[__koru_store_rows.__koru_hslot_free_len] = __koru_gone_slot;
+      __koru_store_rows.__koru_hslot_free_len += 1;
+      return { tag: "item", item: { id: __koru_out_id, pos: __koru_out_pos, title: __koru_out_title } };
+    },
+  },
+  __store_inserted_rows_0_event: {
+    handler(__koru_input) {
+      const id = __koru_input.id;
+      const title = __koru_input.title;
+      const h = __koru_input.h;
+      {
+        const parent = "#koru-list";
+        const key = h;
+        const __root = __koru_dom_tpl_LibRow_0.cloneNode(true);
+        __root.children[0].textContent = String(title);
+        document.querySelector(parent).appendChild(__root);
+        __koru_dom_track(key, __root);
+      }
+    },
+  },
+  __store_removed_rows_0_event: {
+    handler(__koru_input) {
+      const h = __koru_input.h;
+      main_module.drop_event.handler({ key: h });
+      main_module.__store_write_cnt_event.handler({ field: 0, value: __koru_store_cnt.n - 1 });
+    },
+  },
+  __store_cleared_rows_0_event: {
+    handler(__koru_input) {
+      main_module.drop_all_event.handler({});
+      main_module.__store_write_cnt_event.handler({ field: 0, value: 0 });
+    },
+  },
+  __store_clear_rows_event: {
+    handler(__koru_input) {
+      for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
+      __koru_store_rows.__koru_hslot_gen[__koru_i] = (__koru_store_rows.__koru_hslot_gen[__koru_i] + 1) % 2097152;
+      }
+      __koru_store_rows.len = 0;
+      __koru_store_rows.__koru_hslot_free_len = 0;
+      __koru_store_rows.__koru_hslot_next = 0;
+      main_module.__store_cleared_rows_0_event.handler({});
+    },
+  },
+  __store_stripe_rows_event: {
+    handler(__koru_input) {
+      main_module.__store_qsweep_rows_L42_event.handler({});
+    },
+  },
+  __store_apply_seq_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      switch (field) {
+      case 0: { __koru_store_seq.next = value; return { tag: "next", next: value }; }
+      }
+      throw new Error("__store_apply_seq: field index " + field + " is not a column of store 'seq'");
+    },
+  },
+  __store_write_seq_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      const result_2 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
+      const _auto_8 = result_2.next;
+    },
+  },
+  __store_announce_seq_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      return;
+    },
+  },
+  __store_apply_cnt_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      switch (field) {
+      case 0: { __koru_store_cnt.n = value; return { tag: "n", n: value }; }
+      }
+      throw new Error("__store_apply_cnt: field index " + field + " is not a column of store 'cnt'");
+    },
+  },
+  __store_write_cnt_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      const result_3 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
+      const _auto_9 = result_3.n;
+    },
+  },
+  __store_announce_cnt_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      return;
+    },
+  },
+  __store_apply_op_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      switch (field) {
+      case 0: { __koru_store_op.code = value; return { tag: "code", code: value }; }
+      case 1: { __koru_store_op.a = value; return { tag: "a", a: value }; }
+      case 2: { __koru_store_op.b = value; return { tag: "b", b: value }; }
+      case 3: { __koru_store_op.ida = value; return { tag: "ida", ida: value }; }
+      case 4: { __koru_store_op.idb = value; return { tag: "idb", idb: value }; }
+      }
+      throw new Error("__store_apply_op: field index " + field + " is not a column of store 'op'");
+    },
+  },
+  __store_write_op_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      const value = __koru_input.value;
+      const result_4 = main_module.__store_apply_op_event.handler({ field: field, value: value });
+      if (result_4.tag === "code") {
+        const _auto_10 = result_4.code;
+      }
+      if (result_4.tag === "a") {
+        const _auto_11 = result_4.a;
+      }
+      if (result_4.tag === "b") {
+        const _auto_12 = result_4.b;
+      }
+      if (result_4.tag === "ida") {
+        const _auto_13 = result_4.ida;
+      }
+      if (result_4.tag === "idb") {
+        const _auto_14 = result_4.idb;
+      }
+    },
+  },
+  __store_announce_op_event: {
+    handler(__koru_input) {
+      const field = __koru_input.field;
+      return;
+    },
+  },
+  if_event: {
+    handler(__koru_input) {
+      const expr = __koru_input.expr;
+      throw new Error("if: |template| proc is inlined at call sites and must never be called");
+    },
+  },
+  for_event: {
+    handler(__koru_input, H) {
+      const each = H.each;
+      const expr = __koru_input.expr;
+      const keep = __koru_input.keep;
+      throw new Error("for: |template| proc is inlined at call sites and must never be called");
+    },
+  },
+  run_event: {
+    handler(__koru_input, H) {
+      const click = H.click;
+      const title = __koru_input.title;
+      document.title = title;
+      document.addEventListener("click", (ev) => {
+      const el = ev.target.closest("[data-action]");
+      if (el === null) return;
+      const action = parseInt(el.getAttribute("data-action"), 10);
+      const idAttr = el.getAttribute("data-id");
+      const id = idAttr === null ? 0 : parseInt(idAttr, 10);
+      // WHERE the click landed, carried as a value rather than read back out
+      // of the page. The paint stashed the key on the element it created, so
+      // walking up to the nearest one that has it answers "which row" in a
+      // few parent steps — no attribute to parse, no document to search, and
+      // nothing the consumer had to write into its markup to make it work.
+      let owner = ev.target;
+      while (owner !== null && owner.__koru_key === undefined) owner = owner.parentNode;
+      click({ action: action, id: id, key: owner === null ? 0 : owner.__koru_key });
+      });
+    },
+  },
+  drop_event: {
+    handler(__koru_input) {
+      const key = __koru_input.key;
+      const node = __koru_dom_reg.get(key);
+      if (node === undefined) return;
+      __koru_dom_reg.delete(key);
+      if (node.parentNode !== null) node.parentNode.removeChild(node);
+    },
+  },
+  drop_all_event: {
+    handler(__koru_input) {
+      // Per-node detach, deliberately. A "clear the whole container in one call"
+      // path was built and MEASURED AT ZERO: 17.1ms against 16.6ms without it.
+      // Reading why is the useful part — the container carries a whitespace text
+      // node from the page's own HTML, so the "do we own every child?" test never
+      // matched and the fast branch never ran once. It was dead code that
+      // benchmarked as noise.
+      //
+      // Making it fire would mean either taking nodes the library did not create
+      // (wrong: a container we do not wholly own is not ours to empty) or walking
+      // the children to partition them, which is the scan this whole design
+      // exists to delete. What remains is ~3.6ms of a thousand-row clear, and it
+      // is honest work: N nodes leave the page, so N detaches happen.
+      for (const node of __koru_dom_reg.values()) {
+      if (node.parentNode !== null) node.parentNode.removeChild(node);
+      }
+      __koru_dom_reg.clear();
+    },
+  },
+  flow0() {
+    main_module.__store_qsweep_rows_L42_event.handler({});
+  },
+  flow1() {
+    const Handlers_5 = {
+      click(__arm_6) {
+        {
+          const action = __arm_6.action;
+          if (action == 1) {
+            main_module.clear_event.handler({});
+            main_module.seed_event.handler({ n: 3 });
+            return;
+          }
+        }
+        {
+          const action = __arm_6.action;
+          if (action == 3) {
+            main_module.seed_event.handler({ n: 1 });
+            return;
+          }
+        }
+        {
+          const action = __arm_6.action;
+          if (action == 5) {
+            main_module.clear_event.handler({});
+            return;
+          }
+        }
+        {
+          const action = __arm_6.action;
+          if (action == 6) {
+if (__koru_store_cnt.n > 1) {
+        {               main_module.__store_write_op_event.handler({ field: 0, value: 6 });
+              main_module.__store_write_op_event.handler({ field: 1, value: 0 });
+              main_module.__store_write_op_event.handler({ field: 2, value: 1 });
+              main_module.__store_stripe_rows_event.handler({});
+              main_module.swap_rows_event.handler({ a: __koru_store_op.ida, b: __koru_store_op.idb });
+              main_module.__store_write_op_event.handler({ field: 0, value: 0 });
+ }
+    } else {
+        {  }
+    }
+            return;
+          }
+        }
+        {
+          const action = __arm_6.action;
+          const key = __arm_6.key;
+          if (action == 7) {
+            main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(key)] });
+            const result_7 = main_module.__store_take_rows_event.handler({ row: key });
+            if (result_7.tag === "item") {
+              const _auto_3 = result_7.item;
+              main_module.__store_write_op_event.handler({ field: 0, value: 77 });
+              main_module.__store_stripe_rows_event.handler({});
+              main_module.__store_write_op_event.handler({ field: 0, value: 0 });
+            }
+            if (result_7.tag === "empty") {
+              const _auto_4 = result_7.empty;
+              (() => { throw new Error("unhandled panic branch 'empty' fired at runtime"); })();
+            }
+            return;
+          }
+        }
+      },
+    };
+    main_module.run_event.handler({ title: "koru-orisha-media keyed list" }, Handlers_5);
+  },
+};
+main_module.flow0();
+main_module.flow1();

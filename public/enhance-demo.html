@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>koru-orisha-media keyed list</title>
+  <style>
+    body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; max-width: 40rem; }
+    button { margin: 0.25rem 0.25rem 0.25rem 0; }
+    #koru-list { list-style: none; padding: 0; }
+    #koru-list li { display: flex; gap: 1rem; align-items: baseline; padding: 0.35rem 0; border-bottom: 1px solid #ccc; }
+    .title { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>Keyed list (koru/dom)</h1>
+  <p>Optional Step 9 client. Media pages keep working without this script.</p>
+  <p>
+    <button type="button" id="seed" data-action="1">Seed 3</button>
+    <button type="button" id="append" data-action="3">Append 1</button>
+    <button type="button" id="swap" data-action="6">Swap first two</button>
+    <button type="button" id="clear" data-action="5">Clear</button>
+  </p>
+  <ul id="koru-list"></ul>
+  <script src="/koru-dom-enhance.js"></script>
+</body>
+</html>
