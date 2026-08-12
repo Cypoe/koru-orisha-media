@@ -42,7 +42,22 @@ bash scripts/bench_baseline.sh   # Step 10 baselines
 
 See [docs/upstream-candidates.md](docs/upstream-candidates.md) for the vaxis → koru/dom → HTMX extraction story.
 
-## Run
+## Run (Compose)
+
+```bash
+bash scripts/build-image.sh          # compile + docker build → koru-orisha-media:local
+# bash scripts/build-image.sh --skip-compile   # if bin/media-server is already current
+
+mkdir -p media data
+# put library files in ./media, then:
+python3 scripts/index_media.py --root media --out data/manifest.json
+
+docker compose up
+```
+
+Open `http://127.0.0.1:3090/library`. Env defaults inside the image: `KORU_MEDIA_ROOT=/media`, `KORU_MANIFEST=/data/manifest.json` (no idle exit). See [docs/packaging.md](docs/packaging.md) for Synology Container Manager, GHCR publish-later, and SPK prep.
+
+### Dev bind-mount (fixtures)
 
 ```bash
 docker run --rm -p 3090:3090 \
@@ -56,9 +71,7 @@ docker run --rm -p 3090:3090 \
   -w /app debian:bookworm-slim /app/media-server
 ```
 
-On Windows/WSL, mount from `/mnt/c/Users/.../koru-orisha-media`. Env vars override compile-time defaults (`fixtures/media`, `data/manifest.json`).
-
-Open `http://127.0.0.1:3090/library`.
+On Windows/WSL, mount from `/mnt/c/Users/.../koru-orisha-media`.
 
 ## Layout
 
@@ -67,6 +80,7 @@ Open `http://127.0.0.1:3090/library`.
 | `main.k` | starts `orisha:run-accept-loop` |
 | `vendor/orisha-lib/` | Orisha fork: accept-loop, Range, chunked `STREAM:v1`, media `handler` |
 | `scripts/index_media.py` | one-shot indexer |
+| `Dockerfile` / `compose.yaml` | local runtime image + compose (see [docs/packaging.md](docs/packaging.md)) |
 | `data/manifest.json` | published snapshot |
 | `fixtures/media/` | tiny media files for tests |
 

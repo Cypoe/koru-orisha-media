@@ -1,0 +1,35 @@
+{
+  "docker": {
+    "services": [
+      {
+        "service": "koru-orisha-media",
+        "image": "ghcr.io/cypoe/koru-orisha-media:VERSION",
+        "container": {
+          "env": {
+            "KORU_MEDIA_ROOT": "/media",
+            "KORU_MANIFEST": "/data/manifest.json"
+          }
+        },
+        "volumes": [
+          {
+            "host_dir": "${WIZARD_MEDIA_SHARE}",
+            "mount_point": "/media",
+            "is_readonly": true
+          },
+          {
+            "host_dir": "${SHARE_PATH}/data",
+            "mount_point": "/data",
+            "is_readonly": false
+          }
+        ],
+        "ports": [
+          {
+            "host_port": "${WIZARD_HTTP_PORT}",
+            "container_port": 3090,
+            "protocol": "tcp"
+          }
+        ]
+      }
+    ]
+  }
+}

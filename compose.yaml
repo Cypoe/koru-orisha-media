@@ -1,0 +1,22 @@
+# Local runtime for koru-orisha-media (image: koru-orisha-media:local).
+# Build: bash scripts/build-image.sh
+# Run:   docker compose up
+#
+# Put library files under ./media (or change the volume) and ensure
+# ./data/manifest.json exists (or set KORU_REINDEX=1 once).
+
+services:
+  media:
+    build: .
+    image: koru-orisha-media:local
+    ports:
+      - "3090:3090"
+    environment:
+      KORU_MEDIA_ROOT: /media
+      KORU_MANIFEST: /data/manifest.json
+      # Uncomment once to (re)build the manifest from /media:
+      # KORU_REINDEX: "1"
+    volumes:
+      - ./media:/media:ro
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,19 @@
+# Scaffold INFO for a future Docker-wrapping SPK.
+# Copy/adapt into SynoCommunity spksrc — not used by local compose.
+
+package="koru-orisha-media"
+version="0.1.0"
+os_min_ver="7.0-40000"
+description="Direct-play personal media library (Koru/Orisha). Requires Container Manager."
+arch="noarch"
+maintainer="Cypoe"
+maintainer_url="https://github.com/Cypoe/koru-orisha-media"
+distributor="SynoCommunity"
+distributor_url="https://synocommunity.com/"
+support_url="https://github.com/Cypoe/koru-orisha-media/issues"
+displayname="Koru Orisha Media"
+helpurl="https://github.com/Cypoe/koru-orisha-media"
+startable="yes"
+silent_install="yes"
+silent_upgrade="yes"
+# install_dep_packages="ContainerManager"  # confirm exact Package Center name for target DSM

@@ -1,0 +1,27 @@
+[{
+  "step_title": "Koru Orisha Media",
+  "items": [{
+    "type": "textfield",
+    "desc": "HTTP port on the NAS (container listens on 3090)",
+    "var": "wizard_http_port",
+    "default_value": "3090",
+    "validator": {
+      "allowBlank": false,
+      "minValue": 1,
+      "maxValue": 65535
+    }
+  }, {
+    "type": "combobox",
+    "desc": "Shared folder that contains your media library (mounted read-only at /media)",
+    "var": "wizard_media_share",
+    "displayField": "name",
+    "valueField": "name",
+    "editable": false,
+    "mode": "remote",
+    "api_store": {
+      "api": "SYNO.Core.Storage.Volume",
+      "method": "list",
+      "version": 1
+    }
+  }]
+}]
