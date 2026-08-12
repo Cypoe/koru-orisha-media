@@ -39,10 +39,40 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def login(api_key: str) -> str:
+def _env_value(*names: str) -> str:
+    """Read from process env, then gitignored .env. Never logs secrets."""
+    for name in names:
+        v = os.environ.get(name, "").strip()
+        if v:
+            return v
+    env_path = ROOT / ".env"
+    if env_path.is_file():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, val = line.partition("=")
+            k, val = k.strip(), val.strip().strip('"').strip("'")
+            if k in names and val:
+                return val
+    return ""
+
+
+def _api_key() -> str:
+    return _env_value("TVDB_API_KEY", "TVDB_KEY")
+
+
+def _pin() -> str:
+    return _env_value("TVDB_PIN", "TVDB_SUBSCRIBER_PIN")
+
+
+def login(api_key: str, pin: str = "") -> str:
+    body: dict = {"apikey": api_key}
+    if pin:
+        body["pin"] = pin
     req = urllib.request.Request(
         f"{TVDB_API}/login",
-        data=json.dumps({"apikey": api_key}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
@@ -139,15 +169,30 @@ def main() -> int:
     snap = SemanticSnapshot.from_dict(json.loads(args.infile.read_text(encoding="utf-8")))
 
     if args.live:
-        key = os.environ.get("TVDB_API_KEY", "").strip()
+        key = _api_key()
         if not key:
-            print("TVDB_API_KEY is required for --live", file=sys.stderr)
+            print("TVDB_API_KEY (or TVDB_KEY) is required for --live — set env or .env", file=sys.stderr)
             return 2
         try:
-            token = login(key)
+            token = login(key, _pin())
             payload = fetch_series(token, args.series_id)
         except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode()[:300]
+            except Exception:
+                pass
             print(f"TVDB HTTP error: {e}", file=sys.stderr)
+            if detail:
+                print(detail, file=sys.stderr)
+            print(
+                "Hint: v4 keys come from https://www.thetvdb.com/dashboard/account/apikey "
+                "(legacy v3 keys without dashes usually 401). Subscriber keys may need TVDB_PIN.",
+                file=sys.stderr,
+            )
+            return 1
+        except Exception as e:
+            print(f"TVDB error: {e}", file=sys.stderr)
             return 1
     else:
         fix = args.fixture or (ROOT / "fixtures" / "tvdb" / "series_121361.json")

@@ -15,6 +15,9 @@ media/
 .env.*
 !.env.example
 
+# Local runtime semantic snapshot (may contain enrichment)
+data/semantic.json
+
 # Editor / OS
 .DS_Store
 Thumbs.db
