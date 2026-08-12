@@ -1,0 +1,10 @@
+{
+  "name": "koru-orisha-media",
+  "version": "0.1.0",
+  "paths": {
+    "std": "/usr/local/koru_std",
+    "orisha": "./vendor/orisha-lib",
+    "koru": "/src/koru-libs",
+    "media": "./src"
+  }
+}
