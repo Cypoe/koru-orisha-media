@@ -50,12 +50,14 @@ def main() -> int:
         check(st == 200, f"GET /library -> {st}")
         check(f"/item/{demo_id}".encode() in body, "library links to item")
         check(b"sort title" in body and b"fragment" in body, "sort/filter/fragment affordances")
+        check(b"<form" in body and b'name="q"' in body, "library search form")
         check("link" in hdrs and "self" in hdrs["link"], f"Link header on library: {hdrs.get('link')}")
 
         st, _, body = http("GET", f"/item/{demo_id}")
         check(st == 200 and b"/watch/" in body, "item page")
         check(b"container: mp4" in body, "item shows container")
         check(b"/art/" + demo_id.encode() in body, "item links poster art")
+        check(b"/library/movie" in body, "item related kind collection")
 
         st, hdrs, art = http("GET", f"/art/{demo_id}")
         check(st == 200 and art.startswith(b"\xff\xd8"), "art jpeg body")
@@ -85,6 +87,9 @@ def main() -> int:
         check(hdrs.get("accept-ranges") == "bytes", "Accept-Ranges")
         check("last-modified" in hdrs, "Last-Modified present")
         check("etag" in hdrs, "ETag present")
+        etag = hdrs["etag"].strip().strip('"')
+        st304, _, body304 = http("GET", f"/media/{demo_id}", headers={"If-None-Match": f'"{etag}"'})
+        check(st304 == 304 and body304 == b"", "If-None-Match 304")
 
         st_h, hdrs_h, body_h = http("HEAD", f"/media/{demo_id}")
         check(st_h == 200 and body_h == b"", "HEAD empty body")
@@ -122,6 +127,13 @@ def main() -> int:
             check(st == 200 and b'class="capability"' in body, "mkv watch capability warning")
         else:
             check(False, "odd.mkv fixture present in manifest")
+
+        arrival = next((e for e in manifest["entries"] if "2016" in e.get("title", "")), None)
+        if arrival and arrival.get("year") == 2016:
+            st, _, body = http("GET", f"/item/{arrival['id']}")
+            check(st == 200 and b"year: 2016" in body, "item shows year")
+        else:
+            check(False, "Arrival (2016) fixture with year in manifest")
 
         st, hdrs, body = http("GET", "/enhance.js")
         check(st == 200 and b"localStorage" in body, "enhance.js served")

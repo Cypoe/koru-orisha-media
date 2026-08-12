@@ -1,6 +1,17 @@
 {
   "entries": [
     {
+      "bytes": 3,
+      "container": "mp4",
+      "id": "m_6d5d84",
+      "kind": "movie",
+      "mime": "video/mp4",
+      "modified_ns": 1786542947699929300,
+      "path": "clips/Arrival (2016).mp4",
+      "title": "Arrival (2016)",
+      "year": 2016
+    },
+    {
       "bytes": 12,
       "container": "mp4",
       "id": "m_ca931e",

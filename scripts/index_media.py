@@ -11,6 +11,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -60,6 +61,16 @@ def find_poster(root: Path, media: Path) -> str | None:
     return None
 
 
+def year_from_name(stem: str) -> int | None:
+    """Optional year from trailing `(YYYY)` in the file stem — filesystem-cheap."""
+    m = re.search(r"\((19|20)\d{2}\)\s*$", stem)
+    if not m:
+        m = re.search(r"\((19|20)\d{2}\)", stem)
+    if not m:
+        return None
+    return int(m.group(0)[1:5])
+
+
 def index_root(root: Path) -> list[dict]:
     entries: list[dict] = []
     seen: set[str] = set()
@@ -90,6 +101,9 @@ def index_root(root: Path) -> list[dict]:
             poster = find_poster(root, full)
             if poster:
                 entry["poster"] = poster
+            year = year_from_name(full.stem)
+            if year is not None:
+                entry["year"] = year
             entries.append(entry)
     entries.sort(key=lambda e: e["title"].lower())
     return entries

@@ -34,6 +34,19 @@ class IndexerTests(unittest.TestCase):
                 self.assertIn("container", e)
                 self.assertEqual(e["container"], Path(e["path"]).suffix.lstrip(".").lower())
 
+    def test_year_from_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            clips.mkdir(parents=True)
+            (clips / "Arrival (2016).mp4").write_bytes(b"x")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["entries"][0]["year"], 2016)
+
     def test_poster_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
