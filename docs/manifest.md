@@ -25,6 +25,16 @@ An entry should contain at least:
 
 Fields may grow, but request handlers should depend only on the facts required by their view or response. Unknown fields must be safely ignored.
 
+## Runtime load (Orisha vendor)
+
+The request process does **not** use `koru/yyjson`. It loads a schema-specific snapshot:
+
+- only objects inside the top-level `"entries"` array;
+- string fields with basic JSON unescape (`\"`, `\\`, `\n`, `\t`, `\r`, `\/`);
+- duplicate `id` values rejected on load.
+
+Spec twin / unit tests: `scripts/test_manifest_parse.py`. Full JSON (nested `video`/`audio`) is ignored until a view needs it.
+
 ## Publication
 
 The indexer writes a new generation beside the active manifest, validates it, flushes it, and atomically renames it into place. Orisha either keeps its current immutable snapshot or swaps to the new complete snapshot. A request must never observe partially written content.

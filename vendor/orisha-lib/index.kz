@@ -14,6 +14,17 @@
 // (roughly through the media section banner below). Media HTML + handler stay
 // APP:media-handler. Shared lease: `active_streams` (idle exit, STREAM:v1,
 // manifest reload).
+//
+// Future file splits (markers below; do not split until second consumer + tests):
+//   SPLIT→ request-parse.kz   — Request, ParsedHttpRequest, parseHttpRequest, requestPathKey
+//   SPLIT→ accept-loop.kz     — listen|zig, accept|zig, idle poll (run-accept-loop in index.k)
+//   SPLIT→ send-stream.kz     — send|zig (STREAM:v1 + raw HTTP/1. + headerPrefixClose)
+//   SPLIT→ answer.kz          — answer|zig
+//   SPLIT→ router-static.kz   — router / static transforms (unchanged vs upstream)
+//   SPLIT→ manifest-load.kz   — APP: Entry, loadManifest, pathOk (schema JSON, not Orisha)
+//   SPLIT→ html-views.kz      — APP: library/item/watch HTML + fragments
+//   SPLIT→ media-http.kz      — APP: mediaHttp / artHttp / STREAM producer
+//   SPLIT→ handler.kz         — APP: handler|zig route table
 
 ~std/compiler:requires {
     exe.linkSystemLibrary("z");
@@ -69,6 +80,10 @@ pub const ConnHandle = struct {
 };
 
 var active_streams: std.atomic.Value(u32) = .init(0); // EXTRACT+APP lease: idle / STREAM / reload
+
+// ============================================================================
+// SPLIT→ accept-loop.kz — listen|zig + accept|zig (+ idle poll)
+// ============================================================================
 
 fn idleSecs() ?u32 {
     const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
@@ -169,6 +184,10 @@ fn idleSecs() ?u32 {
 
     return .{ .request = .{ .req = req, .conn = conn_handle, .server = server } };
 }
+
+// ============================================================================
+// SPLIT→ send-stream.kz — send|zig (STREAM:v1 consumer + raw HTTP/1. passthrough)
+// ============================================================================
 
 ~proc send|zig {
     const allocator = conn.allocator;
@@ -405,6 +424,10 @@ fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
     return out[0..w];
 }
 
+// ============================================================================
+// SPLIT→ request-parse.kz — Request field parse shared by accept|zig and answer|zig
+// ============================================================================
+
 /// EXTRACT:orisha-core — one Request-field parse for accept|zig and answer|zig.
 /// Slices point into `request_data` (except `path`, which may allocate via requestPathKey).
 const ParsedHttpRequest = struct {
@@ -485,6 +508,10 @@ fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) Pars
         .hx_request = hx_request,
     };
 }
+
+// ============================================================================
+// SPLIT→ answer.kz — answer|zig (parse raw → handler → shaped head/body)
+// ============================================================================
 
 ~proc answer|zig {
     const req_allocator = $mod.requestAllocator();
@@ -1521,6 +1548,11 @@ fn generateNamedRoutesFile(allocator: std.mem.Allocator, routes_const: []const P
 // ============================================================================
 // APP:media-handler — koru-orisha-media vendor extension (stay out of upstream)
 // ============================================================================
+// SPLIT→ manifest-load.kz — Entry, loadManifest, path policy (schema JSON scrape)
+// SPLIT→ html-views.kz    — library / item / watch HTML + fragments
+// SPLIT→ media-http.kz    — mediaHttp / artHttp / STREAM:v1 producer
+// SPLIT→ handler.kz       — handler|zig route table
+// ============================================================================
 
 const DEFAULT_MEDIA_ROOT = "fixtures/media";
 const DEFAULT_MANIFEST_PATH = "data/manifest.json";
@@ -1602,17 +1634,20 @@ fn loadManifest() void {
     var buf: [64 * 1024]u8 = undefined;
     const n = file.readAll(&buf) catch return;
     const text = buf[0..n];
+    // Schema-specific: only walk objects inside the top-level "entries" array.
+    // Avoids false positives on keys outside entries and cross-object field bleed.
+    const entries = entriesArraySlice(text) orelse return;
     var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        if (std.mem.startsWith(u8, text[i..], "\"id\"")) {
-            const obj = entryObjectSlice(text, i);
-            const id = extractAfter(obj, "\"id\"") orelse continue;
-            const title = extractAfter(obj, "\"title\"") orelse id;
-            const path = extractAfter(obj, "\"path\"") orelse continue;
-            const mime = extractAfter(obj, "\"mime\"") orelse "application/octet-stream";
-            const kind = extractAfter(obj, "\"kind\"") orelse "file";
-            const container = extractAfter(obj, "\"container\"") orelse "";
-            const poster = extractAfter(obj, "\"poster\"") orelse "";
+    while (i < entries.len) : (i += 1) {
+        if (std.mem.startsWith(u8, entries[i..], "\"id\"")) {
+            const obj = entryObjectSlice(entries, i);
+            const id = extractAfterUnescaped(obj, "\"id\"") orelse continue;
+            const title = extractAfterUnescaped(obj, "\"title\"") orelse id;
+            const path = extractAfterUnescaped(obj, "\"path\"") orelse continue;
+            const mime = extractAfterUnescaped(obj, "\"mime\"") orelse "application/octet-stream";
+            const kind = extractAfterUnescaped(obj, "\"kind\"") orelse "file";
+            const container = extractAfterUnescaped(obj, "\"container\"") orelse "";
+            const poster = extractAfterUnescaped(obj, "\"poster\"") orelse "";
             const bytes = extractNumberAfter(obj, "\"bytes\"") orelse 0;
             const modified_ns = extractNumberAfter(obj, "\"modified_ns\"") orelse 0;
             const year_u64 = extractNumberAfter(obj, "\"year\"") orelse 0;
@@ -1628,20 +1663,56 @@ fn loadManifest() void {
             if (dup) continue; // reject duplicate IDs on load
             if (entry_count >= entries_buf.len) break;
             entries_buf[entry_count] = .{
-                .id = allocDup(id),
-                .kind = allocDup(kind),
-                .title = allocDup(title),
-                .path = allocDup(path),
+                .id = id,
+                .kind = kind,
+                .title = title,
+                .path = path,
                 .bytes = bytes,
                 .modified_ns = modified_ns,
-                .mime = allocDup(mime),
-                .container = allocDup(container),
-                .poster = allocDup(poster),
+                .mime = mime,
+                .container = container,
+                .poster = poster,
                 .year = year,
             };
             entry_count += 1;
         }
     }
+}
+
+/// Locate the JSON array value for the top-level `"entries"` key.
+fn entriesArraySlice(text: []const u8) ?[]const u8 {
+    const key = "\"entries\"";
+    const at = std.mem.indexOf(u8, text, key) orelse return null;
+    var p = at + key.len;
+    while (p < text.len and (text[p] == ' ' or text[p] == '\t' or text[p] == '\n' or text[p] == '\r' or text[p] == ':')) : (p += 1) {}
+    if (p >= text.len or text[p] != '[') return null;
+    var depth: i32 = 0;
+    var in_string = false;
+    var escape = false;
+    var k = p;
+    while (k < text.len) : (k += 1) {
+        const ch = text[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '[') depth += 1;
+        if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) return text[p .. k + 1];
+        }
+    }
+    return null;
 }
 
 /// Limit JSON field scrapes to one object so keys before `"id"` (e.g. container)
@@ -1653,12 +1724,29 @@ fn entryObjectSlice(text: []const u8, id_at: usize) []const u8 {
     }
     var depth: i32 = 0;
     var seen_open = false;
+    var in_string = false;
+    var escape = false;
     var k = start;
     while (k < text.len) : (k += 1) {
-        if (text[k] == '{') {
+        const ch = text[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '{') {
             depth += 1;
             seen_open = true;
-        } else if (text[k] == '}') {
+        } else if (ch == '}') {
             depth -= 1;
             if (seen_open and depth == 0) {
                 return text[start .. k + 1];
@@ -1668,17 +1756,57 @@ fn entryObjectSlice(text: []const u8, id_at: usize) []const u8 {
     return text[start..];
 }
 
-fn extractString(slice: []const u8) ?[]const u8 {
+fn extractRawString(slice: []const u8) ?[]const u8 {
     const colon = std.mem.indexOfScalar(u8, slice, ':') orelse return null;
     const q1 = std.mem.indexOfScalar(u8, slice[colon..], '"') orelse return null;
     const start = colon + q1 + 1;
-    const q2 = std.mem.indexOfScalar(u8, slice[start..], '"') orelse return null;
-    return slice[start .. start + q2];
+    var i = start;
+    var escape = false;
+    while (i < slice.len) : (i += 1) {
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (slice[i] == '\\') {
+            escape = true;
+            continue;
+        }
+        if (slice[i] == '"') {
+            return slice[start..i];
+        }
+    }
+    return null;
 }
 
-fn extractAfter(slice: []const u8, key: []const u8) ?[]const u8 {
+fn allocUnescapeJson(raw: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return allocDup(raw);
+    var tmp: [4096]u8 = undefined;
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < raw.len and w < tmp.len) : (i += 1) {
+        if (raw[i] == '\\' and i + 1 < raw.len) {
+            i += 1;
+            const esc = raw[i];
+            tmp[w] = switch (esc) {
+                '"', '\\', '/' => esc,
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                else => esc,
+            };
+            w += 1;
+        } else {
+            tmp[w] = raw[i];
+            w += 1;
+        }
+    }
+    return allocDup(tmp[0..w]);
+}
+
+fn extractAfterUnescaped(slice: []const u8, key: []const u8) ?[]const u8 {
     const at = std.mem.indexOf(u8, slice, key) orelse return null;
-    return extractString(slice[at..]);
+    const raw = extractRawString(slice[at..]) orelse return null;
+    return allocUnescapeJson(raw);
 }
 
 fn extractNumberAfter(slice: []const u8, key: []const u8) ?u64 {
@@ -1899,6 +2027,10 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
     }
 }
 
+// ============================================================================
+// SPLIT→ html-views.kz — library / item / watch HTML + fragments + Link helpers
+// ============================================================================
+
 fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8) void {
     // HTMX dialect: hx-get + hx-target + hx-swap. Lowercase attrs are opaque HTML —
     // the same passthrough rule koru/dom inherits from vaxis markup.
@@ -2044,6 +2176,10 @@ fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     }
     return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
 }
+
+// ============================================================================
+// SPLIT→ media-http.kz — artHttp / mediaHttp (STREAM:v1 producer + Range / 304)
+// ============================================================================
 
 fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     ensureConfig();
@@ -2226,6 +2362,10 @@ fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticB
     };
     return .{ .status = 200, .body = data, .content_type = content_type };
 }
+
+// ============================================================================
+// SPLIT→ handler.kz — handler|zig route table (APP only)
+// ============================================================================
 
 ~proc handler|zig {
     const allocator = std.heap.c_allocator;

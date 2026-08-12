@@ -9,6 +9,8 @@ echo "== unit: indexer =="
 python3 scripts/test_indexer.py -v
 echo "== unit: range =="
 python3 scripts/test_range.py -v
+echo "== unit: manifest parse =="
+python3 scripts/test_manifest_parse.py -v
 
 if [[ ! -f bin/media-server ]]; then
   echo "bin/media-server missing — run bash scripts/build-docker.sh" >&2
