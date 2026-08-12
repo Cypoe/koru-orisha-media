@@ -1568,6 +1568,8 @@ const Entry = struct {
     mime: []const u8,
     container: []const u8,
     poster: []const u8,
+    /// Relative WebVTT sidecar path (empty if absent).
+    subtitle: []const u8,
     year: u32,
     /// First nested `video[]` track facts from indexer probe (empty if absent).
     video_codec: []const u8,
@@ -1653,6 +1655,7 @@ fn loadManifest() void {
             const kind = extractAfterUnescaped(obj, "\"kind\"") orelse "file";
             const container = extractAfterUnescaped(obj, "\"container\"") orelse "";
             const poster = extractAfterUnescaped(obj, "\"poster\"") orelse "";
+            const subtitle = extractAfterUnescaped(obj, "\"subtitle\"") orelse "";
             const bytes = extractNumberAfter(obj, "\"bytes\"") orelse 0;
             const modified_ns = extractNumberAfter(obj, "\"modified_ns\"") orelse 0;
             const year_u64 = extractNumberAfter(obj, "\"year\"") orelse 0;
@@ -1682,6 +1685,7 @@ fn loadManifest() void {
                 .mime = mime,
                 .container = container,
                 .poster = poster,
+                .subtitle = subtitle,
                 .year = year,
                 .video_codec = video_codec,
                 .video_brand = video_brand,
@@ -2425,13 +2429,25 @@ fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         }
         var probe_buf: [512]u8 = undefined;
         const probe = formatProbeNote(allocator, e, &probe_buf);
-        var buf: [2816]u8 = undefined;
-        const html = std.fmt.bufPrint(&buf, "<!doctype html><html><head><title>{s}</title></head><body><h1>{s}</h1>{s}{s}<p>container: {s}</p>{s}<p><a href=\"/watch/{s}\">watch</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a> · <a href=\"/library\">library</a></p></body></html>", .{ title, title, art, year_line, container, probe, id_esc, id_esc, kind_esc, kind_esc }) catch "item error";
-        var link_buf: [384]u8 = undefined;
-        const link = if (e.poster.len > 0)
-            std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\""
-        else
-            std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
+        var sub_link: []const u8 = "";
+        var sub_buf: [128]u8 = undefined;
+        if (e.subtitle.len > 0) {
+            sub_link = std.fmt.bufPrint(&sub_buf, " · <a href=\"/subtitles/{s}\">subtitles</a>", .{id_esc}) catch "";
+        }
+        var buf: [3072]u8 = undefined;
+        const html = std.fmt.bufPrint(&buf, "<!doctype html><html><head><title>{s}</title></head><body><h1>{s}</h1>{s}{s}<p>container: {s}</p>{s}<p><a href=\"/watch/{s}\">watch</a> · <a href=\"/media/{s}?download=1\">download</a>{s} · <a href=\"/library/{s}\">more {s}</a> · <a href=\"/library\">library</a></p></body></html>", .{ title, title, art, year_line, container, probe, id_esc, id_esc, sub_link, kind_esc, kind_esc }) catch "item error";
+        var link_buf: [448]u8 = undefined;
+        const link = blk: {
+            if (e.poster.len > 0 and e.subtitle.len > 0) {
+                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\", </subtitles/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
+            } else if (e.poster.len > 0) {
+                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
+            } else if (e.subtitle.len > 0) {
+                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </subtitles/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
+            } else {
+                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
+            }
+        };
         return renderHttpHtml(allocator, link, allocator.dupe(u8, html) catch html);
     }
     return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
@@ -2469,13 +2485,23 @@ fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         const probe = formatProbeNote(allocator, e, &probe_buf);
         if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
         // Player owns identity outside any hx-target / #library-region.
-        var player_buf: [384]u8 = undefined;
-        const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";
-        html.appendSlice(allocator, player) catch {};
+        // Optional <track> stays inside #player; never replace the element.
+        if (e.subtitle.len > 0 and std.mem.eql(u8, tag, "video")) {
+            var player_buf: [640]u8 = undefined;
+            const player = std.fmt.bufPrint(&player_buf, "<video id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"><track kind=\"subtitles\" src=\"/subtitles/{s}\" srclang=\"en\" label=\"English\" default></video>", .{ id_esc, id_esc, id_esc }) catch "";
+            html.appendSlice(allocator, player) catch {};
+        } else {
+            var player_buf: [384]u8 = undefined;
+            const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";
+            html.appendSlice(allocator, player) catch {};
+        }
         // Filled by enhance.js when a saved resume position exists; never replaces #player.
         html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
-        var nav_buf: [384]u8 = undefined;
-        const nav = std.fmt.bufPrint(&nav_buf, "<p><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, kind_esc, kind_esc }) catch "";
+        var nav_buf: [448]u8 = undefined;
+        const nav = if (e.subtitle.len > 0)
+            std.fmt.bufPrint(&nav_buf, "<p><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/subtitles/{s}\">subtitles</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, id_esc, kind_esc, kind_esc }) catch ""
+        else
+            std.fmt.bufPrint(&nav_buf, "<p><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, kind_esc, kind_esc }) catch "";
         html.appendSlice(allocator, nav) catch {};
         // Related shelf: HTMX swaps stay in #library-region; #player is never a descendant.
         html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
@@ -2485,8 +2511,11 @@ fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0);
         html.appendSlice(allocator, "</section></body></html>") catch {};
         const body = html.toOwnedSlice(allocator) catch "watch error";
-        var link_buf: [320]u8 = undefined;
-        const link = std.fmt.bufPrint(&link_buf, "</watch/{s}>; rel=\"self\", </item/{s}>; rel=\"up\", </media/{s}>; rel=\"related\", </library/{s}>; rel=\"collection\"", .{ id_esc, id_esc, id_esc, kind_esc }) catch "</library>; rel=\"up\"";
+        var link_buf: [384]u8 = undefined;
+        const link = if (e.subtitle.len > 0)
+            std.fmt.bufPrint(&link_buf, "</watch/{s}>; rel=\"self\", </item/{s}>; rel=\"up\", </media/{s}>; rel=\"related\", </subtitles/{s}>; rel=\"related\", </library/{s}>; rel=\"collection\"", .{ id_esc, id_esc, id_esc, id_esc, kind_esc }) catch "</library>; rel=\"up\""
+        else
+            std.fmt.bufPrint(&link_buf, "</watch/{s}>; rel=\"self\", </item/{s}>; rel=\"up\", </media/{s}>; rel=\"related\", </library/{s}>; rel=\"collection\"", .{ id_esc, id_esc, id_esc, kind_esc }) catch "</library>; rel=\"up\"";
         return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
     }
     return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
@@ -2525,6 +2554,38 @@ fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: ") catch {};
     head.appendSlice(allocator, ctype) catch {};
     head.appendSlice(allocator, "\r\n") catch {};
+    {
+        var lb: [48]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
+        head.appendSlice(allocator, ls) catch {};
+    }
+    head.appendSlice(allocator, "Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n") catch {};
+    head.appendSlice(allocator, data) catch {};
+    return head.toOwnedSlice(allocator) catch "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+}
+
+fn subtitlesHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    ensureConfig();
+    const e = findEntry(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    if (e.subtitle.len == 0) {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    }
+    var path_buf: [512]u8 = undefined;
+    const full_path = pathUnderRoot(e.subtitle, &path_buf) orelse {
+        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
+    };
+    const file = std.fs.cwd().openFile(full_path, .{}) catch {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    defer file.close();
+    // WebVTT sidecars are small; full read is fine (Range stays on /media only).
+    const data = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch {
+        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+    };
+    var head: std.ArrayList(u8) = .empty;
+    head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/vtt; charset=utf-8\r\n") catch {};
     {
         var lb: [48]u8 = undefined;
         const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
@@ -2733,6 +2794,11 @@ fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticB
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/art/")) {
         const id = path["/art/".len..];
         const body = artHttp(allocator, id);
+        return .{ .status = 200, .body = body, .content_type = null };
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/subtitles/")) {
+        const id = path["/subtitles/".len..];
+        const body = subtitlesHttp(allocator, id);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "OPTIONS") and std.mem.startsWith(u8, path, "/media/")) {

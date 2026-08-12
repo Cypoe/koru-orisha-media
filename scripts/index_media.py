@@ -24,6 +24,8 @@ from typing import Any, Callable, Dict, List, Optional
 VIDEO_EXT = {".mp4", ".m4v", ".webm", ".mkv", ".mov"}
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav"}
 POSTER_EXT = (".webp", ".jpg", ".jpeg", ".png")
+# Sidecar WebVTT only — same stem as the media file (demo.mp4 → demo.vtt).
+SUBTITLE_EXT = (".vtt",)
 
 # Sidecar next to the media file: "clip.mp4.id" → {"id": "m_ab12cd"}
 ID_SIDECAR_SUFFIX = ".id"
@@ -259,6 +261,16 @@ def find_poster(root: Path, media: Path) -> Optional[str]:
     return None
 
 
+def find_subtitle(root: Path, media: Path) -> Optional[str]:
+    """Cheap WebVTT sidecar beside the media file — no container probe / FFmpeg."""
+    stem = media.with_suffix("")
+    for ext in SUBTITLE_EXT:
+        cand = Path(str(stem) + ext)
+        if cand.is_file():
+            return cand.relative_to(root).as_posix()
+    return None
+
+
 def year_from_name(stem: str) -> Optional[int]:
     """Optional year from trailing `(YYYY)` in the file stem — filesystem-cheap."""
     m = re.search(r"\((19|20)\d{2}\)\s*$", stem)
@@ -355,6 +367,9 @@ def index_root(
             poster = find_poster(root, full)
             if poster:
                 entry["poster"] = poster
+            subtitle = find_subtitle(root, full)
+            if subtitle:
+                entry["subtitle"] = subtitle
             year = year_from_name(full.stem)
             if year is not None:
                 entry["year"] = year

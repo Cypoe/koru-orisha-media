@@ -28,6 +28,16 @@
       "year": 2016
     },
     {
+      "bytes": 1644,
+      "container": "wav",
+      "id": "m_31afda",
+      "kind": "audio",
+      "mime": "audio/wav",
+      "modified_ns": 1786557868668928200,
+      "path": "clips/beep.wav",
+      "title": "beep"
+    },
+    {
       "bytes": 12,
       "container": "mp4",
       "id": "m_ca931e",
@@ -36,6 +46,7 @@
       "modified_ns": 1786508368790095000,
       "path": "clips/demo.mp4",
       "poster": "clips/demo.jpg",
+      "subtitle": "clips/demo.vtt",
       "title": "demo",
       "video": [
         {

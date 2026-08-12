@@ -45,6 +45,7 @@ def main() -> int:
         demo_id = demo["id"]
         empty = next(e for e in manifest["entries"] if e["title"] == "empty")
         one = next(e for e in manifest["entries"] if e["title"] == "onebyte")
+        beep = next((e for e in manifest["entries"] if e.get("kind") == "audio"), None)
 
         st, hdrs, body = http("GET", "/library")
         check(st == 200, f"GET /library -> {st}")
@@ -63,8 +64,15 @@ def main() -> int:
         check(b'href="/library"' in body and b"class=\"kinds\"" in body, "kind up/all affordances")
 
         st, _, body = http("GET", "/library/audio")
+        check(st == 200 and b"<strong>audio</strong>" in body, "audio kind marked active")
+        if beep:
+            check(beep["id"].encode() in body and b'id="library-list"' in body, "audio collection lists fixture")
+            check(b'class="empty"' not in body, "audio collection not empty-only")
+        else:
+            check(False, "audio fixture present in manifest")
+
+        st, _, body = http("GET", "/library/tv")
         check(st == 200 and b'class="empty"' in body and b"No items in this collection" in body, "empty kind collection state")
-        check(b"<strong>audio</strong>" in body, "audio kind marked active")
 
         st, _, body = http("GET", "/library?q=zzznomatch")
         check(st == 200 and b'class="empty"' in body and b"No titles match" in body, "search zero state")
@@ -78,6 +86,7 @@ def main() -> int:
         check(b"video codec not probed" in body, "item shows honest unknown codec")
         check(b"/art/" + demo_id.encode() in body, "item links poster art")
         check(b"/library/movie" in body, "item related kind collection")
+        check(f"/subtitles/{demo_id}".encode() in body and b">subtitles</a>" in body, "item links subtitles")
 
         st, hdrs, art = http("GET", f"/art/{demo_id}")
         check(st == 200 and art.startswith(b"\xff\xd8"), "art jpeg body")
@@ -117,6 +126,23 @@ def main() -> int:
         player_at = body.find(b'id="player"')
         region_at = body.find(b'id="library-region"')
         check(player_at != -1 and region_at != -1 and player_at < region_at, "player precedes library-region")
+        check(b'<track kind="subtitles"' in body and f'/subtitles/{demo_id}'.encode() in body, "watch video has subtitle track")
+        check(f'/subtitles/{demo_id}'.encode() in body and b">subtitles</a>" in body, "watch links subtitles")
+
+        st, hdrs, vtt = http("GET", f"/subtitles/{demo_id}")
+        check(st == 200 and vtt.startswith(b"WEBVTT"), "subtitles VTT body")
+        check("text/vtt" in hdrs.get("content-type", ""), f"subtitles content-type: {hdrs.get('content-type')}")
+
+        st, _, _ = http("GET", f"/subtitles/{one['id']}")
+        check(st == 404, "missing subtitles 404")
+
+        if beep:
+            st, _, body = http("GET", f"/watch/{beep['id']}")
+            check(st == 200 and b"<audio id=\"player\"" in body, "audio watch uses audio element")
+            check(b"<track " not in body, "audio watch has no subtitle track")
+            st, hdrs, abody = http("GET", f"/media/{beep['id']}")
+            check(st == 200 and len(abody) > 0 and "audio/" in hdrs.get("content-type", ""), "GET audio media")
+
 
         st, hdrs, body = http("GET", f"/media/{demo_id}")
         check(st == 200 and body == b"hello world\n", "GET media body")

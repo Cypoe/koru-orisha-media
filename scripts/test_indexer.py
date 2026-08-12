@@ -63,6 +63,40 @@ class IndexerTests(unittest.TestCase):
             self.assertEqual(data["entries"][0]["poster"], "clips/show.jpg")
             self.assertEqual(data["entries"][0]["container"], "mp4")
 
+    def test_subtitle_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            clips.mkdir(parents=True)
+            (clips / "show.mp4").write_bytes(b"vid")
+            (clips / "show.vtt").write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n", encoding="utf-8")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(data["entries"]), 1)
+            self.assertEqual(data["entries"][0]["subtitle"], "clips/show.vtt")
+            # .vtt is not indexed as its own media entry
+            paths = {e["path"] for e in data["entries"]}
+            self.assertNotIn("clips/show.vtt", paths)
+
+    def test_audio_kind_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            clips = root / "clips"
+            clips.mkdir(parents=True)
+            (clips / "tone.wav").write_bytes(b"RIFF")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(data["entries"]), 1)
+            self.assertEqual(data["entries"][0]["kind"], "audio")
+            self.assertEqual(data["entries"][0]["path"], "clips/tone.wav")
+            self.assertEqual(data["entries"][0]["container"], "wav")
+
     def test_ids_stable_for_same_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out1 = Path(td) / "a.json"

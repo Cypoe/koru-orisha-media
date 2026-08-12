@@ -19,11 +19,14 @@ An entry should contain at least:
   "container": "mp4",
   "video": [{"codec": "hevc", "width": 3840, "height": 2160, "hdr": true}],
   "audio": [{"codec": "aac", "language": "eng", "channels": 2}],
-  "poster": "/art/m_7f3af1.webp"
+  "poster": "/art/m_7f3af1.webp",
+  "subtitle": "Films/Arrival (2016)/Arrival.vtt"
 }
 ```
 
 Fields may grow, but request handlers should depend only on the facts required by their view or response. Unknown fields must be safely ignored.
+
+Optional `subtitle` is a root-relative WebVTT sidecar path (same stem as the media file). Orisha serves it at `/subtitles/{id}` with `Content-Type: text/vtt` and may expose a native `<track>` on the watch player.
 
 ## Runtime load (Orisha vendor)
 
@@ -33,7 +36,7 @@ The request process does **not** use `koru/yyjson`. It loads a schema-specific s
 - string fields with basic JSON unescape (`\"`, `\\`, `\n`, `\t`, `\r`, `\/`);
 - duplicate `id` values rejected on load.
 
-Spec twin / unit tests: `scripts/test_manifest_parse.py`. Nested `video` / `audio` first-track facts (`codec`, `brand`) are loaded for item/watch probe notes; richer nested fields remain ignorable.
+Spec twin / unit tests: `scripts/test_manifest_parse.py`. Nested `video` / `audio` first-track facts (`codec`, `brand`) are loaded for item/watch probe notes; optional `subtitle` sidecar path is loaded for `/subtitles/{id}` and watch `<track>`; richer nested fields remain ignorable.
 
 ## Publication
 

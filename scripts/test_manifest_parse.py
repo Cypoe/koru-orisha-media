@@ -299,6 +299,7 @@ def load_manifest_entries(text: str) -> list[dict]:
                     "kind": extract_after_unescaped(obj, '"kind"') or "file",
                     "container": extract_after_unescaped(obj, '"container"') or "",
                     "poster": extract_after_unescaped(obj, '"poster"') or "",
+                    "subtitle": extract_after_unescaped(obj, '"subtitle"') or "",
                     "bytes": extract_number_after(obj, '"bytes"') or 0,
                     "modified_ns": extract_number_after(obj, '"modified_ns"') or 0,
                     "year": extract_number_after(obj, '"year"') or 0,
@@ -324,11 +325,22 @@ class ManifestParseTests(unittest.TestCase):
             self.assertEqual(got["path"], e["path"])
             self.assertEqual(got["bytes"], e["bytes"])
             self.assertEqual(got.get("year", 0) or 0, e.get("year", 0) or 0)
+            self.assertEqual(got["subtitle"], e.get("subtitle", "") or "")
             video = (e.get("video") or [{}])[0] if e.get("video") else {}
             audio = (e.get("audio") or [{}])[0] if e.get("audio") else {}
             self.assertEqual(got["video_codec"], video.get("codec", "") or "")
             self.assertEqual(got["video_brand"], video.get("brand", "") or "")
             self.assertEqual(got["audio_codec"], audio.get("codec", "") or "")
+
+    def test_subtitle_field(self) -> None:
+        text = (
+            '{"entries":[{'
+            '"id":"m_1","path":"a.mp4","title":"a","bytes":1,'
+            '"subtitle":"a.vtt"'
+            "}]}"
+        )
+        scraped = load_manifest_entries(text)
+        self.assertEqual(scraped[0]["subtitle"], "a.vtt")
 
     def test_ignores_id_outside_entries(self) -> None:
         text = '{"meta":{"id":"noise"},"entries":[{"id":"m_ok","path":"a.mp4","title":"ok","bytes":1}]}'
