@@ -49,7 +49,7 @@ Compile from WSL. Absolute Linux mount paths:
 }
 ```
 
-`scripts/build.sh` rsyncs the repo onto `$HOME/src/koru-orisha-media-build` (Linux FS) before invoking `koruc`, because Zig's local cache rename fails on DrvFs.
+`scripts/build.sh` rsyncs the repo onto `$HOME/src/koru-orisha-media-build` (Linux FS) before invoking `koruc`, because Zig's local cache rename fails on DrvFs. Frontend JS emit (`scripts/build-frontend.sh`) maps `"koru": "./vendor/koru-libs"` (vendored `dom/` stem + our `htmx/`); it does not need `W:\src\koru-libs`.
 
 Orisha’s own map (`W:\src\orisha\koru.json`) uses relative siblings:
 
@@ -117,8 +117,10 @@ Handlers return only:
 | `body` | Bytes after `\r\n\r\n`, or null |
 | `if_none_match` | Quoted ETag stripped when present |
 | `range` | Single `Range` header value |
-| `prefer` | `Prefer` header value |
-| `hx_request` | True when `HX-Request` header is present |
+| `prefer` | `Prefer` header value (RFC 7240) |
+| `accept` | `Accept` header value |
+| `headers` | Raw header block after the request line |
+| `header(name)` | Case-insensitive lookup; dialects (e.g. `HX-Request`) use this — not fields on `Request` |
 | `allocator` | Request arena / connection allocator |
 
 ### Router syntax
@@ -166,7 +168,7 @@ Avoid `examples/hello` until updated: it still imports nonexistent `orisha/eshu`
 
 ## Gaps vs GOAL.md media milestone
 
-Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/orisha-lib/` with a reviewable extension:
+Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/orisha/` with a reviewable extension:
 
 | GOAL need | Vendor status |
 |-----------|----------------|
@@ -175,16 +177,19 @@ Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/o
 | `Accept-Ranges` / `206` / `416` | Parsed `req.range` + single `bytes=` range |
 | `Last-Modified` | From manifest `modified_ns` when present |
 | Path traversal | Reject `..` / absolute; require path under `KORU_MEDIA_ROOT` |
-| Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST` env (defaults: `fixtures/media`, `data/manifest.json`) |
-| Upstream `orisha:serve` / pump | Upstream-canonical. **Re-probed after rebuild** (`koruc` 0.1.7 from `W:\src\koru` `5c64de27` via `$HOME/src/koru-build`, Zig 0.15.1): minimal `orisha:serve` **links successfully** — prior `duplicate struct member` no longer reproduces. Still **do not migrate** this app yet: `Request` extras + `STREAM:v1` live on the accept-loop/`send` path, not pump `answer`/`reply`. Keep `orisha:run-accept-loop` until that port exists. |
+| Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST`, `KORU_SEMANTIC` env (defaults: `fixtures/media`, `data/manifest.json`, `data/semantic.json`) |
+| Upstream `orisha:serve` / pump | Full copy at `vendor/upstream/orisha-pump/` (not on the `orisha` path). Sibling `pump.kz` next to `index.k` merges into this stem; `import orisha/pump` double-emits `koru_pump`. This app uses `orisha:run-accept-loop`. |
 
 Prefer contributing Range/streaming upstream; keep vendor diffs documented in [vendor/README.md](../vendor/README.md).
 
+This app's HTML/routes live in [`src/`](../src/) (Koru module `media`: `index` dispatch, `graph` snapshot, `consumers` representations). `main.k` implements `orisha:handler` as a flow into `media:dispatch` (reconstructing the response record; Koru emits distinct Zig `Output` types). Manifest/semantic env (`KORU_MANIFEST`, `KORU_SEMANTIC`) is app config; Orisha only sees `Request` + `STREAM:v1`.
+
 ## koru-libs relevance
 
-- **`koru/dom`** (`W:\src\koru-libs\dom`): JS-target keyed DOM (`component`, `run`, `drop`). For GOAL Step 9 only — not the first milestone.
-- **`yyjson`** (`W:\src\koru-libs\yyjson`): Koru lift over **system** `libyyjson` (`pkg-config`, phantom `Doc<open!>`). Wrong layer for today’s Zig `handler|zig` scrape. Manifest path now uses a **schema-specific** loader (`entries` array + unescape) in vendor — see `scripts/test_manifest_parse.py`. Next PR-sized step if needed: vendor single-file `yyjson.c` behind `loadManifest` only after fixture scale or escape edge cases outgrow the dedicated parser — do not pull full `koru/yyjson` into the media binary yet.
-- No server-side HTML view package yet; first milestone renders HTML as strings from Orisha handlers.
+- **`koru/dom`**: vendored stem [`vendor/koru-libs/dom/`](../vendor/koru-libs/dom/) from `W:\src\koru-libs\dom` (2026-08-13). JS-target keyed DOM (`component`, `run`, `drop`). Usage: [`src/frontend/main.k`](../src/frontend/main.k) → `public/koru-dom-enhance.js`.
+- **`koru/htmx`**: our navigation host [`vendor/koru-libs/htmx/`](../vendor/koru-libs/htmx/). Usage: [`src/frontend/host.k`](../src/frontend/host.k) → `public/enhance.js` (`GET /enhance.js`). Host logic is a `|js` escape; keyed list is real Koru IR. Frontend emit maps `"koru": "./vendor/koru-libs"` (no `W:\src\koru-libs` required).
+- **`yyjson` (`koru/yyjson`)**: Koru lift over **system** `libyyjson` (`pkg-config`, `exe.linkSystemLibrary("yyjson")`, phantom `Doc<open!>` / `Builder<open!>`). **Not our destination.** Bookworm has no `libyyjson-dev`; the phantom Doc API is the wrong layer for this app’s `{entries:[…]}` / `projections[]` publish. Our writer is [`vendor/json/`](../vendor/json/) (no C library); usage is [`src/json/`](../src/json/) → `bin/json-publish`. Positive suites from `W:\src\koru-libs\yyjson\tests` (`basic.kz`, `features.kz`) are ported to [`vendor/json/tests/`](../vendor/json/tests/) against our Koru read events; phantom `negative_*.kz` Doc/Builder tests do not apply. [`scripts/json_publish.py`](../scripts/json_publish.py) is CI fallback if koruc is missing. Request-path load stays the schema scrape in [`src/graph.kz`](../src/graph.kz) — see `scripts/test_manifest_parse.py`.
+- No server-side HTML view package yet; first milestone renders HTML as strings from `media/consumers`.
 
 ## Tests
 
@@ -198,6 +203,6 @@ Prefer Docker (`scripts/build-docker.sh`) or WSL Linux FS for `koruc`. Native Wi
 
 ## Milestone note
 
-Steps 1–8 hardened + hypermedia. Step 9: `public/enhance.js` (resume + fragment) and optional koru/dom keyed list (`browser/` → `koru-dom-enhance.js`, `/enhance-demo.html`). Step 10: `scripts/bench_baseline.sh`, `KORU_IDLE_SECS`, [docs/lifecycle.md](lifecycle.md). Follow-on: `container`/`poster` in manifest, `/art/{id}`, pagination (`limit`/`offset`), `Prefer: return=minimal`.
+Steps 1–8 hardened + hypermedia. Step 9: `koru/htmx` (`vendor/koru-libs/htmx` + usage `src/frontend/host.k` → `public/enhance.js`) and `koru/dom` (`vendor/koru-libs/dom` + usage `src/frontend/main.k` → `public/koru-dom-enhance.js`). Step 10: `scripts/bench_baseline.sh`, `KORU_IDLE_SECS`, [docs/lifecycle.md](lifecycle.md).
 
 **JS emit note:** `koruc --lang=js` **does emit JS correctly**. Put `--lang=js` before the input (`koruc --lang=js main.k`) and keep Zig 0.15.1 on `PATH`. A bare `FileNotFound` during “Building executable…” means Zig was missing from `PATH` — the JS backend never ran, so no `output_emitted.js` was written. That is an environment miss, not a broken emitter.

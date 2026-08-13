@@ -14,9 +14,9 @@ The implementation should use Koru's event-continuation model, compile through i
 
 ## Context
 
-Koru is the event-continuation meta-language built on Zig, with native and JavaScript compilation targets. Orisha is the Koru web server and router. Koru also has a browser/DOM library whose component surface is consumed at compile time and emits direct DOM code rather than shipping a virtual DOM, scheduler, or component runtime.
+Koru is the event-continuation meta-language built on Zig, with native and JavaScript compilation targets. Orisha is the Koru web server and router. Koru also has `koru/dom`, whose component surface is consumed at compile time and emits direct DOM code rather than shipping a virtual DOM, scheduler, or component runtime.
 
-The browser work demonstrated by Koru's keyed-table benchmark is directly relevant. Static markup becomes a template, typed placeholders become synthesized inputs, and store handles provide identity for keyed DOM updates. The important lesson is that identity already held by both sides is cheaper and safer than looking it up by scanning the DOM or parsing identifiers back out of text.
+The `koru/dom` keyed-table work is directly relevant. Static markup becomes a template, typed placeholders become synthesized inputs, and store handles provide identity for keyed DOM updates. The important lesson is that identity already held by both sides is cheaper and safer than looking it up by scanning the DOM or parsing identifiers back out of text.
 
 The intended media application should use that same principle:
 
@@ -39,9 +39,11 @@ The product is a content-driven web surface with four responsibilities:
 1. Index configured media roots in an explicit batch process.
 2. Serve precomputed collection and item representations.
 3. Serve original media bytes with correct HTTP range semantics.
-4. Offer optional browser enhancement without making JavaScript or a custom client mandatory.
+4. Offer optional frontend enhancement without making JavaScript or a custom client mandatory.
 
 The application should feel like a very small web-native file catalogue with a good media-oriented UI, not like a daemon that owns the entire media lifecycle.
+
+The first presentable surface is the **local archive**. On first run, or when the fetched catalogue index is missing (`semantic.json` absent, or `projections[]` empty), `/` and `/library` still list playable files from the physical manifest. Catalogue names and provider chips are an overlay that appears only when named constructions exist. Do not block browse or play on TMDB or `project_semantic`.
 
 ## Non-goals
 
@@ -81,21 +83,21 @@ Later, prefer this shape (still outside the request plane):
 
 1. **Catalog source — Synology Indexer.** Consume Synology’s media index / File Station indexing story the way Radarr and Jellyfin already do on Synology. The media app ingests an external catalog feed into the same opaque-ID + atomic-manifest publish path; it does not invent a resident walker as the durable architecture.
 2. **Probe / metadata — ffmpeg/ffprobe offline only.** Real container and stream probing belongs in the offline indexer or a Synology-fed batch job. Orisha request handlers must never spawn FFmpeg, remux, or probe. Today’s injectable `ftyp` peek and nested `video`/`audio` fields remain the personal-milestone path that does not require FFmpeg on the server HTTP path.
-3. **JSON — prefer yyjson.** Long-term indexing and richer manifest parse should use **yyjson** through the Koru lift at `W:\src\koru-libs\yyjson` (system `libyyjson` / `pkg-config`), not remain on Python forever. Do not treat vendoring `yyjson.c` into this media binary as the default; lift or link first. The request process may keep a schema-specific loader until that stack is ready.
+3. **JSON — our writer (`vendor/json`).** Indexer/projection publish uses a tiny vendored emitter, not `koru/yyjson` (pkg-config / phantom Doc / no bookworm package). The CLI is `src/json` usage. Python remains CI fallback if koruc is missing. The request process keeps a schema-specific scrape (`src/graph.kz`) and does not parse JSON through this writer.
 
 Invariants that do not change: opaque IDs at the HTTP boundary, atomic manifest publish, immutable snapshots for in-flight requests, and no directory walk or probe on a library/media request.
 
-### Orisha request plane
+### Backend shim (Orisha request plane)
 
-Orisha loads one complete manifest snapshot and exposes HTTP routes. Request handlers resolve IDs and collection selections against that snapshot, render HTML or JSON, and stream files. A request must not enumerate the media directory, invoke a probe process, query remote metadata, or construct a database schema.
+The backend shim loads one complete graph snapshot (physical manifest + semantic core) and dispatches representations to named consumers. Orisha is only the HTTP pump. Request handlers resolve IDs against that snapshot, emit HTML / JSON-LD / Link / bytes, and stream files. A request must not enumerate the media directory, invoke a probe process, query remote metadata, or construct a database schema.
 
 Orisha may initially remain alive as a tiny native process. Later, it can support socket activation or another supervisor-owned listener and exit after an idle period. Active file streams must prevent shutdown until complete.
 
-### Browser plane
+### Frontend
 
-The baseline browser client is ordinary HTML with native `<video>` and `<audio>` elements. Koru's DOM compiler may enhance collection updates, playback controls, local resume state, playlist behavior, and metadata repainting.
+The baseline client is ordinary HTML with native `<video>` and `<audio>` elements, served as complete representations from the backend shim. Koru's DOM compiler may enhance collection updates, playback controls, local resume state, playlist behavior, and metadata repainting. There is no separate "browser app" product — `src/frontend/` is a module of this app (same shape as `koru-libs/dom/app/`).
 
-The player element must be outside replaceable collection regions, or be explicitly keyed and preserved by the browser library. Never rebuild a playing element merely because a surrounding title, sort order, or progress value changed.
+The player element must be outside replaceable collection regions, or be explicitly keyed and preserved by the frontend. Never rebuild a playing element merely because a surrounding title, sort order, or progress value changed.
 
 ## Resource model
 
@@ -166,7 +168,7 @@ A media entry should be able to contain:
   "kind": "movie",
   "title": "Arrival",
   "year": 2016,
-  "path": "Films/Arrival (2016)/Arrival.mp4",
+  "path": "movies/Arrival (2016)/Arrival.mp4",
   "bytes": 8348123941,
   "modified_ns": 1765349200000000000,
   "mime": "video/mp4",
@@ -211,9 +213,9 @@ The same structural component descriptions should eventually be usable for:
 - server HTML serialization;
 - browser DOM template creation and keyed updates.
 
-Do not force the server and browser renderers to have identical runtime semantics. They share structure and identity, not necessarily the same generated code.
+Do not force the backend and frontend renderers to have identical runtime semantics. They share structure and identity, not necessarily the same generated code.
 
-## Browser enhancement strategy
+## Frontend enhancement strategy
 
 Use complete-page server rendering first. Add fragment endpoints only where they simplify an interaction such as sorting, filtering, or pagination.
 
@@ -228,7 +230,7 @@ HTMX-like behavior is a useful model, not necessarily a dependency. The desired 
 
 Koru/dom should be used for fine-grained, identity-aware local updates when it provides a measured benefit. A keyed collection reorder is a separate primitive from repainting a row property. Do not invent a generalized diff engine before a concrete use case and benchmark exist.
 
-Potential first browser features:
+Potential first frontend features:
 
 - native playback controls around `<video>`/`<audio>`;
 - local resume position;
@@ -294,9 +296,9 @@ Add `/item/{id}` and `/watch/{id}`. Keep the media element outside any fragment 
 
 Add fragment responses, sort/filter links, optional opt-in request headers, and explicit target identities. Keep full-page fallback behavior.
 
-### Step 9: add Koru browser code
+### Step 9: add Koru frontend code
 
-Only after server behavior is stable, add a small browser enhancement for a measurable feature. Keep the generated client optional and test stable handles, insertion, removal, and reorder behavior.
+Only after server behavior is stable, add a small frontend enhancement for a measurable feature. Keep the generated client optional and test stable handles, insertion, removal, and reorder behavior.
 
 ### Step 10: lifecycle and optimization
 
@@ -323,7 +325,7 @@ At minimum, test:
 - old snapshot behavior during replacement;
 - absence of unauthorized affordances;
 - complete-page behavior without JavaScript;
-- browser keyed identity if a DOM target is added.
+- frontend keyed identity if a DOM target is added.
 
 Tests must not rely on a real NAS or a real multi-gigabyte media file. Use temporary directories and deterministic small fixtures.
 
@@ -380,7 +382,7 @@ The first useful milestone is complete when a fresh checkout can:
 9. operate without FFmpeg, HLS, a database server, or a remote metadata service;
 10. run the test suite from a clean checkout.
 
-After this milestone, browser enhancement and richer indexing are optional iterations, not prerequisites for the system to be useful.
+After this milestone, frontend enhancement and richer indexing are optional iterations, not prerequisites for the system to be useful.
 
 ## Final architectural invariant
 

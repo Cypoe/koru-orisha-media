@@ -35,11 +35,11 @@
 - `/art/{id}` serves precomputed poster sidecars when present.
 - Honest watch capability note for awkward containers; `?download=1` sets `Content-Disposition: attachment`.
 
-## Phase 4: browser enhancement
+## Phase 4: frontend enhancement
 
 - Keep complete-page navigation as the baseline.
-- Shipped: [`public/enhance.js`](public/enhance.js) — HTMX-dialect host (`hx-get` / `hx-target` / `HX-Request`) + localStorage resume; swaps `#library-region` only; refuses targets that own `#player`; watch related shelf keeps player outside replaceable regions.
-- Optional koru/dom keyed list: `browser/main.k` + `scripts/build-browser.sh` → `public/koru-dom-enhance.js` + `/enhance-demo.html`.
+- Shipped: [`vendor/koru-libs/htmx/`](vendor/koru-libs/htmx/) (`import koru/htmx`) + usage [`src/frontend/host.k`](src/frontend/host.k) → `public/enhance.js` (`GET /enhance.js`) — generic HTMX-dialect host (`hx-get` / `hx-target` / `HX-Request`); usage supplies `#library-region` default, `protect: "#player"`, and localStorage resume. Host logic remains a `|js` escape until Koru lowers fetch/swap; boot is a Koru top-level `koru/htmx:run(...)`.
+- Optional koru/dom keyed list: [`vendor/koru-libs/dom/`](vendor/koru-libs/dom/) + usage `src/frontend/main.k` + `main.kjs` + `scripts/build-frontend.sh` → `public/koru-dom-enhance.js` + `/enhance-demo.html` (real Koru IR emit).
 - See [docs/upstream-candidates.md](docs/upstream-candidates.md) for the vaxis → dom → HTMX story.
 
 ## Phase 5: lifecycle
@@ -57,20 +57,30 @@
 
 ## Phase 7: Orisha extraction prep (in-repo)
 
-- Unified `parseHttpRequest` for `accept` and `answer`; `EXTRACT:` / `APP:` / `SPLIT→` seam markers in [`vendor/orisha-lib/index.kz`](vendor/orisha-lib/index.kz)
+- Unified `parseHttpRequest` for `accept` and `answer` in [`vendor/orisha/index.kz`](vendor/orisha/index.kz) (`header()`, no `hx_*`); STREAM:v1 via `sendSpecial` on the same stem. `import orisha` does not nest extra vendor stems.
+- Media app moved out of the Orisha companion into [`src/`](src/) (`media:dispatch` representation dispatch); `main.k` implements `orisha:handler`
 - Vendor / current-apis docs match the real `Request` + `STREAM:v1` surface
 - Schema-specific manifest loader (`entries` + unescape) + `scripts/test_manifest_parse.py`
-- Next **out-of-repo**: patch `W:\src\orisha` with Request parse + raw send + STREAM + `run-accept-loop` docs — media `handler` stays in this vendor tree
+- Next **out-of-repo**: patch `W:\src\orisha` with Request parse + raw send + STREAM + `run-accept-loop` docs — media HTML stays in `src/`
 
-## Next REAL product work (after Phase 7 prep)
+## Phase 8: semantic projection
+
+- Offline snapshot join by opaque asset id (`KORU_SEMANTIC`, default `data/semantic.json`)
+- Precomputed named constructions (`orisha.item`, `orisha.links`, `schema.org.jsonld`) via [`scripts/project_semantic.py`](scripts/project_semantic.py); core `Entity` stays identity + provenance; Orisha merges construction rows by opaque asset id
+- Item/watch show TMDB/IMDb links and JSON-LD alternate **only when those constructions exist**
+- Request handlers never call TMDB/TVDB/IMDb; missing snapshot leaves physical HTML unchanged
+- First presentable: `/` and `/library` list local playable files when the fetched catalogue index is missing
+- **Done** for the fixture library (Arrival has constructions; demo unlinked / physical-only)
+
+## Next REAL product work (after Phase 8)
 
 Not more docs. Ranked concrete features:
 
 1. **Richer library UX** — landed: `/library/{kind}` self/up Links + title, row watch/year affordances, pagination preserves `sort`/`q`, `#library-region` swap root; empty/search-zero states; kind nav (`all`/`movies`/`audio` with active mark); search input preserves `q` + clear link; WebVTT sidecar → `/subtitles/{id}` + watch `<track>`/link; audio fixture fills `/library/audio`. Still open: playlist/queue only if useful.
 2. **Indexer depth** — landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars` + auto-move of orphaned `*.id` sidecars on rename/move (fingerprint or same-dir 1:1) + WebVTT subtitle sidecar path. Orisha item/watch surface nested first-track `video`/`audio` brand/codec probe notes. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
-3. **Browser Step 9 hardening** — landed: watch related shelf swaps `#library-region` only; `enhance.js` refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch; watch `#resume-ui` (Resumed from / Restart) without recreating `#player`. Still open: measured koru/dom only if marks justify it.
+3. **Frontend Step 9 hardening** — landed: watch related shelf swaps `#library-region` only; emitted `public/enhance.js` (`koru/htmx` + usage `host.k`) refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch; watch `#resume-ui` (Resumed from / Restart) without recreating `#player`. Still open: measured koru/dom only if marks justify it.
 
-Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, migrating to upstream pump/serve (koruc pump emit now links, but STREAM/Request still missing on that path), sendfile/mmap, or another extraction-only doc pass. Live catalogue enrichment uses **offline TMDB** (`scripts/enrich_tmdb.py`); TVDB remains optional.
+Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, switching this app from `run-accept-loop` to `orisha:serve` (pump is vendored; STREAM/Request still missing on `reply`), sendfile/mmap, or another extraction-only doc pass. Live catalogue enrichment uses **offline TMDB** (`scripts/enrich_tmdb.py`); TVDB remains optional.
 
 ## Explicitly deferred
 
@@ -85,4 +95,4 @@ Documented so Phase 2 / GOAL stay coherent with packaging notes:
 | Catalog source | Synology Indexer / File Station indexing feed (Radarr/Jellyfin-style), not a permanent in-process walker | Still publishes opaque IDs + atomic manifest snapshots Orisha already loads |
 | Probe / metadata | `ffmpeg` / `ffprobe` in the **offline indexer** or Synology-fed batch | **Never** in Orisha request handlers or the HTTP media path |
 | Today’s probe | `--probe ftyp` + nested `video`/`audio` | Stopgap for the personal milestone without requiring FFmpeg on the server path |
-| JSON stack | Prefer **yyjson** via `W:\src\koru-libs\yyjson` (system `libyyjson` / Koru lift) for indexer publish + richer parse | Do not vendor `yyjson.c` into this binary yet; Python `scripts/index_media.py` remains the working reference until a Koru one-shot replaces it |
+| JSON stack | **`vendor/json`** tiny writer (not `koru/yyjson`); CLI usage `src/json` | Python fallback if koruc missing. Do not vendor `yyjson.c` into `bin/media-server`. Full indexer remains `scripts/index_media.py`. Request path stays graph scrape. |

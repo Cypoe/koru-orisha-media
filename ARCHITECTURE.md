@@ -5,8 +5,8 @@
 The system has three planes:
 
 1. **Indexer** — an explicit batch process that walks configured roots, reads file facts, optionally probes containers, and atomically publishes a manifest.
-2. **Orisha request plane** — a small native HTTP process that loads a manifest snapshot, resolves routes, renders HTML or JSON, and streams original files.
-3. **Browser plane** — ordinary HTML and native media elements, optionally enhanced by Koru's compiled DOM code for keyed updates and local player state.
+2. **Backend shim (Orisha request plane)** — a small native HTTP process that loads the graph (manifest + semantic), dispatches representations to named consumers, and streams original files. Orisha is only the HTTP pump.
+3. **Frontend** — pages and assets that *receive* those representations: complete HTML from the shim, `vendor/koru-libs/htmx` consumed by `src/frontend/host.k` emitted to `public/enhance.js` (`GET /enhance.js`), and optional `vendor/koru-libs/dom` consumed by `src/frontend/main.k` emitted to `public/koru-dom-enhance.js`. Libraries live in `vendor/`; `src/` is usage only. Not a sibling product.
 
 The HTTP server must not scan media roots or invoke FFmpeg on a normal library request.
 
@@ -56,7 +56,7 @@ The indexer is short-lived. Orisha may remain a very small native process or lat
 
 Koru components should be able to project the same structural view into two targets:
 
-- HTML serialization on the server;
-- compiled DOM operations in the browser.
+- HTML serialization on the backend shim;
+- compiled DOM operations in the frontend.
 
-The server-side surface should remain intentionally narrower than a general template language: typed values, escaped text and attributes, static structure, and explicit trusted-HTML escape hatches. The browser-side keyed component model should be used for local state and fine-grained updates, not as a reason to make the server a client-side application runtime.
+The server-side surface should remain intentionally narrower than a general template language: typed values, escaped text and attributes, static structure, and explicit trusted-HTML escape hatches. The frontend keyed component model should be used for local state and fine-grained updates, not as a reason to make the server a client-side application runtime.
