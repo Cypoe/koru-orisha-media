@@ -15,7 +15,7 @@ cleanup
 
 docker run -d --name "$CONTAINER" \
   -e KORU_MEDIA_ROOT=fixtures/media \
-  -e KORU_MANIFEST=data/manifest.json \
+  -e KORU_MANIFEST=fixtures/manifest.json \
   -e KORU_IDLE_SECS=2 \
   -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$ROOT/data:/app/data:ro" \

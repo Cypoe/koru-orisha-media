@@ -10,21 +10,15 @@
 // declared here while that companion exists (KORU111): the public surface is
 // the contract's job.
 //
-// EXTRACT:orisha-core — listen / accept / send / answer / Request / router
-// (roughly through the media section banner below). Media HTML + handler stay
-// APP:media-handler. Shared lease: `active_streams` (idle exit, STREAM:v1,
-// manifest reload).
+// Generic HTTP server only. The media app lives in src/ (module `media`):
+// manifest/semantic load, HTML views, and orisha:handler dispatch.
+// Shared lease: `active_streams` (idle exit + STREAM:v1). App reload asks
+// streamsBusy() rather than touching this counter.
 //
-// Future file splits (markers below; do not split until second consumer + tests):
-//   SPLIT→ request-parse.kz   — Request, ParsedHttpRequest, parseHttpRequest, requestPathKey
-//   SPLIT→ accept-loop.kz     — listen|zig, accept|zig, idle poll (run-accept-loop in index.k)
-//   SPLIT→ send-stream.kz     — send|zig (STREAM:v1 + raw HTTP/1. + headerPrefixClose)
-//   SPLIT→ answer.kz          — answer|zig
-//   SPLIT→ router-static.kz   — router / static transforms (unchanged vs upstream)
-//   SPLIT→ manifest-load.kz   — APP: Entry, loadManifest, pathOk (schema JSON, not Orisha)
-//   SPLIT→ html-views.kz      — APP: library/item/watch HTML + fragments
-//   SPLIT→ media-http.kz      — APP: mediaHttp / artHttp / STREAM producer
-//   SPLIT→ handler.kz         — APP: handler|zig route table
+// Request is RFC HTTP + header() — no hx_* fields. parseHttpRequest and
+// STREAM:v1 send live in this stem: `import orisha` does not load extra
+// vendor stems (unlike media/graph under src/). routing.k remains the
+// upstream match module.
 
 ~std/compiler:requires {
     exe.linkSystemLibrary("z");
@@ -63,10 +57,16 @@ pub const Request = struct {
     range: ?[]const u8 = null,
     query: ?[]const u8 = null,
     prefer: ?[]const u8 = null,
-    hx_request: bool = false,
+    accept: ?[]const u8 = null,
+    /// Raw header block (after the request line, no body). Dialects use header().
+    headers: []const u8 = "",
 
     // For param extraction by router
     allocator: std.mem.Allocator,
+
+    pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
+        return headerValue(self.headers, name);
+    }
 };
 
 pub const ServerHandle = struct {
@@ -79,11 +79,12 @@ pub const ConnHandle = struct {
     allocator: std.mem.Allocator,
 };
 
-var active_streams: std.atomic.Value(u32) = .init(0); // EXTRACT+APP lease: idle / STREAM / reload
+var active_streams: std.atomic.Value(u32) = .init(0); // idle exit + STREAM:v1 lease
 
-// ============================================================================
-// SPLIT→ accept-loop.kz — listen|zig + accept|zig (+ idle poll)
-// ============================================================================
+pub fn streamsBusy() bool {
+    return active_streams.load(.seq_cst) != 0;
+}
+
 
 fn idleSecs() ?u32 {
     const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
@@ -171,7 +172,8 @@ fn idleSecs() ?u32 {
         .range = if (parts.range) |r| allocator.dupe(u8, r) catch r else null,
         .query = if (parts.query) |q| allocator.dupe(u8, q) catch q else null,
         .prefer = if (parts.prefer) |p| allocator.dupe(u8, p) catch p else null,
-        .hx_request = parts.hx_request,
+        .accept = if (parts.accept) |a| allocator.dupe(u8, a) catch a else null,
+        .headers = allocator.dupe(u8, parts.headers) catch parts.headers,
         .allocator = allocator,
     };
 
@@ -185,90 +187,14 @@ fn idleSecs() ?u32 {
     return .{ .request = .{ .req = req, .conn = conn_handle, .server = server } };
 }
 
-// ============================================================================
-// SPLIT→ send-stream.kz — send|zig (STREAM:v1 consumer + raw HTTP/1. passthrough)
-// ============================================================================
-
 ~proc send|zig {
     const allocator = conn.allocator;
 
-    // Vendor: chunked media stream — body encodes path + byte range + HTTP headers.
-    // Format:
-    //   STREAM:v1\n<path>\n<start>\n<end>\n\n<HTTP/1.1 response headers including trailing \r\n\r\n>
-    if (std.mem.startsWith(u8, body, "STREAM:v1\n")) {
-        var rest = body["STREAM:v1\n".len..];
-        const nl1 = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        };
-        const path = rest[0..nl1];
-        rest = rest[nl1 + 1 ..];
-        const nl2 = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        };
-        const start = std.fmt.parseInt(u64, rest[0..nl2], 10) catch {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        };
-        rest = rest[nl2 + 1 ..];
-        const nl3 = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        };
-        const end = std.fmt.parseInt(u64, rest[0..nl3], 10) catch {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        };
-        rest = rest[nl3 + 1 ..];
-        if (rest.len == 0 or rest[0] != '\n') {
-            conn.stream.close();
-            return .{ .failed = "Bad STREAM" };
-        }
-        const headers = rest[1..];
-        _ = active_streams.fetchAdd(1, .seq_cst);
-        defer _ = active_streams.fetchSub(1, .seq_cst);
-        conn.stream.writeAll(headers) catch {
-            conn.stream.close();
-            return .{ .failed = "Write failed" };
-        };
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            conn.stream.close();
-            return .{ .failed = "Open failed" };
-        };
-        defer file.close();
-        file.seekTo(start) catch {
-            conn.stream.close();
-            return .{ .failed = "Seek failed" };
-        };
-        var remaining: u64 = if (end >= start) end - start + 1 else 0;
-        var chunk: [64 * 1024]u8 = undefined;
-        while (remaining > 0) {
-            const want: usize = @intCast(@min(remaining, chunk.len));
-            const n = file.read(chunk[0..want]) catch {
-                conn.stream.close();
-                return .{ .failed = "Read failed" };
-            };
-            if (n == 0) break;
-            conn.stream.writeAll(chunk[0..n]) catch {
-                conn.stream.close();
-                return .{ .failed = "Write failed" };
-            };
-            remaining -= n;
-        }
-        conn.stream.close();
-        return .sent;
-    }
-
-    // Vendor: allow pre-rendered HTTP responses (Range / HEAD / media).
-    // Same convention as orisha:answer — body beginning with "HTTP/1." is sent raw.
-    if (std.mem.startsWith(u8, body, "HTTP/1.")) {
-        conn.stream.writeAll(body) catch {
-            conn.stream.close();
-            return .{ .failed = "Write failed" };
-        };
-        conn.stream.close();
-        return .sent;
+    const special = sendSpecial(conn.stream, body, &active_streams);
+    switch (special) {
+        .sent => return .sent,
+        .failed => |msg| return .{ .failed = msg },
+        .unhandled => {},
     }
 
     const ct = if (content_type) |ct_str| ct_str else "text/plain";
@@ -375,24 +301,43 @@ fn requestAllocator() std.mem.Allocator {
     return std.heap.page_allocator;
 }
 
-// The request target is not the lookup key, and the difference is invisible
-// until a real site is behind it.
-//
-// A browser sends what the LINK says. `/blog?utm_source=x` and `/blog` want the
-// same page, and a filename with a space in it arrives percent-encoded — the
-// route table holds the decoded name, because that is what the file is called.
-// Matching the target verbatim, as this did until 2026-08-10, misses both, and
-// the miss is silent: the SPA fallback answers 200 with the shell, so the
-// browser renders something and only the missing image tells you.
-//
-// Measured against korulang.org: two screenshots referenced from studio.html and
-// a blog post never arrived, and every link carrying a query string — including
-// the site's own `?status=` lesson filter — landed on the fallback.
-fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
-    // A query string addresses the same resource.
-    const without_query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+const ParsedHttpRequest = struct {
+    method: []const u8,
+    path: []const u8,
+    query: ?[]const u8 = null,
+    body: ?[]const u8 = null,
+    range: ?[]const u8 = null,
+    prefer: ?[]const u8 = null,
+    accept: ?[]const u8 = null,
+    if_none_match: ?[]const u8 = null,
+    headers: []const u8 = "",
+};
 
-    // Common case allocates nothing.
+fn headerValue(headers: []const u8, name: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + 1 < headers.len) {
+        if (headers[i] != '\r' or headers[i + 1] != '\n') {
+            i += 1;
+            continue;
+        }
+        const start = i + 2;
+        if (start + name.len >= headers.len) break;
+        if (std.ascii.eqlIgnoreCase(headers[start .. start + name.len], name) and
+            headers[start + name.len] == ':')
+        {
+            var v = start + name.len + 1;
+            while (v < headers.len and (headers[v] == ' ' or headers[v] == '\t')) : (v += 1) {}
+            const rest = headers[v..];
+            const end = std.mem.indexOf(u8, rest, "\r\n") orelse rest.len;
+            return std.mem.trim(u8, rest[0..end], " \t");
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
+    const without_query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
     if (std.mem.indexOfScalar(u8, without_query, '%') == null) return without_query;
 
     var out = allocator.alloc(u8, without_query.len) catch return without_query;
@@ -424,22 +369,13 @@ fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
     return out[0..w];
 }
 
-// ============================================================================
-// SPLIT→ request-parse.kz — Request field parse shared by accept|zig and answer|zig
-// ============================================================================
-
-/// EXTRACT:orisha-core — one Request-field parse for accept|zig and answer|zig.
-/// Slices point into `request_data` (except `path`, which may allocate via requestPathKey).
-const ParsedHttpRequest = struct {
-    method: []const u8,
-    path: []const u8,
-    query: ?[]const u8 = null,
-    body: ?[]const u8 = null,
-    range: ?[]const u8 = null,
-    prefer: ?[]const u8 = null,
-    if_none_match: ?[]const u8 = null,
-    hx_request: bool = false,
-};
+fn stripEtagQuotes(raw: []const u8) []const u8 {
+    var etag = std.mem.trim(u8, raw, " \t");
+    if (etag.len >= 2 and etag[0] == '"' and etag[etag.len - 1] == '"') {
+        etag = etag[1 .. etag.len - 1];
+    }
+    return etag;
+}
 
 fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) ParsedHttpRequest {
     var method: []const u8 = "GET";
@@ -459,59 +395,88 @@ fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) Pars
     }
 
     var body: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |header_end| {
-        const body_start = header_end + 4;
-        if (body_start < request_data.len) {
-            body = request_data[body_start..];
-        }
-    }
-
-    var range: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nRange: ")) |range_start| {
-        const val_start = range_start + 9;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |range_end| {
-            range = request_data[val_start .. val_start + range_end];
-        }
-    }
-
-    var prefer: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nPrefer: ")) |prefer_start| {
-        const val_start = prefer_start + 10;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |prefer_end| {
-            prefer = request_data[val_start .. val_start + prefer_end];
-        }
-    }
-
-    var if_none_match: ?[]const u8 = null;
-    if (std.mem.indexOf(u8, request_data, "\r\nIf-None-Match: ")) |etag_start| {
-        const val_start = etag_start + "\r\nIf-None-Match: ".len;
-        if (std.mem.indexOf(u8, request_data[val_start..], "\r\n")) |etag_end| {
-            var etag_raw: []const u8 = request_data[val_start .. val_start + etag_end];
-            etag_raw = std.mem.trim(u8, etag_raw, " \t");
-            if (etag_raw.len >= 2 and etag_raw[0] == '"' and etag_raw[etag_raw.len - 1] == '"') {
-                etag_raw = etag_raw[1 .. etag_raw.len - 1];
+    var headers: []const u8 = "";
+    const line_end = std.mem.indexOf(u8, request_data, "\r\n");
+    if (line_end) |le| {
+        const from_headers = request_data[le..];
+        if (std.mem.indexOf(u8, from_headers, "\r\n\r\n")) |blank| {
+            headers = from_headers[0..blank];
+            const body_start = le + blank + 4;
+            if (body_start < request_data.len) {
+                body = request_data[body_start..];
             }
-            if_none_match = etag_raw;
+        } else {
+            headers = from_headers;
         }
     }
 
-    const hx_request = std.ascii.indexOfIgnoreCase(request_data, "\r\nHX-Request:") != null;
+    const if_none = if (headerValue(headers, "If-None-Match")) |v| stripEtagQuotes(v) else null;
 
     return .{
         .method = method,
         .path = path,
         .query = query,
         .body = body,
-        .range = range,
-        .prefer = prefer,
-        .if_none_match = if_none_match,
-        .hx_request = hx_request,
+        .range = headerValue(headers, "Range"),
+        .prefer = headerValue(headers, "Prefer"),
+        .accept = headerValue(headers, "Accept"),
+        .if_none_match = if_none,
+        .headers = headers,
     };
 }
 
-// ============================================================================
-// SPLIT→ answer.kz — answer|zig (parse raw → handler → shaped head/body)
-// ============================================================================
+const SpecialSend = union(enum) {
+    sent,
+    failed: []const u8,
+    unhandled,
+};
+
+fn failClose(stream: std.net.Stream, msg: []const u8) SpecialSend {
+    stream.close();
+    return .{ .failed = msg };
+}
+
+fn sendSpecial(stream: std.net.Stream, body: []const u8, lease: *std.atomic.Value(u32)) SpecialSend {
+    if (std.mem.startsWith(u8, body, "STREAM:v1\n")) {
+        var rest = body["STREAM:v1\n".len..];
+        const nl1 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const path = rest[0..nl1];
+        rest = rest[nl1 + 1 ..];
+        const nl2 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const start = std.fmt.parseInt(u64, rest[0..nl2], 10) catch return failClose(stream, "Bad STREAM");
+        rest = rest[nl2 + 1 ..];
+        const nl3 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const end = std.fmt.parseInt(u64, rest[0..nl3], 10) catch return failClose(stream, "Bad STREAM");
+        rest = rest[nl3 + 1 ..];
+        if (rest.len == 0 or rest[0] != '\n') return failClose(stream, "Bad STREAM");
+        const hdrs = rest[1..];
+        _ = lease.fetchAdd(1, .seq_cst);
+        defer _ = lease.fetchSub(1, .seq_cst);
+        stream.writeAll(hdrs) catch return failClose(stream, "Write failed");
+        const file = std.fs.cwd().openFile(path, .{}) catch return failClose(stream, "Open failed");
+        defer file.close();
+        file.seekTo(start) catch return failClose(stream, "Seek failed");
+        var remaining: u64 = if (end >= start) end - start + 1 else 0;
+        var chunk: [64 * 1024]u8 = undefined;
+        while (remaining > 0) {
+            const want: usize = @intCast(@min(remaining, chunk.len));
+            const n = file.read(chunk[0..want]) catch return failClose(stream, "Read failed");
+            if (n == 0) break;
+            stream.writeAll(chunk[0..n]) catch return failClose(stream, "Write failed");
+            remaining -= n;
+        }
+        stream.close();
+        return .sent;
+    }
+
+    if (std.mem.startsWith(u8, body, "HTTP/1.")) {
+        stream.writeAll(body) catch return failClose(stream, "Write failed");
+        stream.close();
+        return .sent;
+    }
+
+    return .unhandled;
+}
 
 ~proc answer|zig {
     const req_allocator = $mod.requestAllocator();
@@ -525,7 +490,8 @@ fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) Pars
         .range = parts.range,
         .query = parts.query,
         .prefer = parts.prefer,
-        .hx_request = parts.hx_request,
+        .accept = parts.accept,
+        .headers = parts.headers,
         .allocator = req_allocator,
     };
 
@@ -1545,1319 +1511,3 @@ fn generateNamedRoutesFile(allocator: std.mem.Allocator, routes_const: []const P
     return .{ .replacement = new_item };
 }
 
-// ============================================================================
-// APP:media-handler — koru-orisha-media vendor extension (stay out of upstream)
-// ============================================================================
-// SPLIT→ manifest-load.kz — Entry, loadManifest, path policy (schema JSON scrape)
-// SPLIT→ html-views.kz    — library / item / watch HTML + fragments
-// SPLIT→ media-http.kz    — mediaHttp / artHttp / STREAM:v1 producer
-// SPLIT→ handler.kz       — handler|zig route table
-// ============================================================================
-
-const DEFAULT_MEDIA_ROOT = "fixtures/media";
-const DEFAULT_MANIFEST_PATH = "data/manifest.json";
-const STREAM_CHUNK = 64 * 1024;
-
-const Entry = struct {
-    id: []const u8,
-    kind: []const u8,
-    title: []const u8,
-    path: []const u8,
-    bytes: u64,
-    modified_ns: u64,
-    mime: []const u8,
-    container: []const u8,
-    poster: []const u8,
-    /// Relative WebVTT sidecar path (empty if absent).
-    subtitle: []const u8,
-    year: u32,
-    /// First nested `video[]` track facts from indexer probe (empty if absent).
-    video_codec: []const u8,
-    video_brand: []const u8,
-    /// First nested `audio[]` track codec (empty if absent).
-    audio_codec: []const u8,
-};
-
-var loaded = false;
-var entries_buf: [64]Entry = undefined;
-var entry_count: usize = 0;
-var storage: [128 * 1024]u8 = undefined;
-var storage_len: usize = 0;
-var config_storage_end: usize = 0;
-var manifest_mtime_ns: i128 = -1;
-var media_root_owned: []const u8 = DEFAULT_MEDIA_ROOT;
-var manifest_path_owned: []const u8 = DEFAULT_MANIFEST_PATH;
-var cfg_ready = false;
-
-fn allocDup(s: []const u8) []const u8 {
-    if (storage_len + s.len > storage.len) return s;
-    const out = storage[storage_len .. storage_len + s.len];
-    @memcpy(out, s);
-    storage_len += s.len;
-    return out;
-}
-
-fn envOr(name: []const u8, fallback: []const u8) []const u8 {
-    return std.posix.getenv(name) orelse fallback;
-}
-
-fn ensureConfig() void {
-    if (cfg_ready) return;
-    cfg_ready = true;
-    media_root_owned = allocDup(envOr("KORU_MEDIA_ROOT", DEFAULT_MEDIA_ROOT));
-    manifest_path_owned = allocDup(envOr("KORU_MANIFEST", DEFAULT_MANIFEST_PATH));
-    config_storage_end = storage_len;
-}
-
-fn manifestMtimeNs() i128 {
-    ensureConfig();
-    const file = std.fs.cwd().openFile(manifest_path_owned, .{}) catch return -1;
-    defer file.close();
-    const st = file.stat() catch return -1;
-    return st.mtime;
-}
-
-/// Swap in a new immutable snapshot when the file changes and no media streams
-/// are in flight (in-flight requests already hold paths/bytes from findEntry).
-fn maybeReloadManifest() void {
-    ensureConfig();
-    if (active_streams.load(.seq_cst) != 0) return;
-    const mt = manifestMtimeNs();
-    if (mt < 0) return;
-    if (loaded and mt == manifest_mtime_ns) return;
-    entry_count = 0;
-    storage_len = config_storage_end;
-    loaded = false;
-    manifest_mtime_ns = mt;
-    loadManifest();
-}
-
-fn loadManifest() void {
-    if (loaded) return;
-    loaded = true;
-    ensureConfig();
-    const file = std.fs.cwd().openFile(manifest_path_owned, .{}) catch return;
-    defer file.close();
-    var buf: [64 * 1024]u8 = undefined;
-    const n = file.readAll(&buf) catch return;
-    const text = buf[0..n];
-    // Schema-specific: only walk objects inside the top-level "entries" array.
-    // Avoids false positives on keys outside entries and cross-object field bleed.
-    const entries = entriesArraySlice(text) orelse return;
-    var i: usize = 0;
-    while (i < entries.len) : (i += 1) {
-        if (std.mem.startsWith(u8, entries[i..], "\"id\"")) {
-            const obj = entryObjectSlice(entries, i);
-            const id = extractAfterUnescaped(obj, "\"id\"") orelse continue;
-            const title = extractAfterUnescaped(obj, "\"title\"") orelse id;
-            const path = extractAfterUnescaped(obj, "\"path\"") orelse continue;
-            const mime = extractAfterUnescaped(obj, "\"mime\"") orelse "application/octet-stream";
-            const kind = extractAfterUnescaped(obj, "\"kind\"") orelse "file";
-            const container = extractAfterUnescaped(obj, "\"container\"") orelse "";
-            const poster = extractAfterUnescaped(obj, "\"poster\"") orelse "";
-            const subtitle = extractAfterUnescaped(obj, "\"subtitle\"") orelse "";
-            const bytes = extractNumberAfter(obj, "\"bytes\"") orelse 0;
-            const modified_ns = extractNumberAfter(obj, "\"modified_ns\"") orelse 0;
-            const year_u64 = extractNumberAfter(obj, "\"year\"") orelse 0;
-            const year: u32 = if (year_u64 > 9999) 0 else @intCast(year_u64);
-            const video_track = firstArrayObjectSlice(obj, "\"video\"") orelse "";
-            const audio_track = firstArrayObjectSlice(obj, "\"audio\"") orelse "";
-            const video_codec = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"codec\"") orelse "" else "";
-            const video_brand = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"brand\"") orelse "" else "";
-            const audio_codec = if (audio_track.len > 0) extractAfterUnescaped(audio_track, "\"codec\"") orelse "" else "";
-            if (id.len == 0 or path.len == 0) continue;
-            var dup = false;
-            for (entries_buf[0..entry_count]) |e| {
-                if (std.mem.eql(u8, e.id, id)) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (dup) continue; // reject duplicate IDs on load
-            if (entry_count >= entries_buf.len) break;
-            entries_buf[entry_count] = .{
-                .id = id,
-                .kind = kind,
-                .title = title,
-                .path = path,
-                .bytes = bytes,
-                .modified_ns = modified_ns,
-                .mime = mime,
-                .container = container,
-                .poster = poster,
-                .subtitle = subtitle,
-                .year = year,
-                .video_codec = video_codec,
-                .video_brand = video_brand,
-                .audio_codec = audio_codec,
-            };
-            entry_count += 1;
-        }
-    }
-}
-
-/// Locate the JSON array value for the top-level `"entries"` key.
-fn entriesArraySlice(text: []const u8) ?[]const u8 {
-    const key = "\"entries\"";
-    const at = std.mem.indexOf(u8, text, key) orelse return null;
-    var p = at + key.len;
-    while (p < text.len and (text[p] == ' ' or text[p] == '\t' or text[p] == '\n' or text[p] == '\r' or text[p] == ':')) : (p += 1) {}
-    if (p >= text.len or text[p] != '[') return null;
-    var depth: i32 = 0;
-    var in_string = false;
-    var escape = false;
-    var k = p;
-    while (k < text.len) : (k += 1) {
-        const ch = text[k];
-        if (in_string) {
-            if (escape) {
-                escape = false;
-            } else if (ch == '\\') {
-                escape = true;
-            } else if (ch == '"') {
-                in_string = false;
-            }
-            continue;
-        }
-        if (ch == '"') {
-            in_string = true;
-            continue;
-        }
-        if (ch == '[') depth += 1;
-        if (ch == ']') {
-            depth -= 1;
-            if (depth == 0) return text[p .. k + 1];
-        }
-    }
-    return null;
-}
-
-/// Limit JSON field scrapes to one object so keys before `"id"` (e.g. container)
-/// are not read from the following entry when keys are sorted.
-/// Walks backward with brace depth so nested `audio`/`video` objects before `"id"`
-/// do not become the slice start.
-fn entryObjectSlice(text: []const u8, id_at: usize) []const u8 {
-    var start: usize = 0;
-    var depth: i32 = 0;
-    var in_string = false;
-    var i: usize = id_at;
-    while (i > 0) {
-        i -= 1;
-        const ch = text[i];
-        if (in_string) {
-            // Scanning backward: a preceding '\\' escapes this quote.
-            if (ch == '"') {
-                var bs: usize = 0;
-                var j = i;
-                while (j > 0 and text[j - 1] == '\\') : (j -= 1) bs += 1;
-                if (bs % 2 == 1) continue;
-                in_string = false;
-            }
-            continue;
-        }
-        if (ch == '"') {
-            in_string = true;
-            continue;
-        }
-        if (ch == '}') {
-            depth += 1;
-        } else if (ch == '{') {
-            if (depth == 0) {
-                start = i;
-                break;
-            }
-            depth -= 1;
-        }
-    }
-    depth = 0;
-    in_string = false;
-    var escape = false;
-    var k = start;
-    var seen_open = false;
-    while (k < text.len) : (k += 1) {
-        const ch = text[k];
-        if (in_string) {
-            if (escape) {
-                escape = false;
-            } else if (ch == '\\') {
-                escape = true;
-            } else if (ch == '"') {
-                in_string = false;
-            }
-            continue;
-        }
-        if (ch == '"') {
-            in_string = true;
-            continue;
-        }
-        if (ch == '{') {
-            depth += 1;
-            seen_open = true;
-        } else if (ch == '}') {
-            depth -= 1;
-            if (seen_open and depth == 0) {
-                return text[start .. k + 1];
-            }
-        }
-    }
-    return text[start..];
-}
-
-fn extractRawString(slice: []const u8) ?[]const u8 {
-    const colon = std.mem.indexOfScalar(u8, slice, ':') orelse return null;
-    const q1 = std.mem.indexOfScalar(u8, slice[colon..], '"') orelse return null;
-    const start = colon + q1 + 1;
-    var i = start;
-    var escape = false;
-    while (i < slice.len) : (i += 1) {
-        if (escape) {
-            escape = false;
-            continue;
-        }
-        if (slice[i] == '\\') {
-            escape = true;
-            continue;
-        }
-        if (slice[i] == '"') {
-            return slice[start..i];
-        }
-    }
-    return null;
-}
-
-fn allocUnescapeJson(raw: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return allocDup(raw);
-    var tmp: [4096]u8 = undefined;
-    var w: usize = 0;
-    var i: usize = 0;
-    while (i < raw.len and w < tmp.len) : (i += 1) {
-        if (raw[i] == '\\' and i + 1 < raw.len) {
-            i += 1;
-            const esc = raw[i];
-            tmp[w] = switch (esc) {
-                '"', '\\', '/' => esc,
-                'n' => '\n',
-                't' => '\t',
-                'r' => '\r',
-                else => esc,
-            };
-            w += 1;
-        } else {
-            tmp[w] = raw[i];
-            w += 1;
-        }
-    }
-    return allocDup(tmp[0..w]);
-}
-
-fn extractAfterUnescaped(slice: []const u8, key: []const u8) ?[]const u8 {
-    const at = std.mem.indexOf(u8, slice, key) orelse return null;
-    const raw = extractRawString(slice[at..]) orelse return null;
-    return allocUnescapeJson(raw);
-}
-
-fn extractNumberAfter(slice: []const u8, key: []const u8) ?u64 {
-    const at = std.mem.indexOf(u8, slice, key) orelse return null;
-    const colon = std.mem.indexOfScalar(u8, slice[at..], ':') orelse return null;
-    var p = at + colon + 1;
-    while (p < slice.len and (slice[p] == ' ' or slice[p] == '\t')) : (p += 1) {}
-    var end = p;
-    while (end < slice.len and slice[end] >= '0' and slice[end] <= '9') : (end += 1) {}
-    if (end == p) return null;
-    return std.fmt.parseInt(u64, slice[p..end], 10) catch null;
-}
-
-/// First object inside a top-level array field on an entry (e.g. `"video":[{...}]`).
-/// Scopes nested scrapes so `"codec"` on video does not bleed into `"audio"`.
-fn firstArrayObjectSlice(entry_obj: []const u8, key: []const u8) ?[]const u8 {
-    const at = std.mem.indexOf(u8, entry_obj, key) orelse return null;
-    var p = at + key.len;
-    while (p < entry_obj.len and (entry_obj[p] == ' ' or entry_obj[p] == '\t' or entry_obj[p] == '\n' or entry_obj[p] == '\r' or entry_obj[p] == ':')) : (p += 1) {}
-    if (p >= entry_obj.len or entry_obj[p] != '[') return null;
-    var depth: i32 = 0;
-    var in_string = false;
-    var escape = false;
-    var k = p;
-    var first_obj_start: ?usize = null;
-    while (k < entry_obj.len) : (k += 1) {
-        const ch = entry_obj[k];
-        if (in_string) {
-            if (escape) {
-                escape = false;
-            } else if (ch == '\\') {
-                escape = true;
-            } else if (ch == '"') {
-                in_string = false;
-            }
-            continue;
-        }
-        if (ch == '"') {
-            in_string = true;
-            continue;
-        }
-        if (ch == '[') {
-            depth += 1;
-            continue;
-        }
-        if (ch == ']') {
-            depth -= 1;
-            if (depth == 0) return null; // empty / no object
-            continue;
-        }
-        if (ch == '{' and depth == 1 and first_obj_start == null) {
-            first_obj_start = k;
-            var obj_depth: i32 = 0;
-            var j = k;
-            var obj_in_string = false;
-            var obj_escape = false;
-            while (j < entry_obj.len) : (j += 1) {
-                const oj = entry_obj[j];
-                if (obj_in_string) {
-                    if (obj_escape) {
-                        obj_escape = false;
-                    } else if (oj == '\\') {
-                        obj_escape = true;
-                    } else if (oj == '"') {
-                        obj_in_string = false;
-                    }
-                    continue;
-                }
-                if (oj == '"') {
-                    obj_in_string = true;
-                    continue;
-                }
-                if (oj == '{') obj_depth += 1;
-                if (oj == '}') {
-                    obj_depth -= 1;
-                    if (obj_depth == 0) return entry_obj[k .. j + 1];
-                }
-            }
-            return null;
-        }
-    }
-    return null;
-}
-
-fn findEntry(id: []const u8) ?Entry {
-    maybeReloadManifest();
-    loadManifest();
-    for (entries_buf[0..entry_count]) |e| {
-        if (std.mem.eql(u8, e.id, id)) return e;
-    }
-    return null;
-}
-
-fn pathOk(rel: []const u8) bool {
-    if (rel.len == 0) return false;
-    if (rel[0] == '/' or rel[0] == '\\') return false;
-    if (std.mem.indexOf(u8, rel, "..") != null) return false;
-    if (std.mem.indexOfScalar(u8, rel, '\\') != null) return false;
-    return true;
-}
-
-fn pathUnderRoot(rel: []const u8, out: []u8) ?[]const u8 {
-    ensureConfig();
-    if (!pathOk(rel)) return null;
-    const joined = std.fmt.bufPrint(out, "{s}/{s}", .{ media_root_owned, rel }) catch return null;
-    // Normalize: reject if any segment is ".." after join (already blocked) and require prefix.
-    if (!std.mem.startsWith(u8, joined, media_root_owned)) return null;
-    if (joined.len > media_root_owned.len and joined[media_root_owned.len] != '/' and joined[media_root_owned.len] != '\\') {
-        return null;
-    }
-    return joined;
-}
-
-fn parseBytesRange(range_hdr: []const u8, size: u64) ?struct { start: u64, end: u64 } {
-    if (!std.mem.startsWith(u8, range_hdr, "bytes=")) return null;
-    const spec = range_hdr["bytes=".len..];
-    const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return null;
-    if (dash == 0) return null;
-    const start = std.fmt.parseInt(u64, spec[0..dash], 10) catch return null;
-    var end: u64 = if (dash + 1 < spec.len)
-        (std.fmt.parseInt(u64, spec[dash + 1 ..], 10) catch return null)
-    else blk: {
-        if (size == 0) return null;
-        break :blk size - 1;
-    };
-    if (size == 0 or start >= size or end < start) return null;
-    if (end >= size) end = size - 1;
-    return .{ .start = start, .end = end };
-}
-
-fn htmlEscaped(allocator: std.mem.Allocator, s: []const u8) []const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (s) |ch| {
-        switch (ch) {
-            '&' => out.appendSlice(allocator, "&amp;") catch {},
-            '<' => out.appendSlice(allocator, "&lt;") catch {},
-            '>' => out.appendSlice(allocator, "&gt;") catch {},
-            '"' => out.appendSlice(allocator, "&quot;") catch {},
-            else => out.append(allocator, ch) catch {},
-        }
-    }
-    return out.toOwnedSlice(allocator) catch s;
-}
-
-fn formatHttpDateFromNs(buf: *[29]u8, ns: u64) void {
-    // Reuse civil_from_days via epoch seconds.
-    const epoch: i64 = @intCast(ns / 1_000_000_000);
-    const days = @divFloor(epoch, 86400);
-    const secs = @as(u32, @intCast(epoch - days * 86400));
-    const z = days + 719468;
-    const era = @divFloor(z, 146097);
-    const doe = @as(u32, @intCast(z - era * 146097));
-    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    const y0 = @as(i64, yoe) + era * 400;
-    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const mp = (5 * doy + 2) / 153;
-    const d = doy - (153 * mp + 2) / 5 + 1;
-    const m = if (mp < 10) mp + 3 else mp - 9;
-    const y = if (m <= 2) y0 + 1 else y0;
-    const wday = @as(u32, @intCast(@mod(days + 4, 7)));
-    const DAY = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    const MON = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-    @memcpy(buf[0..3], DAY[wday]);
-    buf[3] = ',';
-    buf[4] = ' ';
-    two(buf[5..7], d);
-    buf[7] = ' ';
-    @memcpy(buf[8..11], MON[m - 1]);
-    buf[11] = ' ';
-    four(buf[12..16], @as(u32, @intCast(y)));
-    buf[16] = ' ';
-    two(buf[17..19], secs / 3600);
-    buf[19] = ':';
-    two(buf[20..22], (secs % 3600) / 60);
-    buf[22] = ':';
-    two(buf[23..25], secs % 60);
-    @memcpy(buf[25..29], " GMT");
-}
-
-const SortMode = enum { title, id };
-
-fn parseQueryString(query: ?[]const u8) struct { sort: SortMode, q: ?[]const u8, limit: u32, offset: u32 } {
-    var sort: SortMode = .title;
-    var q: ?[]const u8 = null;
-    var limit: u32 = 0;
-    var offset: u32 = 0;
-    const qs = query orelse return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
-    var it = std.mem.splitScalar(u8, qs, '&');
-    while (it.next()) |pair| {
-        if (std.mem.startsWith(u8, pair, "sort=")) {
-            const v = pair["sort=".len..];
-            if (std.mem.eql(u8, v, "id")) sort = .id;
-        } else if (std.mem.startsWith(u8, pair, "q=")) {
-            q = pair["q=".len..];
-        } else if (std.mem.startsWith(u8, pair, "limit=")) {
-            limit = std.fmt.parseInt(u32, pair["limit=".len..], 10) catch 0;
-        } else if (std.mem.startsWith(u8, pair, "offset=")) {
-            offset = std.fmt.parseInt(u32, pair["offset=".len..], 10) catch 0;
-        }
-    }
-    return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
-}
-
-fn asciiLessIgnoreCase(a: []const u8, b: []const u8) bool {
-    const n = @min(a.len, b.len);
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        const ca = std.ascii.toLower(a[i]);
-        const cb = std.ascii.toLower(b[i]);
-        if (ca < cb) return true;
-        if (ca > cb) return false;
-    }
-    return a.len < b.len;
-}
-
-fn asciiContainsIgnoreCase(hay: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > hay.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= hay.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
-
-fn entryLess(sort: SortMode, a: Entry, b: Entry) bool {
-    return switch (sort) {
-        .title => asciiLessIgnoreCase(a.title, b.title),
-        .id => std.mem.lessThan(u8, a.id, b.id),
-    };
-}
-
-fn collectFiltered(kind_filter: ?[]const u8, q: ?[]const u8, sort: SortMode, out: *[64]Entry) []Entry {
-    maybeReloadManifest();
-    loadManifest();
-    var n: usize = 0;
-    for (entries_buf[0..entry_count]) |e| {
-        if (kind_filter) |k| {
-            if (!std.mem.eql(u8, e.kind, k)) continue;
-        }
-        if (q) |needle| {
-            if (needle.len > 0 and !asciiContainsIgnoreCase(e.title, needle)) continue;
-        }
-        if (n >= out.len) break;
-        out[n] = e;
-        n += 1;
-    }
-    // insertion sort
-    var i: usize = 1;
-    while (i < n) : (i += 1) {
-        var j = i;
-        while (j > 0 and entryLess(sort, out[j], out[j - 1])) : (j -= 1) {
-            const tmp = out[j - 1];
-            out[j - 1] = out[j];
-            out[j] = tmp;
-        }
-    }
-    return out[0..n];
-}
-
-fn formatLibraryQuery(buf: []u8, sort: SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
-    const sort_s: []const u8 = switch (sort) {
-        .title => "title",
-        .id => "id",
-    };
-    if (q) |qv| {
-        if (qv.len > 0) {
-            return std.fmt.bufPrint(buf, "?sort={s}&q={s}&limit={d}&offset={d}", .{ sort_s, qv, limit, offset }) catch "?";
-        }
-    }
-    return std.fmt.bufPrint(buf, "?sort={s}&limit={d}&offset={d}", .{ sort_s, limit, offset }) catch "?";
-}
-
-fn libraryBasePath(buf: []u8, kind_filter: ?[]const u8) []const u8 {
-    if (kind_filter) |k| {
-        return std.fmt.bufPrint(buf, "/library/{s}", .{k}) catch "/library";
-    }
-    return "/library";
-}
-
-fn appendLibraryEmpty(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, total: usize) void {
-    var base_buf: [96]u8 = undefined;
-    const base = libraryBasePath(&base_buf, kind_filter);
-    if (q) |needle| {
-        if (needle.len > 0 and total == 0) {
-            const q_esc = htmlEscaped(allocator, needle);
-            defer if (q_esc.ptr != needle.ptr) allocator.free(q_esc);
-            var msg: [768]u8 = undefined;
-            const line = std.fmt.bufPrint(&msg, "<p class=\"empty\" role=\"status\">No titles match “{s}”. <a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">Clear search</a></p>", .{ q_esc, base, base }) catch {
-                out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No titles match this search.</p>") catch {};
-                return;
-            };
-            out.appendSlice(allocator, line) catch {};
-            return;
-        }
-    }
-    if (total == 0) {
-        if (kind_filter) |_| {
-            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No items in this collection. <a href=\"/library\">Browse all</a></p>") catch {};
-        } else {
-            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">Library is empty.</p>") catch {};
-        }
-        return;
-    }
-    out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No more items on this page.</p>") catch {};
-}
-
-fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: SortMode, q: ?[]const u8, limit: u32, offset: u32) void {
-    var tmp: [64]Entry = undefined;
-    const items = collectFiltered(kind_filter, q, sort, &tmp);
-    const start: usize = @min(@as(usize, offset), items.len);
-    const end: usize = if (limit == 0) items.len else @min(items.len, start + @as(usize, limit));
-    // Single swap root: list + pagination. Never include #player here.
-    out.appendSlice(allocator, "<div id=\"library-region\">") catch {};
-    if (start >= end) {
-        appendLibraryEmpty(allocator, out, kind_filter, q, items.len);
-    } else {
-        out.appendSlice(allocator, "<ul id=\"library-list\" class=\"library-list\">") catch {};
-        for (items[start..end]) |e| {
-            const title = htmlEscaped(allocator, e.title);
-            defer if (title.ptr != e.title.ptr) allocator.free(title);
-            const id_esc = htmlEscaped(allocator, e.id);
-            defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
-            const kind_esc = htmlEscaped(allocator, e.kind);
-            defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
-            var year_bit: []const u8 = "";
-            var year_buf: [24]u8 = undefined;
-            if (e.year >= 1000) {
-                year_bit = std.fmt.bufPrint(&year_buf, " · {d}", .{e.year}) catch "";
-            }
-            var line_buf: [1024]u8 = undefined;
-            const line = std.fmt.bufPrint(&line_buf, "<li><a class=\"title\" href=\"/item/{s}\">{s}</a> <span class=\"meta\">({s}{s})</span> · <a href=\"/watch/{s}\">watch</a></li>", .{ id_esc, title, kind_esc, year_bit, id_esc }) catch continue;
-            out.appendSlice(allocator, line) catch {};
-        }
-        out.appendSlice(allocator, "</ul>") catch {};
-    }
-    if (limit > 0 and items.len > end) {
-        var qb: [192]u8 = undefined;
-        const qs = formatLibraryQuery(&qb, sort, q, limit, @as(u32, @intCast(end)));
-        var nb: [512]u8 = undefined;
-        const next = std.fmt.bufPrint(&nb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">next</a></p>", .{ qs, qs }) catch "";
-        out.appendSlice(allocator, next) catch {};
-    }
-    if (limit > 0 and start > 0) {
-        const prev_off = if (start > limit) start - limit else 0;
-        var qb: [192]u8 = undefined;
-        const qs = formatLibraryQuery(&qb, sort, q, limit, @as(u32, @intCast(prev_off)));
-        var pb: [512]u8 = undefined;
-        const prev = std.fmt.bufPrint(&pb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">prev</a></p>", .{ qs, qs }) catch "";
-        out.appendSlice(allocator, prev) catch {};
-    }
-    out.appendSlice(allocator, "</div>") catch {};
-}
-
-// ============================================================================
-// SPLIT→ html-views.kz — library / item / watch HTML + fragments + Link helpers
-// ============================================================================
-
-fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8) void {
-    // HTMX dialect: hx-get + hx-target + hx-swap. Lowercase attrs are opaque HTML —
-    // the same passthrough rule koru/dom inherits from vaxis markup.
-    // Targets #library-region (list+pagination), never a region that owns #player.
-    const q_val: []const u8 = if (q) |qv| qv else "";
-    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
-    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
-
-    out.appendSlice(allocator, "<nav class=\"affordances\"><p>") catch {};
-    if (kind_filter) |k| {
-        var buf: [1280]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "<a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library/{s}?sort=id\" hx-get=\"/library/{s}?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library/{s}?q=demo\" hx-get=\"/library/{s}?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library/{s}?limit=2\" hx-get=\"/library/{s}?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library/{s}\">fragment</a>", .{ k, k, k, k, k, k, k, k, k }) catch "";
-        out.appendSlice(allocator, s) catch {};
-        var form: [640]u8 = undefined;
-        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{ k, k, q_esc }) catch "";
-        out.appendSlice(allocator, f) catch {};
-        if (q_val.len > 0) {
-            var clear: [256]u8 = undefined;
-            const clear_link = std.fmt.bufPrint(&clear, "<a href=\"/library/{s}\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ", .{ k, k }) catch "";
-            out.appendSlice(allocator, clear_link) catch {};
-        }
-    } else {
-        out.appendSlice(allocator, "<a href=\"/library?sort=title\" hx-get=\"/library?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library?sort=id\" hx-get=\"/library?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library?q=demo\" hx-get=\"/library?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library?limit=2\" hx-get=\"/library?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library\">fragment</a>") catch {};
-        var form: [512]u8 = undefined;
-        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library\" class=\"search\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{q_esc}) catch "";
-        out.appendSlice(allocator, f) catch {};
-        if (q_val.len > 0) {
-            out.appendSlice(allocator, "<a href=\"/library\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ") catch {};
-        }
-    }
-    // Kind collection nav: mark the active projection; keep audio discoverable.
-    const on_movie = if (kind_filter) |k| std.mem.eql(u8, k, "movie") else false;
-    const on_audio = if (kind_filter) |k| std.mem.eql(u8, k, "audio") else false;
-    if (kind_filter == null) {
-        out.appendSlice(allocator, "<span class=\"kinds\"><strong>all</strong> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
-    } else if (on_movie) {
-        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <strong>movies</strong> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
-    } else if (on_audio) {
-        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <strong>audio</strong></span> · <a href=\"/\">home</a></p></nav>") catch {};
-    } else if (kind_filter) |k| {
-        const k_esc = htmlEscaped(allocator, k);
-        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
-        var kinds: [384]u8 = undefined;
-        const line = std.fmt.bufPrint(&kinds, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a> · <strong>{s}</strong></span> · <a href=\"/\">home</a></p></nav>", .{k_esc}) catch "<a href=\"/\">home</a></p></nav>";
-        out.appendSlice(allocator, line) catch {};
-    }
-}
-
-fn scriptEnhance() []const u8 {
-    return "<script src=\"/enhance.js\" defer></script>";
-}
-
-fn stylesheetLink() []const u8 {
-    return "<link rel=\"stylesheet\" href=\"/app.css\">";
-}
-
-fn siteBrand() []const u8 {
-    return "<p class=\"site-brand\"><a href=\"/\">Koru Media</a></p>";
-}
-
-fn preferMinimal(prefer: ?[]const u8) bool {
-    const p = prefer orelse return false;
-    return std.ascii.indexOfIgnoreCase(p, "return=minimal") != null;
-}
-
-fn wantsFragment(req_prefer: ?[]const u8, hx_request: bool) bool {
-    return hx_request or preferMinimal(req_prefer);
-}
-
-fn renderHttpHtml(allocator: std.mem.Allocator, link: []const u8, html: []const u8) []const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    out.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n") catch {};
-    {
-        var lb: [32]u8 = undefined;
-        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{html.len}) catch "";
-        out.appendSlice(allocator, ls) catch {};
-    }
-    out.appendSlice(allocator, "Link: ") catch {};
-    out.appendSlice(allocator, link) catch {};
-    out.appendSlice(allocator, "\r\nConnection: close\r\n\r\n") catch {};
-    out.appendSlice(allocator, html) catch {};
-    return out.toOwnedSlice(allocator) catch html;
-}
-
-fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
-    var html: std.ArrayList(u8) = .empty;
-    html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Library · Koru Media</title>") catch {};
-    html.appendSlice(allocator, stylesheetLink()) catch {};
-    html.appendSlice(allocator, scriptEnhance()) catch {};
-    html.appendSlice(allocator, "</head><body><div class=\"app-shell\">") catch {};
-    html.appendSlice(allocator, siteBrand()) catch {};
-    html.appendSlice(allocator, "<h1>Library") catch {};
-    if (kind_filter) |k| {
-        const k_esc = htmlEscaped(allocator, k);
-        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
-        html.appendSlice(allocator, " — ") catch {};
-        html.appendSlice(allocator, k_esc) catch {};
-    }
-    html.appendSlice(allocator, "</h1>") catch {};
-    libraryAffordances(allocator, &html, kind_filter, q);
-    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset);
-    html.appendSlice(allocator, "</div></body></html>") catch {};
-    const body = html.toOwnedSlice(allocator) catch "library error";
-    if (kind_filter) |k| {
-        const k_esc = htmlEscaped(allocator, k);
-        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
-        var link_buf: [192]u8 = undefined;
-        const self_link = std.fmt.bufPrint(&link_buf, "</library/{s}>; rel=\"self\", </library>; rel=\"up\", </>; rel=\"home\"", .{k_esc}) catch "</library>; rel=\"up\"";
-        return renderHttpHtml(allocator, allocator.dupe(u8, self_link) catch self_link, body);
-    }
-    return renderHttpHtml(allocator, "</library>; rel=\"self\", </>; rel=\"up\"", body);
-}
-
-fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
-    var html: std.ArrayList(u8) = .empty;
-    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset);
-    const body = html.toOwnedSlice(allocator) catch "fragment error";
-    if (kind_filter) |k| {
-        const k_esc = htmlEscaped(allocator, k);
-        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
-        var link_buf: [160]u8 = undefined;
-        const link = std.fmt.bufPrint(&link_buf, "</library/{s}>; rel=\"collection\", </library>; rel=\"up\"", .{k_esc}) catch "</library>; rel=\"up\"";
-        return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
-    }
-    return renderHttpHtml(allocator, "</library>; rel=\"up\"", body);
-}
-
-fn likelyBrowserPlayable(container: []const u8) bool {
-    const ok = [_][]const u8{ "mp4", "m4v", "webm", "ogg", "ogv", "mp3", "m4a", "aac", "wav", "flac" };
-    for (ok) |cand| {
-        if (std.mem.eql(u8, container, cand)) return true;
-    }
-    return false;
-}
-
-fn entryHasProbe(e: Entry) bool {
-    return e.video_brand.len > 0 or e.video_codec.len > 0 or e.audio_codec.len > 0;
-}
-
-/// Honest indexer facts only — no invented stream/codec matrix.
-fn formatProbeNote(allocator: std.mem.Allocator, e: Entry, out: []u8) []const u8 {
-    if (!entryHasProbe(e)) return "";
-    const brand = htmlEscaped(allocator, e.video_brand);
-    defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
-    const vcodec = htmlEscaped(allocator, e.video_codec);
-    defer if (vcodec.ptr != e.video_codec.ptr) allocator.free(vcodec);
-    const acodec = htmlEscaped(allocator, e.audio_codec);
-    defer if (acodec.ptr != e.audio_codec.ptr) allocator.free(acodec);
-
-    var joined: [320]u8 = undefined;
-    var w: usize = 0;
-    const append = struct {
-        fn go(dest: []u8, wp: *usize, piece: []const u8) void {
-            if (wp.* > 0) {
-                const sep = " · ";
-                if (wp.* + sep.len > dest.len) return;
-                @memcpy(dest[wp.* .. wp.* + sep.len], sep);
-                wp.* += sep.len;
-            }
-            if (wp.* + piece.len > dest.len) return;
-            @memcpy(dest[wp.* .. wp.* + piece.len], piece);
-            wp.* += piece.len;
-        }
-    }.go;
-
-    if (e.video_brand.len > 0) {
-        var piece: [128]u8 = undefined;
-        const s = std.fmt.bufPrint(&piece, "brand <code>{s}</code>", .{brand}) catch "brand";
-        append(&joined, &w, s);
-    }
-    if (e.video_codec.len > 0) {
-        if (std.mem.eql(u8, e.video_codec, "unknown")) {
-            append(&joined, &w, "video codec not probed");
-        } else {
-            var piece: [128]u8 = undefined;
-            const s = std.fmt.bufPrint(&piece, "video <code>{s}</code>", .{vcodec}) catch "video";
-            append(&joined, &w, s);
-        }
-    }
-    if (e.audio_codec.len > 0) {
-        if (std.mem.eql(u8, e.audio_codec, "unknown")) {
-            append(&joined, &w, "audio codec not probed");
-        } else {
-            var piece: [128]u8 = undefined;
-            const s = std.fmt.bufPrint(&piece, "audio <code>{s}</code>", .{acodec}) catch "audio";
-            append(&joined, &w, s);
-        }
-    }
-    if (w == 0) return "";
-    return std.fmt.bufPrint(out, "<p class=\"probe\" role=\"status\">Indexed: {s}</p>", .{joined[0..w]}) catch "";
-}
-
-fn queryFlag(query: ?[]const u8, name: []const u8) bool {
-    const qs = query orelse return false;
-    var it = std.mem.splitScalar(u8, qs, '&');
-    while (it.next()) |raw| {
-        const pair = std.mem.trim(u8, raw, " \t\r");
-        if (std.mem.eql(u8, pair, name)) return true;
-        var eq_buf: [64]u8 = undefined;
-        if (name.len + 5 >= eq_buf.len) continue;
-        const want = std.fmt.bufPrint(&eq_buf, "{s}=1", .{name}) catch continue;
-        if (std.mem.eql(u8, pair, want)) return true;
-    }
-    return false;
-}
-
-fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
-    if (findEntry(id)) |e| {
-        const title = htmlEscaped(allocator, e.title);
-        defer if (title.ptr != e.title.ptr) allocator.free(title);
-        const id_esc = htmlEscaped(allocator, e.id);
-        defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
-        const container = htmlEscaped(allocator, e.container);
-        defer if (container.ptr != e.container.ptr) allocator.free(container);
-        const kind_esc = htmlEscaped(allocator, e.kind);
-        defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
-        var html: std.ArrayList(u8) = .empty;
-        html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, " · Koru Media</title>") catch {};
-        html.appendSlice(allocator, stylesheetLink()) catch {};
-        html.appendSlice(allocator, scriptEnhance()) catch {};
-        html.appendSlice(allocator, "</head><body><div class=\"app-shell\"><article class=\"item\">") catch {};
-        html.appendSlice(allocator, siteBrand()) catch {};
-        if (e.poster.len > 0) {
-            html.appendSlice(allocator, "<div class=\"item-layout has-poster\"><div class=\"item-poster\"><img src=\"/art/") catch {};
-            html.appendSlice(allocator, id_esc) catch {};
-            html.appendSlice(allocator, "\" alt=\"\" width=\"240\"/></div><div class=\"item-body\">") catch {};
-        } else {
-            html.appendSlice(allocator, "<div class=\"item-layout\"><div class=\"item-body\">") catch {};
-        }
-        html.appendSlice(allocator, "<h1>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, "</h1>") catch {};
-        if (e.year >= 1000) {
-            var year_buf: [64]u8 = undefined;
-            const year_line = std.fmt.bufPrint(&year_buf, "<p class=\"meta-line\">year {d}</p>", .{e.year}) catch "";
-            html.appendSlice(allocator, year_line) catch {};
-        }
-        {
-            var cbuf: [128]u8 = undefined;
-            const cline = std.fmt.bufPrint(&cbuf, "<p class=\"meta-line\">container <code>{s}</code></p>", .{container}) catch "";
-            html.appendSlice(allocator, cline) catch {};
-        }
-        var probe_buf: [512]u8 = undefined;
-        const probe = formatProbeNote(allocator, e, &probe_buf);
-        if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
-        html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary\" href=\"/watch/") catch {};
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "\">watch</a> <a href=\"/media/") catch {};
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "?download=1\">download</a>") catch {};
-        if (e.subtitle.len > 0) {
-            html.appendSlice(allocator, " <a href=\"/subtitles/") catch {};
-            html.appendSlice(allocator, id_esc) catch {};
-            html.appendSlice(allocator, "\">subtitles</a>") catch {};
-        }
-        html.appendSlice(allocator, " <a href=\"/library/") catch {};
-        html.appendSlice(allocator, kind_esc) catch {};
-        html.appendSlice(allocator, "\">more ") catch {};
-        html.appendSlice(allocator, kind_esc) catch {};
-        html.appendSlice(allocator, "</a> <a href=\"/library\">library</a></p></div></div></article></div></body></html>") catch {};
-        const body = html.toOwnedSlice(allocator) catch "item error";
-        var link_buf: [448]u8 = undefined;
-        const link = blk: {
-            if (e.poster.len > 0 and e.subtitle.len > 0) {
-                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\", </subtitles/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
-            } else if (e.poster.len > 0) {
-                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </art/{s}>; rel=\"preview\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
-            } else if (e.subtitle.len > 0) {
-                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\", </subtitles/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
-            } else {
-                break :blk std.fmt.bufPrint(&link_buf, "</item/{s}>; rel=\"self\", </library>; rel=\"up\", </library/{s}>; rel=\"collection\", </watch/{s}>; rel=\"related\", </media/{s}>; rel=\"related\"", .{ id_esc, kind_esc, id_esc, id_esc }) catch "</library>; rel=\"up\"";
-            }
-        };
-        return renderHttpHtml(allocator, link, body);
-    }
-    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
-}
-
-fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
-    if (findEntry(id)) |e| {
-        const tag: []const u8 = if (std.mem.eql(u8, e.kind, "audio")) "audio" else "video";
-        const title = htmlEscaped(allocator, e.title);
-        defer if (title.ptr != e.title.ptr) allocator.free(title);
-        const id_esc = htmlEscaped(allocator, e.id);
-        defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
-        const container = htmlEscaped(allocator, e.container);
-        defer if (container.ptr != e.container.ptr) allocator.free(container);
-        const kind_esc = htmlEscaped(allocator, e.kind);
-        defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
-        var html: std.ArrayList(u8) = .empty;
-        html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Watch ") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, " · Koru Media</title>") catch {};
-        html.appendSlice(allocator, stylesheetLink()) catch {};
-        html.appendSlice(allocator, scriptEnhance()) catch {};
-        html.appendSlice(allocator, "</head><body><div class=\"app-shell watch\">") catch {};
-        html.appendSlice(allocator, siteBrand()) catch {};
-        html.appendSlice(allocator, "<h1>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, "</h1>") catch {};
-        if (!likelyBrowserPlayable(e.container)) {
-            var note_buf: [512]u8 = undefined;
-            const note = if (e.video_brand.len > 0) blk: {
-                const brand = htmlEscaped(allocator, e.video_brand);
-                defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
-                break :blk std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file (brand <code>{s}</code>) may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, brand, id_esc }) catch "";
-            } else std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, id_esc }) catch "";
-            html.appendSlice(allocator, note) catch {};
-        }
-        var probe_buf: [512]u8 = undefined;
-        const probe = formatProbeNote(allocator, e, &probe_buf);
-        if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
-        // Player owns identity outside any hx-target / #library-region.
-        // Optional <track> stays inside #player; never replace the element.
-        if (e.subtitle.len > 0 and std.mem.eql(u8, tag, "video")) {
-            var player_buf: [640]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<video id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"><track kind=\"subtitles\" src=\"/subtitles/{s}\" srclang=\"en\" label=\"English\" default></video>", .{ id_esc, id_esc, id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
-        } else {
-            var player_buf: [384]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";
-            html.appendSlice(allocator, player) catch {};
-        }
-        // Filled by enhance.js when a saved resume position exists; never replaces #player.
-        html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
-        var nav_buf: [448]u8 = undefined;
-        const nav = if (e.subtitle.len > 0)
-            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/subtitles/{s}\">subtitles</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, id_esc, kind_esc, kind_esc }) catch ""
-        else
-            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, kind_esc, kind_esc }) catch "";
-        html.appendSlice(allocator, nav) catch {};
-        // Related shelf: HTMX swaps stay in #library-region; #player is never a descendant.
-        html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
-        var aff_buf: [512]u8 = undefined;
-        const aff = std.fmt.bufPrint(&aff_buf, "<p class=\"shelf-affordances\"><a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title&amp;limit=4\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"false\">sort title</a> · <a href=\"/library/{s}?sort=id&amp;limit=4\" hx-get=\"/library/{s}?sort=id&amp;limit=4\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"false\">sort id</a></p>", .{ kind_esc, kind_esc, kind_esc, kind_esc }) catch "";
-        html.appendSlice(allocator, aff) catch {};
-        appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0);
-        html.appendSlice(allocator, "</section></div></body></html>") catch {};
-        const body = html.toOwnedSlice(allocator) catch "watch error";
-        var link_buf: [384]u8 = undefined;
-        const link = if (e.subtitle.len > 0)
-            std.fmt.bufPrint(&link_buf, "</watch/{s}>; rel=\"self\", </item/{s}>; rel=\"up\", </media/{s}>; rel=\"related\", </subtitles/{s}>; rel=\"related\", </library/{s}>; rel=\"collection\"", .{ id_esc, id_esc, id_esc, id_esc, kind_esc }) catch "</library>; rel=\"up\""
-        else
-            std.fmt.bufPrint(&link_buf, "</watch/{s}>; rel=\"self\", </item/{s}>; rel=\"up\", </media/{s}>; rel=\"related\", </library/{s}>; rel=\"collection\"", .{ id_esc, id_esc, id_esc, kind_esc }) catch "</library>; rel=\"up\"";
-        return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
-    }
-    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
-}
-
-// ============================================================================
-// SPLIT→ media-http.kz — artHttp / mediaHttp (STREAM:v1 producer + Range / 304)
-// ============================================================================
-
-fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
-    ensureConfig();
-    const e = findEntry(id) orelse {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    if (e.poster.len == 0) {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    }
-    var path_buf: [512]u8 = undefined;
-    const full_path = pathUnderRoot(e.poster, &path_buf) orelse {
-        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
-    };
-    const file = std.fs.cwd().openFile(full_path, .{}) catch {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    defer file.close();
-    const data = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch {
-        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
-    };
-    const ctype: []const u8 = if (std.mem.endsWith(u8, e.poster, ".webp"))
-        "image/webp"
-    else if (std.mem.endsWith(u8, e.poster, ".png"))
-        "image/png"
-    else
-        "image/jpeg";
-    var head: std.ArrayList(u8) = .empty;
-    head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: ") catch {};
-    head.appendSlice(allocator, ctype) catch {};
-    head.appendSlice(allocator, "\r\n") catch {};
-    {
-        var lb: [48]u8 = undefined;
-        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
-        head.appendSlice(allocator, ls) catch {};
-    }
-    head.appendSlice(allocator, "Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n") catch {};
-    head.appendSlice(allocator, data) catch {};
-    return head.toOwnedSlice(allocator) catch "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
-}
-
-fn subtitlesHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
-    ensureConfig();
-    const e = findEntry(id) orelse {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    if (e.subtitle.len == 0) {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    }
-    var path_buf: [512]u8 = undefined;
-    const full_path = pathUnderRoot(e.subtitle, &path_buf) orelse {
-        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
-    };
-    const file = std.fs.cwd().openFile(full_path, .{}) catch {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    defer file.close();
-    // WebVTT sidecars are small; full read is fine (Range stays on /media only).
-    const data = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch {
-        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
-    };
-    var head: std.ArrayList(u8) = .empty;
-    head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/vtt; charset=utf-8\r\n") catch {};
-    {
-        var lb: [48]u8 = undefined;
-        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
-        head.appendSlice(allocator, ls) catch {};
-    }
-    head.appendSlice(allocator, "Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n") catch {};
-    head.appendSlice(allocator, data) catch {};
-    return head.toOwnedSlice(allocator) catch "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
-}
-
-fn mediaHttp(allocator: std.mem.Allocator, method: []const u8, id: []const u8, range: ?[]const u8, download: bool, if_none_match: ?[]const u8) []const u8 {
-    ensureConfig();
-    const e = findEntry(id) orelse {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    var path_buf: [512]u8 = undefined;
-    const full_path = pathUnderRoot(e.path, &path_buf) orelse {
-        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
-    };
-    const file = std.fs.cwd().openFile(full_path, .{}) catch {
-        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
-    };
-    defer file.close();
-    const st = file.stat() catch {
-        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
-    };
-    const size = st.size;
-
-    var etag_buf: [96]u8 = undefined;
-    const etag = std.fmt.bufPrint(&etag_buf, "{s}-{d}", .{ e.id, size }) catch "";
-    if (range == null) {
-        if (if_none_match) |inm| {
-            if (std.mem.eql(u8, inm, etag) or std.mem.eql(u8, inm, "*")) {
-                var not_mod: [160]u8 = undefined;
-                const nm = std.fmt.bufPrint(&not_mod, "HTTP/1.1 304 Not Modified\r\nETag: \"{s}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{etag}) catch "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                return allocator.dupe(u8, nm) catch nm;
-            }
-        }
-    }
-
-    var start: u64 = 0;
-    var end: u64 = if (size == 0) 0 else size - 1;
-    var status_line: []const u8 = "HTTP/1.1 200 OK\r\n";
-    const is_head = std.mem.eql(u8, method, "HEAD");
-    var used_range = false;
-
-    if (range) |rh| {
-        const trimmed = std.mem.trim(u8, rh, " \t");
-        if (parseBytesRange(trimmed, size)) |br| {
-            start = br.start;
-            end = br.end;
-            status_line = "HTTP/1.1 206 Partial Content\r\n";
-            used_range = true;
-        } else {
-            var msg: [192]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg, "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{d}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n", .{size}) catch "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            return allocator.dupe(u8, m) catch m;
-        }
-    }
-
-    const content_len: u64 = if (size == 0) 0 else end - start + 1;
-    var head: std.ArrayList(u8) = .empty;
-    head.appendSlice(allocator, status_line) catch {};
-    {
-        var line: [320]u8 = undefined;
-        const l = std.fmt.bufPrint(&line, "Content-Type: {s}\r\nContent-Length: {d}\r\nAccept-Ranges: bytes\r\nETag: \"{s}\"\r\n", .{ e.mime, content_len, etag }) catch "";
-        head.appendSlice(allocator, l) catch {};
-    }
-    if (download) {
-        // Basename only — path is already validated relative.
-        var base: []const u8 = e.path;
-        if (std.mem.lastIndexOfScalar(u8, e.path, '/')) |slash| {
-            base = e.path[slash + 1 ..];
-        }
-        var disp: [256]u8 = undefined;
-        const dline = std.fmt.bufPrint(&disp, "Content-Disposition: attachment; filename=\"{s}\"\r\n", .{base}) catch "Content-Disposition: attachment\r\n";
-        head.appendSlice(allocator, dline) catch {};
-    }
-    if (e.modified_ns > 0) {
-        var date_buf: [29]u8 = undefined;
-        formatHttpDateFromNs(&date_buf, e.modified_ns);
-        head.appendSlice(allocator, "Last-Modified: ") catch {};
-        head.appendSlice(allocator, &date_buf) catch {};
-        head.appendSlice(allocator, "\r\n") catch {};
-    }
-    if (used_range and size > 0) {
-        var line: [128]u8 = undefined;
-        const l = std.fmt.bufPrint(&line, "Content-Range: bytes {d}-{d}/{d}\r\n", .{ start, end, size }) catch "";
-        head.appendSlice(allocator, l) catch {};
-    }
-    head.appendSlice(allocator, "Connection: close\r\n\r\n") catch {};
-
-    if (is_head or content_len == 0) {
-        return head.toOwnedSlice(allocator) catch "HEAD error";
-    }
-
-    // STREAM:v1 — send|zig writes headers then chunks the file (no full-range buffer).
-    var stream: std.ArrayList(u8) = .empty;
-    stream.appendSlice(allocator, "STREAM:v1\n") catch {};
-    stream.appendSlice(allocator, full_path) catch {};
-    stream.appendSlice(allocator, "\n") catch {};
-    {
-        var nb: [48]u8 = undefined;
-        const s = std.fmt.bufPrint(&nb, "{d}\n{d}\n\n", .{ start, end }) catch "0\n0\n\n";
-        stream.appendSlice(allocator, s) catch {};
-    }
-    stream.appendSlice(allocator, head.items) catch {};
-    head.deinit(allocator);
-    return stream.toOwnedSlice(allocator) catch "media error";
-}
-
-fn mediaOptions(id: []const u8) []const u8 {
-    _ = id;
-    return "HTTP/1.1 204 No Content\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-}
-
-const StaticBody = struct { status: u16, body: []const u8, content_type: ?[]const u8 };
-
-fn staticFallback(method: []const u8, path: []const u8, if_none_match: ?[]const u8) ?StaticBody {
-    _ = if_none_match;
-    if (!std.mem.eql(u8, method, "GET")) return null;
-    if (std.mem.eql(u8, path, "/smoke.html") or std.mem.eql(u8, path, "/smoke")) {
-        return .{
-            .status = 200,
-            .body = "<!doctype html><html><head><title>smoke</title></head><body><p>static ok</p></body></html>",
-            .content_type = "text/html",
-        };
-    }
-    // Allowlisted public assets only (no directory listing / path join).
-    if (std.mem.eql(u8, path, "/enhance.js")) {
-        return readPublicFile("public/enhance.js", "application/javascript; charset=utf-8", 256 * 1024);
-    }
-    if (std.mem.eql(u8, path, "/app.css")) {
-        return readPublicFile("public/app.css", "text/css; charset=utf-8", 128 * 1024);
-    }
-    if (std.mem.eql(u8, path, "/koru-dom-enhance.js")) {
-        return readPublicFile("public/koru-dom-enhance.js", "application/javascript; charset=utf-8", 512 * 1024);
-    }
-    if (std.mem.eql(u8, path, "/enhance-demo.html") or std.mem.eql(u8, path, "/enhance-demo")) {
-        return readPublicFile("public/enhance-demo.html", "text/html; charset=utf-8", 64 * 1024);
-    }
-    return null;
-}
-
-fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticBody {
-    const file = std.fs.cwd().openFile(rel, .{}) catch {
-        return .{ .status = 404, .body = "Not Found", .content_type = "text/plain" };
-    };
-    defer file.close();
-    const allocator = std.heap.c_allocator;
-    const data = file.readToEndAlloc(allocator, max) catch {
-        return .{ .status = 500, .body = "Error", .content_type = "text/plain" };
-    };
-    return .{ .status = 200, .body = data, .content_type = content_type };
-}
-
-// ============================================================================
-// SPLIT→ handler.kz — handler|zig route table (APP only)
-// ============================================================================
-
-~proc handler|zig {
-    const allocator = std.heap.c_allocator;
-    ensureConfig();
-    maybeReloadManifest();
-    const method = req.method;
-    const path = req.path;
-    const pq = parseQueryString(req.query);
-
-    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/")) {
-        return .{
-            .status = 200,
-            .body = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Koru Media</title><link rel=\"stylesheet\" href=\"/app.css\"></head><body><main class=\"home\"><p class=\"brand\">Koru Media</p><p class=\"lede\">A direct-play library — browse, watch, and stream originals without a transcoder.</p><p class=\"cta\"><a class=\"primary\" href=\"/library\">Open library</a> <a class=\"quiet\" href=\"/enhance-demo.html\">keyed demo</a></p></main></body></html>",
-            .content_type = "text/html",
-        };
-    }
-
-    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/library")) {
-        const body = if (wantsFragment(req.prefer, req.hx_request))
-            libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset)
-        else
-            libraryHtml(allocator, null, pq.sort, pq.q, pq.limit, pq.offset);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/fragments/library")) {
-        const body = libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/fragments/library/")) {
-        const kind = path["/fragments/library/".len..];
-        const body = libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/library/")) {
-        const kind = path["/library/".len..];
-        const body = if (wantsFragment(req.prefer, req.hx_request))
-            libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset)
-        else
-            libraryHtml(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/item/")) {
-        const id = path["/item/".len..];
-        return .{ .status = 200, .body = itemHtml(allocator, id), .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/watch/")) {
-        const id = path["/watch/".len..];
-        return .{ .status = 200, .body = watchHtml(allocator, id), .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/art/")) {
-        const id = path["/art/".len..];
-        const body = artHttp(allocator, id);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/subtitles/")) {
-        const id = path["/subtitles/".len..];
-        const body = subtitlesHttp(allocator, id);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-    if (std.mem.eql(u8, method, "OPTIONS") and std.mem.startsWith(u8, path, "/media/")) {
-        const id = path["/media/".len..];
-        return .{ .status = 200, .body = mediaOptions(id), .content_type = null };
-    }
-    if ((std.mem.eql(u8, method, "GET") or std.mem.eql(u8, method, "HEAD")) and std.mem.startsWith(u8, path, "/media/")) {
-        const id = path["/media/".len..];
-        const body = mediaHttp(allocator, method, id, req.range, queryFlag(req.query, "download"), req.if_none_match);
-        return .{ .status = 200, .body = body, .content_type = null };
-    }
-
-    if (staticFallback(method, path, req.if_none_match)) |r| {
-        return .{ .status = r.status, .body = r.body, .content_type = r.content_type };
-    }
-    return .{ .status = 404, .body = "Not Found", .content_type = null };
-}

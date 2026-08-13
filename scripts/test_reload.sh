@@ -17,8 +17,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$WORKDIR/media/clips"
-printf 'x' > "$WORKDIR/media/clips/x.mp4"
+mkdir -p "$WORKDIR/media/movies"
+printf 'x' > "$WORKDIR/media/movies/x.mp4"
 cat > "$WORKDIR/manifest.json" <<'JSON'
 {
   "entries": [
@@ -26,7 +26,7 @@ cat > "$WORKDIR/manifest.json" <<'JSON'
       "id": "m_reload",
       "kind": "movie",
       "title": "before",
-      "path": "clips/x.mp4",
+      "path": "movies/x.mp4",
       "bytes": 1,
       "modified_ns": 1,
       "mime": "video/mp4",

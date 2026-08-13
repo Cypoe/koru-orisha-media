@@ -14,12 +14,12 @@ if [[ ! -f bin/media-server ]]; then
   exit 2
 fi
 
-ID=$(python3 -c "import json; print(next(e['id'] for e in json.load(open('data/manifest.json'))['entries'] if e['title']=='demo'))")
+ID=$(python3 -c "import json; print(next(e['id'] for e in json.load(open('fixtures/manifest.json'))['entries'] if e['title']=='demo'))")
 
 START=$(date +%s%3N)
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=fixtures/media \
-  -e KORU_MANIFEST=data/manifest.json \
+  -e KORU_MANIFEST=fixtures/manifest.json \
   -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$ROOT/data:/app/data:ro" \
   -v "$ROOT/fixtures:/app/fixtures:ro" \

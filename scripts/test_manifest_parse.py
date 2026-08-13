@@ -2,7 +2,7 @@
 """Spec twin of the vendor schema-specific manifest loader (entries array + unescape).
 
 Mirrors `loadManifest` / `entriesArraySlice` / JSON string unescape in
-`vendor/orisha-lib/index.kz` (APP:media-handler / SPLIT→ manifest-load.kz).
+`src/index.kz` (app module `media`, not Orisha).
 Not a full JSON parser — only what the media server promises to accept.
 """
 from __future__ import annotations
@@ -314,7 +314,7 @@ def load_manifest_entries(text: str) -> list[dict]:
 
 class ManifestParseTests(unittest.TestCase):
     def test_fixture_manifest_matches_json(self) -> None:
-        text = (ROOT / "data" / "manifest.json").read_text(encoding="utf-8")
+        text = (ROOT / "fixtures" / "manifest.json").read_text(encoding="utf-8")
         scraped = load_manifest_entries(text)
         real = json.loads(text)["entries"]
         self.assertEqual(len(scraped), len(real))

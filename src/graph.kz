@@ -1,0 +1,607 @@
+// media/graph — physical manifest + semantic core (not Orisha).
+// Sibling stem under src/ (Koru: import media loads index; graph.kz is media/graph).
+// Schema scrape of entries[] + projections[] (orisha.item / orisha.links /
+// schema.org.jsonld). Handlers never call TMDB or ffmpeg.
+
+const std = @import("std");
+
+const DEFAULT_MEDIA_ROOT = "fixtures/media";
+const DEFAULT_MANIFEST_PATH = "data/manifest.json";
+const DEFAULT_SEMANTIC_PATH = "data/semantic.json";
+pub const Entry = struct {
+    id: []const u8,
+    kind: []const u8,
+    title: []const u8,
+    path: []const u8,
+    bytes: u64,
+    modified_ns: u64,
+    mime: []const u8,
+    container: []const u8,
+    poster: []const u8,
+    /// Relative WebVTT sidecar path (empty if absent).
+    subtitle: []const u8,
+    year: u32,
+    /// First nested `video[]` track facts from indexer probe (empty if absent).
+    video_codec: []const u8,
+    video_brand: []const u8,
+    /// First nested `audio[]` track codec (empty if absent).
+    audio_codec: []const u8,
+};
+
+var loaded = false;
+var entries_buf: [64]Entry = undefined;
+var entry_count: usize = 0;
+var storage: [192 * 1024]u8 = undefined;
+var storage_len: usize = 0;
+var config_storage_end: usize = 0;
+var manifest_mtime_ns: i128 = -1;
+var media_root_owned: []const u8 = DEFAULT_MEDIA_ROOT;
+var manifest_path_owned: []const u8 = DEFAULT_MANIFEST_PATH;
+var semantic_path_owned: []const u8 = DEFAULT_SEMANTIC_PATH;
+var cfg_ready = false;
+
+pub const SemanticJoin = struct {
+    // Join key is the physical opaque id (m_*). Local work ids (work.movie.*)
+    // live in the semantic snapshot only — never in /item/{id} URLs.
+    asset_id: []const u8,
+    display_title: []const u8,
+    display_description: []const u8,
+    tmdb_url: []const u8,
+    imdb_url: []const u8,
+    jsonld: []const u8,
+};
+
+var semantic_loaded = false;
+var semantic_buf: [32]SemanticJoin = undefined;
+var semantic_count: usize = 0;
+var semantic_mtime_ns: i128 = -1;
+
+fn allocDup(s: []const u8) []const u8 {
+    if (storage_len + s.len > storage.len) return s;
+    const out = storage[storage_len .. storage_len + s.len];
+    @memcpy(out, s);
+    storage_len += s.len;
+    return out;
+}
+
+fn envOr(name: []const u8, fallback: []const u8) []const u8 {
+    return std.posix.getenv(name) orelse fallback;
+}
+
+pub fn ensureConfig() void {
+    if (cfg_ready) return;
+    cfg_ready = true;
+    media_root_owned = allocDup(envOr("KORU_MEDIA_ROOT", DEFAULT_MEDIA_ROOT));
+    manifest_path_owned = allocDup(envOr("KORU_MANIFEST", DEFAULT_MANIFEST_PATH));
+    semantic_path_owned = allocDup(envOr("KORU_SEMANTIC", DEFAULT_SEMANTIC_PATH));
+    config_storage_end = storage_len;
+}
+
+fn manifestMtimeNs() i128 {
+    ensureConfig();
+    const file = std.fs.cwd().openFile(manifest_path_owned, .{}) catch return -1;
+    defer file.close();
+    const st = file.stat() catch return -1;
+    return st.mtime;
+}
+
+fn semanticMtimeNs() i128 {
+    ensureConfig();
+    const file = std.fs.cwd().openFile(semantic_path_owned, .{}) catch return -1;
+    defer file.close();
+    const st = file.stat() catch return -1;
+    return st.mtime;
+}
+
+/// Swap in a new immutable snapshot when the file changes and no media streams
+/// are in flight (in-flight requests already hold paths/bytes from findEntry).
+pub fn maybeReloadManifest() void {
+    ensureConfig();
+    if (koru_orisha.streamsBusy()) return;
+    const mt = manifestMtimeNs();
+    const smt = semanticMtimeNs();
+    const manifest_changed = mt >= 0 and (!loaded or mt != manifest_mtime_ns);
+    const semantic_changed = smt != semantic_mtime_ns;
+    if (!manifest_changed and !semantic_changed) return;
+    // Reload both so semantic strings can reuse storage without invalidating entries.
+    entry_count = 0;
+    storage_len = config_storage_end;
+    loaded = false;
+    semantic_loaded = false;
+    semantic_count = 0;
+    manifest_mtime_ns = mt;
+    semantic_mtime_ns = smt;
+    loadManifest();
+    loadSemantic();
+}
+
+fn loadManifest() void {
+    if (loaded) return;
+    loaded = true;
+    ensureConfig();
+    const file = std.fs.cwd().openFile(manifest_path_owned, .{}) catch return;
+    defer file.close();
+    var buf: [64 * 1024]u8 = undefined;
+    const n = file.readAll(&buf) catch return;
+    const text = buf[0..n];
+    // Schema-specific: only walk objects inside the top-level "entries" array.
+    // Avoids false positives on keys outside entries and cross-object field bleed.
+    const entries = entriesArraySlice(text) orelse return;
+    var i: usize = 0;
+    while (i < entries.len) : (i += 1) {
+        if (std.mem.startsWith(u8, entries[i..], "\"id\"")) {
+            const obj = entryObjectSlice(entries, i);
+            const id = extractAfterUnescaped(obj, "\"id\"") orelse continue;
+            const title = extractAfterUnescaped(obj, "\"title\"") orelse id;
+            const path = extractAfterUnescaped(obj, "\"path\"") orelse continue;
+            const mime = extractAfterUnescaped(obj, "\"mime\"") orelse "application/octet-stream";
+            const kind = extractAfterUnescaped(obj, "\"kind\"") orelse "file";
+            const container = extractAfterUnescaped(obj, "\"container\"") orelse "";
+            const poster = extractAfterUnescaped(obj, "\"poster\"") orelse "";
+            const subtitle = extractAfterUnescaped(obj, "\"subtitle\"") orelse "";
+            const bytes = extractNumberAfter(obj, "\"bytes\"") orelse 0;
+            const modified_ns = extractNumberAfter(obj, "\"modified_ns\"") orelse 0;
+            const year_u64 = extractNumberAfter(obj, "\"year\"") orelse 0;
+            const year: u32 = if (year_u64 > 9999) 0 else @intCast(year_u64);
+            const video_track = firstArrayObjectSlice(obj, "\"video\"") orelse "";
+            const audio_track = firstArrayObjectSlice(obj, "\"audio\"") orelse "";
+            const video_codec = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"codec\"") orelse "" else "";
+            const video_brand = if (video_track.len > 0) extractAfterUnescaped(video_track, "\"brand\"") orelse "" else "";
+            const audio_codec = if (audio_track.len > 0) extractAfterUnescaped(audio_track, "\"codec\"") orelse "" else "";
+            if (id.len == 0 or path.len == 0) continue;
+            var dup = false;
+            for (entries_buf[0..entry_count]) |e| {
+                if (std.mem.eql(u8, e.id, id)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue; // reject duplicate IDs on load
+            if (entry_count >= entries_buf.len) break;
+            entries_buf[entry_count] = .{
+                .id = id,
+                .kind = kind,
+                .title = title,
+                .path = path,
+                .bytes = bytes,
+                .modified_ns = modified_ns,
+                .mime = mime,
+                .container = container,
+                .poster = poster,
+                .subtitle = subtitle,
+                .year = year,
+                .video_codec = video_codec,
+                .video_brand = video_brand,
+                .audio_codec = audio_codec,
+            };
+            entry_count += 1;
+        }
+    }
+}
+
+fn jsonArraySlice(text: []const u8, key: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, text, key) orelse return null;
+    var p = at + key.len;
+    while (p < text.len and (text[p] == ' ' or text[p] == '\t' or text[p] == '\n' or text[p] == '\r' or text[p] == ':')) : (p += 1) {}
+    if (p >= text.len or text[p] != '[') return null;
+    var depth: i32 = 0;
+    var in_string = false;
+    var escape = false;
+    var k = p;
+    while (k < text.len) : (k += 1) {
+        const ch = text[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '[') depth += 1;
+        if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) return text[p .. k + 1];
+        }
+    }
+    return null;
+}
+
+fn findSemanticSlot(asset_id: []const u8) ?*SemanticJoin {
+    for (semantic_buf[0..semantic_count]) |*s| {
+        if (std.mem.eql(u8, s.asset_id, asset_id)) return s;
+    }
+    if (semantic_count >= semantic_buf.len) return null;
+    semantic_buf[semantic_count] = .{
+        .asset_id = asset_id,
+        .display_title = "",
+        .display_description = "",
+        .tmdb_url = "",
+        .imdb_url = "",
+        .jsonld = "",
+    };
+    semantic_count += 1;
+    return &semantic_buf[semantic_count - 1];
+}
+
+fn loadSemantic() void {
+    if (semantic_loaded) return;
+    semantic_loaded = true;
+    ensureConfig();
+    const file = std.fs.cwd().openFile(semantic_path_owned, .{}) catch return;
+    defer file.close();
+    var buf: [96 * 1024]u8 = undefined;
+    const n = file.readAll(&buf) catch return;
+    const text = buf[0..n];
+    // Named constructions in top-level "projections". Missing array, missing
+    // construction key, or unknown construction = physical-only for that
+    // affordance. Do not scrape display_* or title off Entity.
+    const projections = jsonArraySlice(text, "\"projections\"") orelse return;
+    var i: usize = 0;
+    while (i < projections.len) : (i += 1) {
+        if (!std.mem.startsWith(u8, projections[i..], "\"asset_id\"")) continue;
+        const pobj = entryObjectSlice(projections, i);
+        const asset_id = extractAfterUnescaped(pobj, "\"asset_id\"") orelse continue;
+        if (asset_id.len == 0) continue;
+        const construction = extractAfterUnescaped(pobj, "\"construction\"") orelse continue;
+        const is_item = std.mem.eql(u8, construction, "orisha.item");
+        const is_links = std.mem.eql(u8, construction, "orisha.links");
+        const is_jsonld = std.mem.eql(u8, construction, "schema.org.jsonld");
+        if (!is_item and !is_links and !is_jsonld) continue;
+        const slot = findSemanticSlot(asset_id) orelse return;
+        if (is_item) {
+            slot.display_title = extractAfterUnescaped(pobj, "\"display_title\"") orelse "";
+            slot.display_description = extractAfterUnescaped(pobj, "\"display_description\"") orelse "";
+        } else if (is_links) {
+            slot.tmdb_url = extractAfterUnescaped(pobj, "\"tmdb_url\"") orelse "";
+            slot.imdb_url = extractAfterUnescaped(pobj, "\"imdb_url\"") orelse "";
+        } else if (is_jsonld) {
+            slot.jsonld = extractAfterUnescaped(pobj, "\"jsonld\"") orelse "";
+        }
+    }
+}
+
+pub fn findSemantic(asset_id: []const u8) ?SemanticJoin {
+    maybeReloadManifest();
+    loadSemantic();
+    for (semantic_buf[0..semantic_count]) |s| {
+        if (std.mem.eql(u8, s.asset_id, asset_id)) return s;
+    }
+    return null;
+}
+
+/// Locate the JSON array value for the top-level `"entries"` key.
+fn entriesArraySlice(text: []const u8) ?[]const u8 {
+    return jsonArraySlice(text, "\"entries\"");
+}
+
+/// Limit JSON field scrapes to one object so keys before `"id"` (e.g. container)
+/// are not read from the following entry when keys are sorted.
+/// Walks backward with brace depth so nested `audio`/`video` objects before `"id"`
+/// do not become the slice start.
+fn entryObjectSlice(text: []const u8, id_at: usize) []const u8 {
+    var start: usize = 0;
+    var depth: i32 = 0;
+    var in_string = false;
+    var i: usize = id_at;
+    while (i > 0) {
+        i -= 1;
+        const ch = text[i];
+        if (in_string) {
+            // Scanning backward: a preceding '\\' escapes this quote.
+            if (ch == '"') {
+                var bs: usize = 0;
+                var j = i;
+                while (j > 0 and text[j - 1] == '\\') : (j -= 1) bs += 1;
+                if (bs % 2 == 1) continue;
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '}') {
+            depth += 1;
+        } else if (ch == '{') {
+            if (depth == 0) {
+                start = i;
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    depth = 0;
+    in_string = false;
+    var escape = false;
+    var k = start;
+    var seen_open = false;
+    while (k < text.len) : (k += 1) {
+        const ch = text[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '{') {
+            depth += 1;
+            seen_open = true;
+        } else if (ch == '}') {
+            depth -= 1;
+            if (seen_open and depth == 0) {
+                return text[start .. k + 1];
+            }
+        }
+    }
+    return text[start..];
+}
+
+/// First JSON string in a slice (array values have no `:` before the quote).
+fn extractFirstJsonString(slice: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    var in_string = false;
+    var escape = false;
+    var start: usize = 0;
+    while (i < slice.len) : (i += 1) {
+        const ch = slice[i];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escape = true;
+                continue;
+            }
+            if (ch == '"') return slice[start..i];
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            start = i + 1;
+        }
+    }
+    return null;
+}
+
+fn extractRawString(slice: []const u8) ?[]const u8 {
+    const colon = std.mem.indexOfScalar(u8, slice, ':') orelse return null;
+    const q1 = std.mem.indexOfScalar(u8, slice[colon..], '"') orelse return null;
+    const start = colon + q1 + 1;
+    var i = start;
+    var escape = false;
+    while (i < slice.len) : (i += 1) {
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (slice[i] == '\\') {
+            escape = true;
+            continue;
+        }
+        if (slice[i] == '"') {
+            return slice[start..i];
+        }
+    }
+    return null;
+}
+
+fn allocUnescapeJson(raw: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return allocDup(raw);
+    var tmp: [8192]u8 = undefined;
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < raw.len and w < tmp.len) : (i += 1) {
+        if (raw[i] == '\\' and i + 1 < raw.len) {
+            i += 1;
+            const esc = raw[i];
+            tmp[w] = switch (esc) {
+                '"', '\\', '/' => esc,
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                else => esc,
+            };
+            w += 1;
+        } else {
+            tmp[w] = raw[i];
+            w += 1;
+        }
+    }
+    return allocDup(tmp[0..w]);
+}
+
+fn extractAfterUnescaped(slice: []const u8, key: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, slice, key) orelse return null;
+    const raw = extractRawString(slice[at..]) orelse return null;
+    return allocUnescapeJson(raw);
+}
+
+fn extractNumberAfter(slice: []const u8, key: []const u8) ?u64 {
+    const at = std.mem.indexOf(u8, slice, key) orelse return null;
+    const colon = std.mem.indexOfScalar(u8, slice[at..], ':') orelse return null;
+    var p = at + colon + 1;
+    while (p < slice.len and (slice[p] == ' ' or slice[p] == '\t')) : (p += 1) {}
+    var end = p;
+    while (end < slice.len and slice[end] >= '0' and slice[end] <= '9') : (end += 1) {}
+    if (end == p) return null;
+    return std.fmt.parseInt(u64, slice[p..end], 10) catch null;
+}
+
+/// First object inside a top-level array field on an entry (e.g. `"video":[{...}]`).
+/// Scopes nested scrapes so `"codec"` on video does not bleed into `"audio"`.
+fn firstArrayObjectSlice(entry_obj: []const u8, key: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, entry_obj, key) orelse return null;
+    var p = at + key.len;
+    while (p < entry_obj.len and (entry_obj[p] == ' ' or entry_obj[p] == '\t' or entry_obj[p] == '\n' or entry_obj[p] == '\r' or entry_obj[p] == ':')) : (p += 1) {}
+    if (p >= entry_obj.len or entry_obj[p] != '[') return null;
+    var depth: i32 = 0;
+    var in_string = false;
+    var escape = false;
+    var k = p;
+    var first_obj_start: ?usize = null;
+    while (k < entry_obj.len) : (k += 1) {
+        const ch = entry_obj[k];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (ch == '\\') {
+                escape = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '[') {
+            depth += 1;
+            continue;
+        }
+        if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) return null; // empty / no object
+            continue;
+        }
+        if (ch == '{' and depth == 1 and first_obj_start == null) {
+            first_obj_start = k;
+            var obj_depth: i32 = 0;
+            var j = k;
+            var obj_in_string = false;
+            var obj_escape = false;
+            while (j < entry_obj.len) : (j += 1) {
+                const oj = entry_obj[j];
+                if (obj_in_string) {
+                    if (obj_escape) {
+                        obj_escape = false;
+                    } else if (oj == '\\') {
+                        obj_escape = true;
+                    } else if (oj == '"') {
+                        obj_in_string = false;
+                    }
+                    continue;
+                }
+                if (oj == '"') {
+                    obj_in_string = true;
+                    continue;
+                }
+                if (oj == '{') obj_depth += 1;
+                if (oj == '}') {
+                    obj_depth -= 1;
+                    if (obj_depth == 0) return entry_obj[k .. j + 1];
+                }
+            }
+            return null;
+        }
+    }
+    return null;
+}
+
+pub fn findEntry(id: []const u8) ?Entry {
+    maybeReloadManifest();
+    loadManifest();
+    for (entries_buf[0..entry_count]) |e| {
+        if (std.mem.eql(u8, e.id, id)) return e;
+    }
+    return null;
+}
+
+pub fn pathOk(rel: []const u8) bool {
+    if (rel.len == 0) return false;
+    if (rel[0] == '/' or rel[0] == '\\') return false;
+    if (std.mem.indexOf(u8, rel, "..") != null) return false;
+    if (std.mem.indexOfScalar(u8, rel, '\\') != null) return false;
+    return true;
+}
+
+pub fn pathUnderRoot(rel: []const u8, out: []u8) ?[]const u8 {
+    ensureConfig();
+    if (!pathOk(rel)) return null;
+    const joined = std.fmt.bufPrint(out, "{s}/{s}", .{ media_root_owned, rel }) catch return null;
+    // Normalize: reject if any segment is ".." after join (already blocked) and require prefix.
+    if (!std.mem.startsWith(u8, joined, media_root_owned)) return null;
+    if (joined.len > media_root_owned.len and joined[media_root_owned.len] != '/' and joined[media_root_owned.len] != '\\') {
+        return null;
+    }
+    return joined;
+}
+pub const SortMode = enum { title, id };
+fn asciiLessIgnoreCase(a: []const u8, b: []const u8) bool {
+    const n = @min(a.len, b.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const ca = std.ascii.toLower(a[i]);
+        const cb = std.ascii.toLower(b[i]);
+        if (ca < cb) return true;
+        if (ca > cb) return false;
+    }
+    return a.len < b.len;
+}
+
+fn asciiContainsIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn entryLess(sort: SortMode, a: Entry, b: Entry) bool {
+    return switch (sort) {
+        .title => asciiLessIgnoreCase(a.title, b.title),
+        .id => std.mem.lessThan(u8, a.id, b.id),
+    };
+}
+
+pub fn collectFiltered(kind_filter: ?[]const u8, q: ?[]const u8, sort: SortMode, out: *[64]Entry) []Entry {
+    maybeReloadManifest();
+    loadManifest();
+    var n: usize = 0;
+    for (entries_buf[0..entry_count]) |e| {
+        if (kind_filter) |k| {
+            if (!std.mem.eql(u8, e.kind, k)) continue;
+        }
+        if (q) |needle| {
+            if (needle.len > 0 and !asciiContainsIgnoreCase(e.title, needle)) continue;
+        }
+        if (n >= out.len) break;
+        out[n] = e;
+        n += 1;
+    }
+    // insertion sort
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        var j = i;
+        while (j > 0 and entryLess(sort, out[j], out[j - 1])) : (j -= 1) {
+            const tmp = out[j - 1];
+            out[j - 1] = out[j];
+            out[j] = tmp;
+        }
+    }
+    return out[0..n];
+}
+pub fn hasProjectionIndex() bool {
+    maybeReloadManifest();
+    loadSemantic();
+    return semantic_count > 0;
+}

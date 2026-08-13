@@ -1,0 +1,988 @@
+// media/consumers — named constructions → representations (not Orisha).
+// HTML library/item/watch, JSON-LD, Link, media/art/subtitle bytes.
+// Reads the graph snapshot; does not load JSON itself.
+
+const std = @import("std");
+
+const STREAM_CHUNK = 64 * 1024;
+fn parseBytesRange(range_hdr: []const u8, size: u64) ?struct { start: u64, end: u64 } {
+    if (!std.mem.startsWith(u8, range_hdr, "bytes=")) return null;
+    const spec = range_hdr["bytes=".len..];
+    const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return null;
+    if (dash == 0) return null;
+    const start = std.fmt.parseInt(u64, spec[0..dash], 10) catch return null;
+    var end: u64 = if (dash + 1 < spec.len)
+        (std.fmt.parseInt(u64, spec[dash + 1 ..], 10) catch return null)
+    else blk: {
+        if (size == 0) return null;
+        break :blk size - 1;
+    };
+    if (size == 0 or start >= size or end < start) return null;
+    if (end >= size) end = size - 1;
+    return .{ .start = start, .end = end };
+}
+
+fn htmlEscaped(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (s) |ch| {
+        switch (ch) {
+            '&' => out.appendSlice(allocator, "&amp;") catch {},
+            '<' => out.appendSlice(allocator, "&lt;") catch {},
+            '>' => out.appendSlice(allocator, "&gt;") catch {},
+            '"' => out.appendSlice(allocator, "&quot;") catch {},
+            else => out.append(allocator, ch) catch {},
+        }
+    }
+    return out.toOwnedSlice(allocator) catch s;
+}
+
+fn formatHttpDateFromNs(buf: *[29]u8, ns: u64) void {
+    // Reuse civil_from_days via epoch seconds.
+    const epoch: i64 = @intCast(ns / 1_000_000_000);
+    const days = @divFloor(epoch, 86400);
+    const secs = @as(u32, @intCast(epoch - days * 86400));
+    const z = days + 719468;
+    const era = @divFloor(z, 146097);
+    const doe = @as(u32, @intCast(z - era * 146097));
+    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const y0 = @as(i64, yoe) + era * 400;
+    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const mp = (5 * doy + 2) / 153;
+    const d = doy - (153 * mp + 2) / 5 + 1;
+    const m = if (mp < 10) mp + 3 else mp - 9;
+    const y = if (m <= 2) y0 + 1 else y0;
+    const wday = @as(u32, @intCast(@mod(days + 4, 7)));
+    const DAY = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    const MON = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    @memcpy(buf[0..3], DAY[wday]);
+    buf[3] = ',';
+    buf[4] = ' ';
+    two(buf[5..7], d);
+    buf[7] = ' ';
+    @memcpy(buf[8..11], MON[m - 1]);
+    buf[11] = ' ';
+    four(buf[12..16], @as(u32, @intCast(y)));
+    buf[16] = ' ';
+    two(buf[17..19], secs / 3600);
+    buf[19] = ':';
+    two(buf[20..22], (secs % 3600) / 60);
+    buf[22] = ':';
+    two(buf[23..25], secs % 60);
+    @memcpy(buf[25..29], " GMT");
+}
+
+fn two(dst: *[2]u8, v: u32) void {
+    dst[0] = '0' + @as(u8, @intCast((v / 10) % 10));
+    dst[1] = '0' + @as(u8, @intCast(v % 10));
+}
+
+fn four(dst: *[4]u8, v: u32) void {
+    dst[0] = '0' + @as(u8, @intCast((v / 1000) % 10));
+    dst[1] = '0' + @as(u8, @intCast((v / 100) % 10));
+    dst[2] = '0' + @as(u8, @intCast((v / 10) % 10));
+    dst[3] = '0' + @as(u8, @intCast(v % 10));
+}
+pub fn parseQueryString(query: ?[]const u8) struct { sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32 } {
+    var sort: koru_media.koru_graph.SortMode = .title;
+    var q: ?[]const u8 = null;
+    var limit: u32 = 0;
+    var offset: u32 = 0;
+    const qs = query orelse return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
+    var it = std.mem.splitScalar(u8, qs, '&');
+    while (it.next()) |pair| {
+        if (std.mem.startsWith(u8, pair, "sort=")) {
+            const v = pair["sort=".len..];
+            if (std.mem.eql(u8, v, "id")) sort = .id;
+        } else if (std.mem.startsWith(u8, pair, "q=")) {
+            q = pair["q=".len..];
+        } else if (std.mem.startsWith(u8, pair, "limit=")) {
+            limit = std.fmt.parseInt(u32, pair["limit=".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, pair, "offset=")) {
+            offset = std.fmt.parseInt(u32, pair["offset=".len..], 10) catch 0;
+        }
+    }
+    return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
+}
+fn formatLibraryQuery(buf: []u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+    const sort_s: []const u8 = switch (sort) {
+        .title => "title",
+        .id => "id",
+    };
+    if (q) |qv| {
+        if (qv.len > 0) {
+            return std.fmt.bufPrint(buf, "?sort={s}&q={s}&limit={d}&offset={d}", .{ sort_s, qv, limit, offset }) catch "?";
+        }
+    }
+    return std.fmt.bufPrint(buf, "?sort={s}&limit={d}&offset={d}", .{ sort_s, limit, offset }) catch "?";
+}
+
+fn libraryBasePath(buf: []u8, kind_filter: ?[]const u8) []const u8 {
+    if (kind_filter) |k| {
+        return std.fmt.bufPrint(buf, "/library/{s}", .{k}) catch "/library";
+    }
+    return "/library";
+}
+
+fn appendLibraryEmpty(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, total: usize) void {
+    var base_buf: [96]u8 = undefined;
+    const base = libraryBasePath(&base_buf, kind_filter);
+    if (q) |needle| {
+        if (needle.len > 0 and total == 0) {
+            const q_esc = htmlEscaped(allocator, needle);
+            defer if (q_esc.ptr != needle.ptr) allocator.free(q_esc);
+            var msg: [768]u8 = undefined;
+            const line = std.fmt.bufPrint(&msg, "<p class=\"empty\" role=\"status\">No titles match “{s}”. <a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">Clear search</a></p>", .{ q_esc, base, base }) catch {
+                out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No titles match this search.</p>") catch {};
+                return;
+            };
+            out.appendSlice(allocator, line) catch {};
+            return;
+        }
+    }
+    if (total == 0) {
+        if (kind_filter) |_| {
+            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No items in this collection. <a href=\"/library\">Browse all</a></p>") catch {};
+        } else {
+            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">Library is empty.</p>") catch {};
+        }
+        return;
+    }
+    out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No more items on this page.</p>") catch {};
+}
+
+fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) void {
+    var tmp: [64]koru_media.koru_graph.Entry = undefined;
+    const items = koru_media.koru_graph.collectFiltered(kind_filter, q, sort, &tmp);
+    const start: usize = @min(@as(usize, offset), items.len);
+    const end: usize = if (limit == 0) items.len else @min(items.len, start + @as(usize, limit));
+    // Single swap root: list + pagination. Never include #player here.
+    out.appendSlice(allocator, "<div id=\"library-region\">") catch {};
+    if (start >= end) {
+        appendLibraryEmpty(allocator, out, kind_filter, q, items.len);
+    } else {
+        out.appendSlice(allocator, "<ul id=\"library-list\" class=\"library-list\">") catch {};
+        for (items[start..end]) |e| {
+            const title = htmlEscaped(allocator, e.title);
+            defer if (title.ptr != e.title.ptr) allocator.free(title);
+            const id_esc = htmlEscaped(allocator, e.id);
+            defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+            const kind_esc = htmlEscaped(allocator, e.kind);
+            defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
+            var year_bit: []const u8 = "";
+            var year_buf: [24]u8 = undefined;
+            if (e.year >= 1000) {
+                year_bit = std.fmt.bufPrint(&year_buf, " · {d}", .{e.year}) catch "";
+            }
+            var line_buf: [1024]u8 = undefined;
+            const line = std.fmt.bufPrint(&line_buf, "<li><a class=\"title\" href=\"/item/{s}\">{s}</a> <span class=\"meta\">({s}{s})</span> · <a href=\"/watch/{s}\">watch</a></li>", .{ id_esc, title, kind_esc, year_bit, id_esc }) catch continue;
+            out.appendSlice(allocator, line) catch {};
+        }
+        out.appendSlice(allocator, "</ul>") catch {};
+    }
+    if (limit > 0 and items.len > end) {
+        var qb: [192]u8 = undefined;
+        const qs = formatLibraryQuery(&qb, sort, q, limit, @as(u32, @intCast(end)));
+        var nb: [512]u8 = undefined;
+        const next = std.fmt.bufPrint(&nb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">next</a></p>", .{ qs, qs }) catch "";
+        out.appendSlice(allocator, next) catch {};
+    }
+    if (limit > 0 and start > 0) {
+        const prev_off = if (start > limit) start - limit else 0;
+        var qb: [192]u8 = undefined;
+        const qs = formatLibraryQuery(&qb, sort, q, limit, @as(u32, @intCast(prev_off)));
+        var pb: [512]u8 = undefined;
+        const prev = std.fmt.bufPrint(&pb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">prev</a></p>", .{ qs, qs }) catch "";
+        out.appendSlice(allocator, prev) catch {};
+    }
+    out.appendSlice(allocator, "</div>") catch {};
+}
+
+// ============================================================================
+// ============================================================================
+
+fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8) void {
+    // Navigation protocol on the element (complete HTML remains the representation).
+    // Lowercase hx-* attrs are opaque HTML — koru/dom passthrough, same as vaxis.
+    // Targets #library-region (list+pagination), never a region that owns #player.
+    const q_val: []const u8 = if (q) |qv| qv else "";
+    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
+    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
+
+    out.appendSlice(allocator, "<nav class=\"affordances\"><p>") catch {};
+    if (kind_filter) |k| {
+        var buf: [1280]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "<a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library/{s}?sort=id\" hx-get=\"/library/{s}?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library/{s}?q=demo\" hx-get=\"/library/{s}?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library/{s}?limit=2\" hx-get=\"/library/{s}?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library/{s}\">fragment</a>", .{ k, k, k, k, k, k, k, k, k }) catch "";
+        out.appendSlice(allocator, s) catch {};
+        var form: [640]u8 = undefined;
+        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library/{s}\" class=\"search\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{ k, k, q_esc }) catch "";
+        out.appendSlice(allocator, f) catch {};
+        if (q_val.len > 0) {
+            var clear: [256]u8 = undefined;
+            const clear_link = std.fmt.bufPrint(&clear, "<a href=\"/library/{s}\" hx-get=\"/library/{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ", .{ k, k }) catch "";
+            out.appendSlice(allocator, clear_link) catch {};
+        }
+    } else {
+        out.appendSlice(allocator, "<a href=\"/library?sort=title\" hx-get=\"/library?sort=title\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort title</a> · <a href=\"/library?sort=id\" hx-get=\"/library?sort=id\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">sort id</a> · <a href=\"/library?q=demo\" hx-get=\"/library?q=demo\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">filter demo</a> · <a href=\"/library?limit=2\" hx-get=\"/library?limit=2\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">page size 2</a> · <a href=\"/fragments/library\">fragment</a>") catch {};
+        var form: [512]u8 = undefined;
+        const f = std.fmt.bufPrint(&form, "</p><form method=\"get\" action=\"/library\" class=\"search\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label>Search <input type=\"search\" name=\"q\" value=\"{s}\"/></label> <button type=\"submit\">Go</button></form><p>", .{q_esc}) catch "";
+        out.appendSlice(allocator, f) catch {};
+        if (q_val.len > 0) {
+            out.appendSlice(allocator, "<a href=\"/library\" hx-get=\"/library\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a> · ") catch {};
+        }
+    }
+    // Kind collection nav: mark the active projection; keep audio discoverable.
+    const on_movie = if (kind_filter) |k| std.mem.eql(u8, k, "movie") else false;
+    const on_audio = if (kind_filter) |k| std.mem.eql(u8, k, "audio") else false;
+    if (kind_filter == null) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><strong>all</strong> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (on_movie) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <strong>movies</strong> · <a href=\"/library/audio\">audio</a></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (on_audio) {
+        out.appendSlice(allocator, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <strong>audio</strong></span> · <a href=\"/\">home</a></p></nav>") catch {};
+    } else if (kind_filter) |k| {
+        const k_esc = htmlEscaped(allocator, k);
+        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
+        var kinds: [384]u8 = undefined;
+        const line = std.fmt.bufPrint(&kinds, "<span class=\"kinds\"><a href=\"/library\">all</a> · <a href=\"/library/movie\">movies</a> · <a href=\"/library/audio\">audio</a> · <strong>{s}</strong></span> · <a href=\"/\">home</a></p></nav>", .{k_esc}) catch "<a href=\"/\">home</a></p></nav>";
+        out.appendSlice(allocator, line) catch {};
+    }
+}
+
+fn scriptEnhance() []const u8 {
+    return "<script src=\"/enhance.js\" defer></script>";
+}
+
+fn stylesheetLink() []const u8 {
+    return "<link rel=\"stylesheet\" href=\"/app.css\">";
+}
+
+fn siteBrand() []const u8 {
+    return "<p class=\"site-brand\"><a href=\"/\">Koru Media</a></p>";
+}
+
+fn preferMinimal(prefer: ?[]const u8) bool {
+    const p = prefer orelse return false;
+    return std.ascii.indexOfIgnoreCase(p, "return=minimal") != null;
+}
+
+pub fn wantsFragment(req_prefer: ?[]const u8, hx_request: bool) bool {
+    // Prefer: return=minimal is the HTTP contract. HX-Request is looked up by
+    // the caller via Request.header — not a field on the base parser.
+    return hx_request or preferMinimal(req_prefer);
+}
+
+fn renderHttpHtml(allocator: std.mem.Allocator, link: []const u8, html: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n") catch {};
+    {
+        var lb: [32]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{html.len}) catch "";
+        out.appendSlice(allocator, ls) catch {};
+    }
+    out.appendSlice(allocator, "Link: ") catch {};
+    out.appendSlice(allocator, link) catch {};
+    out.appendSlice(allocator, "\r\nConnection: close\r\n\r\n") catch {};
+    out.appendSlice(allocator, html) catch {};
+    return out.toOwnedSlice(allocator) catch html;
+}
+
+fn appendArchiveStatus(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
+    if (koru_media.koru_graph.hasProjectionIndex()) {
+        out.appendSlice(allocator, "<p class=\"archive-note\" role=\"status\">Local archive — catalogue names and links overlay matched titles when a projection index is present.</p>") catch {};
+    } else {
+        out.appendSlice(allocator, "<p class=\"archive-note\" role=\"status\">Local archive — titles here are files on disk and play without a catalogue fetch.</p>") catch {};
+    }
+}
+
+pub fn homeHtml(allocator: std.mem.Allocator) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Koru Media</title>") catch {};
+    html.appendSlice(allocator, stylesheetLink()) catch {};
+    html.appendSlice(allocator, scriptEnhance()) catch {};
+    html.appendSlice(allocator, "</head><body><main class=\"home\"><p class=\"brand\">Koru Media</p><p class=\"lede\">A direct-play library — browse, watch, and stream originals without a transcoder.</p>") catch {};
+    appendArchiveStatus(allocator, &html);
+    html.appendSlice(allocator, "<p class=\"cta\"><a class=\"primary\" href=\"/library\">Open library</a> <a class=\"quiet\" href=\"/library/movie\">movies</a> <a class=\"quiet\" href=\"/enhance-demo.html\">keyed demo</a></p>") catch {};
+    html.appendSlice(allocator, "<h2>Local movies</h2>") catch {};
+    appendLibraryList(allocator, &html, "movie", .title, null, 0, 0);
+    html.appendSlice(allocator, "</main></body></html>") catch {};
+    const body = html.toOwnedSlice(allocator) catch "home error";
+    return renderHttpHtml(allocator, "</>; rel=\"self\", </library>; rel=\"related\", </library/movie>; rel=\"collection\"", body);
+}
+
+pub fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Library · Koru Media</title>") catch {};
+    html.appendSlice(allocator, stylesheetLink()) catch {};
+    html.appendSlice(allocator, scriptEnhance()) catch {};
+    html.appendSlice(allocator, "</head><body><div class=\"app-shell\">") catch {};
+    html.appendSlice(allocator, siteBrand()) catch {};
+    html.appendSlice(allocator, "<h1>Library") catch {};
+    if (kind_filter) |k| {
+        const k_esc = htmlEscaped(allocator, k);
+        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
+        html.appendSlice(allocator, " — ") catch {};
+        html.appendSlice(allocator, k_esc) catch {};
+    }
+    html.appendSlice(allocator, "</h1>") catch {};
+    appendArchiveStatus(allocator, &html);
+    libraryAffordances(allocator, &html, kind_filter, q);
+    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset);
+    html.appendSlice(allocator, "</div></body></html>") catch {};
+    const body = html.toOwnedSlice(allocator) catch "library error";
+    if (kind_filter) |k| {
+        const k_esc = htmlEscaped(allocator, k);
+        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
+        var link_buf: [192]u8 = undefined;
+        const self_link = std.fmt.bufPrint(&link_buf, "</library/{s}>; rel=\"self\", </library>; rel=\"up\", </>; rel=\"home\"", .{k_esc}) catch "</library>; rel=\"up\"";
+        return renderHttpHtml(allocator, allocator.dupe(u8, self_link) catch self_link, body);
+    }
+    return renderHttpHtml(allocator, "</library>; rel=\"self\", </>; rel=\"up\"", body);
+}
+
+pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset);
+    const body = html.toOwnedSlice(allocator) catch "fragment error";
+    if (kind_filter) |k| {
+        const k_esc = htmlEscaped(allocator, k);
+        defer if (k_esc.ptr != k.ptr) allocator.free(k_esc);
+        var link_buf: [160]u8 = undefined;
+        const link = std.fmt.bufPrint(&link_buf, "</library/{s}>; rel=\"collection\", </library>; rel=\"up\"", .{k_esc}) catch "</library>; rel=\"up\"";
+        return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
+    }
+    return renderHttpHtml(allocator, "</library>; rel=\"up\"", body);
+}
+
+fn likelyBrowserPlayable(container: []const u8) bool {
+    const ok = [_][]const u8{ "mp4", "m4v", "webm", "ogg", "ogv", "mp3", "m4a", "aac", "wav", "flac" };
+    for (ok) |cand| {
+        if (std.mem.eql(u8, container, cand)) return true;
+    }
+    return false;
+}
+
+fn entryHasProbe(e: koru_media.koru_graph.Entry) bool {
+    return e.video_brand.len > 0 or e.video_codec.len > 0 or e.audio_codec.len > 0;
+}
+
+/// Honest indexer facts only — no invented stream/codec matrix.
+fn formatProbeNote(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry, out: []u8) []const u8 {
+    if (!entryHasProbe(e)) return "";
+    const brand = htmlEscaped(allocator, e.video_brand);
+    defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
+    const vcodec = htmlEscaped(allocator, e.video_codec);
+    defer if (vcodec.ptr != e.video_codec.ptr) allocator.free(vcodec);
+    const acodec = htmlEscaped(allocator, e.audio_codec);
+    defer if (acodec.ptr != e.audio_codec.ptr) allocator.free(acodec);
+
+    var joined: [320]u8 = undefined;
+    var w: usize = 0;
+    const append = struct {
+        fn go(dest: []u8, wp: *usize, piece: []const u8) void {
+            if (wp.* > 0) {
+                const sep = " · ";
+                if (wp.* + sep.len > dest.len) return;
+                @memcpy(dest[wp.* .. wp.* + sep.len], sep);
+                wp.* += sep.len;
+            }
+            if (wp.* + piece.len > dest.len) return;
+            @memcpy(dest[wp.* .. wp.* + piece.len], piece);
+            wp.* += piece.len;
+        }
+    }.go;
+
+    if (e.video_brand.len > 0) {
+        var piece: [128]u8 = undefined;
+        const s = std.fmt.bufPrint(&piece, "brand <code>{s}</code>", .{brand}) catch "brand";
+        append(&joined, &w, s);
+    }
+    if (e.video_codec.len > 0) {
+        if (std.mem.eql(u8, e.video_codec, "unknown")) {
+            append(&joined, &w, "video codec not probed");
+        } else {
+            var piece: [128]u8 = undefined;
+            const s = std.fmt.bufPrint(&piece, "video <code>{s}</code>", .{vcodec}) catch "video";
+            append(&joined, &w, s);
+        }
+    }
+    if (e.audio_codec.len > 0) {
+        if (std.mem.eql(u8, e.audio_codec, "unknown")) {
+            append(&joined, &w, "audio codec not probed");
+        } else {
+            var piece: [128]u8 = undefined;
+            const s = std.fmt.bufPrint(&piece, "audio <code>{s}</code>", .{acodec}) catch "audio";
+            append(&joined, &w, s);
+        }
+    }
+    if (w == 0) return "";
+    return std.fmt.bufPrint(out, "<p class=\"probe\" role=\"status\">Indexed: {s}</p>", .{joined[0..w]}) catch "";
+}
+
+fn queryValue(query: ?[]const u8, name: []const u8) ?[]const u8 {
+    const qs = query orelse return null;
+    var it = std.mem.splitScalar(u8, qs, '&');
+    var prefix_buf: [32]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buf, "{s}=", .{name}) catch return null;
+    while (it.next()) |raw| {
+        const pair = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.startsWith(u8, pair, prefix)) return pair[prefix.len..];
+    }
+    return null;
+}
+
+pub fn wantsJsonLd(query: ?[]const u8, accept: ?[]const u8) bool {
+    if (queryValue(query, "format")) |fmt| {
+        if (std.mem.eql(u8, fmt, "jsonld") or std.mem.eql(u8, fmt, "json")) return true;
+    }
+    const a = accept orelse return false;
+    return std.ascii.indexOfIgnoreCase(a, "application/ld+json") != null or
+        std.ascii.indexOfIgnoreCase(a, "application/json") != null;
+}
+
+pub fn itemJsonLd(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    const join = koru_media.koru_graph.findSemantic(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    if (join.jsonld.len == 0) {
+        return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    }
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/ld+json; charset=utf-8\r\n") catch {};
+    {
+        var lb: [32]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{join.jsonld.len}) catch "";
+        out.appendSlice(allocator, ls) catch {};
+    }
+    out.appendSlice(allocator, "Link: </item/") catch {};
+    out.appendSlice(allocator, id) catch {};
+    out.appendSlice(allocator, ">; rel=\"alternate\"; type=\"text/html\"\r\nConnection: close\r\n\r\n") catch {};
+    out.appendSlice(allocator, join.jsonld) catch {};
+    return out.toOwnedSlice(allocator) catch join.jsonld;
+}
+
+fn joinHasCatalogue(s: koru_media.koru_graph.SemanticJoin, physical_title: []const u8) bool {
+    if (s.display_description.len > 0) return true;
+    if (s.tmdb_url.len > 0 or s.imdb_url.len > 0) return true;
+    if (s.display_title.len > 0 and !std.mem.eql(u8, s.display_title, physical_title)) return true;
+    return false;
+}
+
+fn appendSemanticBlock(allocator: std.mem.Allocator, html: *std.ArrayList(u8), join: koru_media.koru_graph.SemanticJoin, include_overview: bool) void {
+    if (include_overview and join.display_description.len > 0) {
+        const desc = htmlEscaped(allocator, join.display_description);
+        defer if (desc.ptr != join.display_description.ptr) allocator.free(desc);
+        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
+        html.appendSlice(allocator, desc) catch {};
+        html.appendSlice(allocator, "</p>") catch {};
+    }
+    if (join.tmdb_url.len > 0 or join.imdb_url.len > 0) {
+        html.appendSlice(allocator, "<p class=\"provider-links\">") catch {};
+        if (join.tmdb_url.len > 0) {
+            const u = htmlEscaped(allocator, join.tmdb_url);
+            defer if (u.ptr != join.tmdb_url.ptr) allocator.free(u);
+            html.appendSlice(allocator, "<a class=\"chip\" rel=\"related\" href=\"") catch {};
+            html.appendSlice(allocator, u) catch {};
+            html.appendSlice(allocator, "\">TMDB</a>") catch {};
+        }
+        if (join.imdb_url.len > 0) {
+            const u = htmlEscaped(allocator, join.imdb_url);
+            defer if (u.ptr != join.imdb_url.ptr) allocator.free(u);
+            html.appendSlice(allocator, "<a class=\"chip\" rel=\"related\" href=\"") catch {};
+            html.appendSlice(allocator, u) catch {};
+            html.appendSlice(allocator, "\">IMDb</a>") catch {};
+        }
+        html.appendSlice(allocator, "</p>") catch {};
+    }
+}
+
+fn appendCatalogueBlock(allocator: std.mem.Allocator, html: *std.ArrayList(u8), join: koru_media.koru_graph.SemanticJoin, include_overview: bool) void {
+    html.appendSlice(allocator, "<section class=\"catalogue\"><h2 class=\"pane-label\">Catalogue</h2>") catch {};
+    appendSemanticBlock(allocator, html, join, include_overview);
+    html.appendSlice(allocator, "</section>") catch {};
+}
+
+fn appendArchiveFacts(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, container: []const u8, include_path: bool) void {
+    html.appendSlice(allocator, "<section class=\"archive\"><h2 class=\"pane-label\">Local archive</h2>") catch {};
+    {
+        const file_title = htmlEscaped(allocator, e.title);
+        defer if (file_title.ptr != e.title.ptr) allocator.free(file_title);
+        html.appendSlice(allocator, "<p class=\"meta-line file-title\">file ") catch {};
+        html.appendSlice(allocator, file_title) catch {};
+        html.appendSlice(allocator, "</p>") catch {};
+    }
+    if (include_path and e.path.len > 0) {
+        const path_esc = htmlEscaped(allocator, e.path);
+        defer if (path_esc.ptr != e.path.ptr) allocator.free(path_esc);
+        html.appendSlice(allocator, "<p class=\"meta-line file-path\">path <code>") catch {};
+        html.appendSlice(allocator, path_esc) catch {};
+        html.appendSlice(allocator, "</code></p>") catch {};
+    }
+    if (e.year >= 1000) {
+        var year_buf: [64]u8 = undefined;
+        const year_line = std.fmt.bufPrint(&year_buf, "<p class=\"meta-line\">year {d}</p>", .{e.year}) catch "";
+        html.appendSlice(allocator, year_line) catch {};
+    }
+    {
+        var cbuf: [128]u8 = undefined;
+        const cline = std.fmt.bufPrint(&cbuf, "<p class=\"meta-line\">container <code>{s}</code></p>", .{container}) catch "";
+        html.appendSlice(allocator, cline) catch {};
+    }
+    {
+        var bbuf: [80]u8 = undefined;
+        const bline = std.fmt.bufPrint(&bbuf, "<p class=\"meta-line file-bytes\">size {d} bytes</p>", .{e.bytes}) catch "";
+        html.appendSlice(allocator, bline) catch {};
+    }
+    var probe_buf: [512]u8 = undefined;
+    const probe = formatProbeNote(allocator, e, &probe_buf);
+    if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
+    html.appendSlice(allocator, "</section>") catch {};
+}
+
+fn appendPhysicalPlain(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, container: []const u8) void {
+    if (e.year >= 1000) {
+        var year_buf: [64]u8 = undefined;
+        const year_line = std.fmt.bufPrint(&year_buf, "<p class=\"meta-line\">year {d}</p>", .{e.year}) catch "";
+        html.appendSlice(allocator, year_line) catch {};
+    }
+    {
+        var cbuf: [128]u8 = undefined;
+        const cline = std.fmt.bufPrint(&cbuf, "<p class=\"meta-line\">container <code>{s}</code></p>", .{container}) catch "";
+        html.appendSlice(allocator, cline) catch {};
+    }
+    var probe_buf: [512]u8 = undefined;
+    const probe = formatProbeNote(allocator, e, &probe_buf);
+    if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
+}
+
+fn appendProviderLinkHeader(out: *std.ArrayList(u8), allocator: std.mem.Allocator, join: ?koru_media.koru_graph.SemanticJoin) void {
+    const s = join orelse return;
+    if (s.tmdb_url.len > 0) {
+        out.appendSlice(allocator, ", <") catch {};
+        out.appendSlice(allocator, s.tmdb_url) catch {};
+        out.appendSlice(allocator, ">; rel=\"related\"") catch {};
+    }
+    if (s.imdb_url.len > 0) {
+        out.appendSlice(allocator, ", <") catch {};
+        out.appendSlice(allocator, s.imdb_url) catch {};
+        out.appendSlice(allocator, ">; rel=\"related\"") catch {};
+    }
+}
+
+pub fn queryFlag(query: ?[]const u8, name: []const u8) bool {
+    const qs = query orelse return false;
+    var it = std.mem.splitScalar(u8, qs, '&');
+    while (it.next()) |raw| {
+        const pair = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.eql(u8, pair, name)) return true;
+        var eq_buf: [64]u8 = undefined;
+        if (name.len + 5 >= eq_buf.len) continue;
+        const want = std.fmt.bufPrint(&eq_buf, "{s}=1", .{name}) catch continue;
+        if (std.mem.eql(u8, pair, want)) return true;
+    }
+    return false;
+}
+
+pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    if (koru_media.koru_graph.findEntry(id)) |e| {
+        const join = koru_media.koru_graph.findSemantic(id);
+        const shown_title: []const u8 = if (join) |s| (if (s.display_title.len > 0) s.display_title else e.title) else e.title;
+        const title = htmlEscaped(allocator, shown_title);
+        defer if (title.ptr != shown_title.ptr) allocator.free(title);
+        const id_esc = htmlEscaped(allocator, e.id);
+        defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+        const container = htmlEscaped(allocator, e.container);
+        defer if (container.ptr != e.container.ptr) allocator.free(container);
+        const kind_esc = htmlEscaped(allocator, e.kind);
+        defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
+        var html: std.ArrayList(u8) = .empty;
+        html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>") catch {};
+        html.appendSlice(allocator, title) catch {};
+        html.appendSlice(allocator, " · Koru Media</title>") catch {};
+        html.appendSlice(allocator, stylesheetLink()) catch {};
+        html.appendSlice(allocator, scriptEnhance()) catch {};
+        html.appendSlice(allocator, "</head><body><div class=\"app-shell\"><article class=\"item\">") catch {};
+        html.appendSlice(allocator, siteBrand()) catch {};
+        if (e.poster.len > 0) {
+            html.appendSlice(allocator, "<div class=\"item-layout has-poster\"><div class=\"item-poster\"><img src=\"/art/") catch {};
+            html.appendSlice(allocator, id_esc) catch {};
+            html.appendSlice(allocator, "\" alt=\"\" width=\"240\"/></div><div class=\"item-body\">") catch {};
+        } else {
+            html.appendSlice(allocator, "<div class=\"item-layout\"><div class=\"item-body\">") catch {};
+        }
+        html.appendSlice(allocator, "<h1>") catch {};
+        html.appendSlice(allocator, title) catch {};
+        html.appendSlice(allocator, "</h1>") catch {};
+        const split = if (join) |s| joinHasCatalogue(s, e.title) else false;
+        if (split) {
+            appendCatalogueBlock(allocator, &html, join.?, true);
+            appendArchiveFacts(allocator, &html, e, container, true);
+        } else {
+            if (join) |s| {
+                appendSemanticBlock(allocator, &html, s, true);
+            }
+            appendPhysicalPlain(allocator, &html, e, container);
+        }
+        html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary\" href=\"/watch/") catch {};
+        html.appendSlice(allocator, id_esc) catch {};
+        html.appendSlice(allocator, "\">watch</a> <a href=\"/media/") catch {};
+        html.appendSlice(allocator, id_esc) catch {};
+        html.appendSlice(allocator, "?download=1\">download</a>") catch {};
+        if (e.subtitle.len > 0) {
+            html.appendSlice(allocator, " <a href=\"/subtitles/") catch {};
+            html.appendSlice(allocator, id_esc) catch {};
+            html.appendSlice(allocator, "\">subtitles</a>") catch {};
+        }
+        html.appendSlice(allocator, " <a href=\"/library/") catch {};
+        html.appendSlice(allocator, kind_esc) catch {};
+        html.appendSlice(allocator, "\">more ") catch {};
+        html.appendSlice(allocator, kind_esc) catch {};
+        html.appendSlice(allocator, "</a> <a href=\"/library\">library</a></p></div></div></article></div></body></html>") catch {};
+        const body = html.toOwnedSlice(allocator) catch "item error";
+        var link: std.ArrayList(u8) = .empty;
+        link.appendSlice(allocator, "</item/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"self\", </library>; rel=\"up\", </library/") catch {};
+        link.appendSlice(allocator, kind_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"collection\", </watch/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"related\", </media/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"related\"") catch {};
+        if (e.poster.len > 0) {
+            link.appendSlice(allocator, ", </art/") catch {};
+            link.appendSlice(allocator, id_esc) catch {};
+            link.appendSlice(allocator, ">; rel=\"preview\"") catch {};
+        }
+        if (e.subtitle.len > 0) {
+            link.appendSlice(allocator, ", </subtitles/") catch {};
+            link.appendSlice(allocator, id_esc) catch {};
+            link.appendSlice(allocator, ">; rel=\"related\"") catch {};
+        }
+        if (join) |s| {
+            if (s.jsonld.len > 0) {
+                link.appendSlice(allocator, ", </item/") catch {};
+                link.appendSlice(allocator, id_esc) catch {};
+                link.appendSlice(allocator, "?format=jsonld>; rel=\"alternate\"; type=\"application/ld+json\"") catch {};
+            }
+            appendProviderLinkHeader(&link, allocator, s);
+        }
+        return renderHttpHtml(allocator, link.toOwnedSlice(allocator) catch "</library>; rel=\"up\"", body);
+    }
+    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
+}
+
+pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    if (koru_media.koru_graph.findEntry(id)) |e| {
+        const tag: []const u8 = if (std.mem.eql(u8, e.kind, "audio")) "audio" else "video";
+        const join = koru_media.koru_graph.findSemantic(id);
+        const shown_title: []const u8 = if (join) |s| (if (s.display_title.len > 0) s.display_title else e.title) else e.title;
+        const title = htmlEscaped(allocator, shown_title);
+        defer if (title.ptr != shown_title.ptr) allocator.free(title);
+        const id_esc = htmlEscaped(allocator, e.id);
+        defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+        const container = htmlEscaped(allocator, e.container);
+        defer if (container.ptr != e.container.ptr) allocator.free(container);
+        const kind_esc = htmlEscaped(allocator, e.kind);
+        defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
+        var html: std.ArrayList(u8) = .empty;
+        html.appendSlice(allocator, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Watch ") catch {};
+        html.appendSlice(allocator, title) catch {};
+        html.appendSlice(allocator, " · Koru Media</title>") catch {};
+        html.appendSlice(allocator, stylesheetLink()) catch {};
+        html.appendSlice(allocator, scriptEnhance()) catch {};
+        html.appendSlice(allocator, "</head><body><div class=\"app-shell watch\">") catch {};
+        html.appendSlice(allocator, siteBrand()) catch {};
+        html.appendSlice(allocator, "<h1>") catch {};
+        html.appendSlice(allocator, title) catch {};
+        html.appendSlice(allocator, "</h1>") catch {};
+        const split = if (join) |s| joinHasCatalogue(s, e.title) else false;
+        if (split) {
+            appendCatalogueBlock(allocator, &html, join.?, false);
+            appendArchiveFacts(allocator, &html, e, container, false);
+        } else if (join) |s| {
+            appendSemanticBlock(allocator, &html, s, false);
+        }
+        if (!likelyBrowserPlayable(e.container)) {
+            var note_buf: [512]u8 = undefined;
+            const note = if (e.video_brand.len > 0) blk: {
+                const brand = htmlEscaped(allocator, e.video_brand);
+                defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
+                break :blk std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file (brand <code>{s}</code>) may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, brand, id_esc }) catch "";
+            } else std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file may not play in the browser. Use <a href=\"/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, id_esc }) catch "";
+            html.appendSlice(allocator, note) catch {};
+        }
+        if (!split) {
+            var probe_buf: [512]u8 = undefined;
+            const probe = formatProbeNote(allocator, e, &probe_buf);
+            if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
+        }
+        // Player owns identity outside any hx-target / #library-region.
+        // Optional <track> stays inside #player; never replace the element.
+        if (e.subtitle.len > 0 and std.mem.eql(u8, tag, "video")) {
+            var player_buf: [640]u8 = undefined;
+            const player = std.fmt.bufPrint(&player_buf, "<video id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"><track kind=\"subtitles\" src=\"/subtitles/{s}\" srclang=\"en\" label=\"English\" default></video>", .{ id_esc, id_esc, id_esc }) catch "";
+            html.appendSlice(allocator, player) catch {};
+        } else {
+            var player_buf: [384]u8 = undefined;
+            const player = std.fmt.bufPrint(&player_buf, "<{s} id=\"player\" data-media-id=\"{s}\" controls src=\"/media/{s}\"></{s}>", .{ tag, id_esc, id_esc, tag }) catch "";
+            html.appendSlice(allocator, player) catch {};
+        }
+        // Filled by enhance.js when a saved resume position exists; never replaces #player.
+        html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
+        var nav_buf: [448]u8 = undefined;
+        const nav = if (e.subtitle.len > 0)
+            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/subtitles/{s}\">subtitles</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, id_esc, kind_esc, kind_esc }) catch ""
+        else
+            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"/item/{s}\">item</a> · <a href=\"/media/{s}?download=1\">download</a> · <a href=\"/library/{s}\">more {s}</a></p>", .{ id_esc, id_esc, kind_esc, kind_esc }) catch "";
+        html.appendSlice(allocator, nav) catch {};
+        // Related shelf: fragment swaps stay in #library-region; #player is never a descendant.
+        html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
+        var aff_buf: [512]u8 = undefined;
+        const aff = std.fmt.bufPrint(&aff_buf, "<p class=\"shelf-affordances\"><a href=\"/library/{s}?sort=title\" hx-get=\"/library/{s}?sort=title&amp;limit=4\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"false\">sort title</a> · <a href=\"/library/{s}?sort=id&amp;limit=4\" hx-get=\"/library/{s}?sort=id&amp;limit=4\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"false\">sort id</a></p>", .{ kind_esc, kind_esc, kind_esc, kind_esc }) catch "";
+        html.appendSlice(allocator, aff) catch {};
+        appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0);
+        html.appendSlice(allocator, "</section></div></body></html>") catch {};
+        const body = html.toOwnedSlice(allocator) catch "watch error";
+        var link: std.ArrayList(u8) = .empty;
+        link.appendSlice(allocator, "</watch/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"self\", </item/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"up\", </media/") catch {};
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"related\"") catch {};
+        if (e.subtitle.len > 0) {
+            link.appendSlice(allocator, ", </subtitles/") catch {};
+            link.appendSlice(allocator, id_esc) catch {};
+            link.appendSlice(allocator, ">; rel=\"related\"") catch {};
+        }
+        link.appendSlice(allocator, ", </library/") catch {};
+        link.appendSlice(allocator, kind_esc) catch {};
+        link.appendSlice(allocator, ">; rel=\"collection\"") catch {};
+        if (join) |s| {
+            appendProviderLinkHeader(&link, allocator, s);
+        }
+        return renderHttpHtml(allocator, link.toOwnedSlice(allocator) catch "</library>; rel=\"up\"", body);
+    }
+    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
+}
+
+// ============================================================================
+// ============================================================================
+
+pub fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    koru_media.koru_graph.ensureConfig();
+    const e = koru_media.koru_graph.findEntry(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    if (e.poster.len == 0) {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    }
+    var path_buf: [512]u8 = undefined;
+    const full_path = koru_media.koru_graph.pathUnderRoot(e.poster, &path_buf) orelse {
+        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
+    };
+    const file = std.fs.cwd().openFile(full_path, .{}) catch {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    defer file.close();
+    const data = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch {
+        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+    };
+    const ctype: []const u8 = if (std.mem.endsWith(u8, e.poster, ".webp"))
+        "image/webp"
+    else if (std.mem.endsWith(u8, e.poster, ".png"))
+        "image/png"
+    else
+        "image/jpeg";
+    var head: std.ArrayList(u8) = .empty;
+    head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: ") catch {};
+    head.appendSlice(allocator, ctype) catch {};
+    head.appendSlice(allocator, "\r\n") catch {};
+    {
+        var lb: [48]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
+        head.appendSlice(allocator, ls) catch {};
+    }
+    head.appendSlice(allocator, "Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n") catch {};
+    head.appendSlice(allocator, data) catch {};
+    return head.toOwnedSlice(allocator) catch "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+}
+
+pub fn subtitlesHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+    koru_media.koru_graph.ensureConfig();
+    const e = koru_media.koru_graph.findEntry(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    if (e.subtitle.len == 0) {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    }
+    var path_buf: [512]u8 = undefined;
+    const full_path = koru_media.koru_graph.pathUnderRoot(e.subtitle, &path_buf) orelse {
+        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
+    };
+    const file = std.fs.cwd().openFile(full_path, .{}) catch {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    defer file.close();
+    // WebVTT sidecars are small; full read is fine (Range stays on /media only).
+    const data = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch {
+        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+    };
+    var head: std.ArrayList(u8) = .empty;
+    head.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/vtt; charset=utf-8\r\n") catch {};
+    {
+        var lb: [48]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{data.len}) catch "";
+        head.appendSlice(allocator, ls) catch {};
+    }
+    head.appendSlice(allocator, "Cache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n") catch {};
+    head.appendSlice(allocator, data) catch {};
+    return head.toOwnedSlice(allocator) catch "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+}
+
+pub fn mediaHttp(allocator: std.mem.Allocator, method: []const u8, id: []const u8, range: ?[]const u8, download: bool, if_none_match: ?[]const u8) []const u8 {
+    koru_media.koru_graph.ensureConfig();
+    const e = koru_media.koru_graph.findEntry(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    var path_buf: [512]u8 = undefined;
+    const full_path = koru_media.koru_graph.pathUnderRoot(e.path, &path_buf) orelse {
+        return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
+    };
+    const file = std.fs.cwd().openFile(full_path, .{}) catch {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    defer file.close();
+    const st = file.stat() catch {
+        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+    };
+    const size = st.size;
+
+    var etag_buf: [96]u8 = undefined;
+    const etag = std.fmt.bufPrint(&etag_buf, "{s}-{d}", .{ e.id, size }) catch "";
+    if (range == null) {
+        if (if_none_match) |inm| {
+            if (std.mem.eql(u8, inm, etag) or std.mem.eql(u8, inm, "*")) {
+                var not_mod: [160]u8 = undefined;
+                const nm = std.fmt.bufPrint(&not_mod, "HTTP/1.1 304 Not Modified\r\nETag: \"{s}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{etag}) catch "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                return allocator.dupe(u8, nm) catch nm;
+            }
+        }
+    }
+
+    var start: u64 = 0;
+    var end: u64 = if (size == 0) 0 else size - 1;
+    var status_line: []const u8 = "HTTP/1.1 200 OK\r\n";
+    const is_head = std.mem.eql(u8, method, "HEAD");
+    var used_range = false;
+
+    if (range) |rh| {
+        const trimmed = std.mem.trim(u8, rh, " \t");
+        if (parseBytesRange(trimmed, size)) |br| {
+            start = br.start;
+            end = br.end;
+            status_line = "HTTP/1.1 206 Partial Content\r\n";
+            used_range = true;
+        } else {
+            var msg: [192]u8 = undefined;
+            const m = std.fmt.bufPrint(&msg, "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{d}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n", .{size}) catch "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            return allocator.dupe(u8, m) catch m;
+        }
+    }
+
+    const content_len: u64 = if (size == 0) 0 else end - start + 1;
+    var head: std.ArrayList(u8) = .empty;
+    head.appendSlice(allocator, status_line) catch {};
+    {
+        var line: [320]u8 = undefined;
+        const l = std.fmt.bufPrint(&line, "Content-Type: {s}\r\nContent-Length: {d}\r\nAccept-Ranges: bytes\r\nETag: \"{s}\"\r\n", .{ e.mime, content_len, etag }) catch "";
+        head.appendSlice(allocator, l) catch {};
+    }
+    if (download) {
+        // Basename only — path is already validated relative.
+        var base: []const u8 = e.path;
+        if (std.mem.lastIndexOfScalar(u8, e.path, '/')) |slash| {
+            base = e.path[slash + 1 ..];
+        }
+        var disp: [256]u8 = undefined;
+        const dline = std.fmt.bufPrint(&disp, "Content-Disposition: attachment; filename=\"{s}\"\r\n", .{base}) catch "Content-Disposition: attachment\r\n";
+        head.appendSlice(allocator, dline) catch {};
+    }
+    if (e.modified_ns > 0) {
+        var date_buf: [29]u8 = undefined;
+        formatHttpDateFromNs(&date_buf, e.modified_ns);
+        head.appendSlice(allocator, "Last-Modified: ") catch {};
+        head.appendSlice(allocator, &date_buf) catch {};
+        head.appendSlice(allocator, "\r\n") catch {};
+    }
+    if (used_range and size > 0) {
+        var line: [128]u8 = undefined;
+        const l = std.fmt.bufPrint(&line, "Content-Range: bytes {d}-{d}/{d}\r\n", .{ start, end, size }) catch "";
+        head.appendSlice(allocator, l) catch {};
+    }
+    head.appendSlice(allocator, "Connection: close\r\n\r\n") catch {};
+
+    if (is_head or content_len == 0) {
+        return head.toOwnedSlice(allocator) catch "HEAD error";
+    }
+
+    // STREAM:v1 — send|zig writes headers then chunks the file (no full-range buffer).
+    var stream: std.ArrayList(u8) = .empty;
+    stream.appendSlice(allocator, "STREAM:v1\n") catch {};
+    stream.appendSlice(allocator, full_path) catch {};
+    stream.appendSlice(allocator, "\n") catch {};
+    {
+        var nb: [48]u8 = undefined;
+        const s = std.fmt.bufPrint(&nb, "{d}\n{d}\n\n", .{ start, end }) catch "0\n0\n\n";
+        stream.appendSlice(allocator, s) catch {};
+    }
+    stream.appendSlice(allocator, head.items) catch {};
+    head.deinit(allocator);
+    return stream.toOwnedSlice(allocator) catch "media error";
+}
+
+pub fn mediaOptions(id: []const u8) []const u8 {
+    _ = id;
+    return "HTTP/1.1 204 No Content\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+}
+
+const StaticBody = struct { status: u16, body: []const u8, content_type: ?[]const u8 };
+
+pub fn staticFallback(method: []const u8, path: []const u8, if_none_match: ?[]const u8) ?StaticBody {
+    _ = if_none_match;
+    if (!std.mem.eql(u8, method, "GET")) return null;
+    if (std.mem.eql(u8, path, "/smoke.html") or std.mem.eql(u8, path, "/smoke")) {
+        return .{
+            .status = 200,
+            .body = "<!doctype html><html><head><title>smoke</title></head><body><p>static ok</p></body></html>",
+            .content_type = "text/html",
+        };
+    }
+    // Allowlisted public assets only (no directory listing / path join).
+    if (std.mem.eql(u8, path, "/enhance.js")) {
+        return readPublicFile("public/enhance.js", "application/javascript; charset=utf-8", 256 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/app.css")) {
+        return readPublicFile("public/app.css", "text/css; charset=utf-8", 128 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/koru-dom-enhance.js")) {
+        return readPublicFile("public/koru-dom-enhance.js", "application/javascript; charset=utf-8", 512 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/enhance-demo.html") or std.mem.eql(u8, path, "/enhance-demo")) {
+        return readPublicFile("public/enhance-demo.html", "text/html; charset=utf-8", 64 * 1024);
+    }
+    return null;
+}
+
+fn readPublicFile(rel: []const u8, content_type: []const u8, max: usize) StaticBody {
+    const file = std.fs.cwd().openFile(rel, .{}) catch {
+        return .{ .status = 404, .body = "Not Found", .content_type = "text/plain" };
+    };
+    defer file.close();
+    const allocator = std.heap.c_allocator;
+    const data = file.readToEndAlloc(allocator, max) catch {
+        return .{ .status = 500, .body = "Error", .content_type = "text/plain" };
+    };
+    return .{ .status = 200, .body = data, .content_type = content_type };
+}

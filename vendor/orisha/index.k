@@ -74,7 +74,7 @@ pub tor send { conn: *ConnHandle, status: u16, body: string, content_type: ?stri
 
 [abstract|retain]pub tor handler { req: *Request } -> { status: u16, body: string, content_type: ?ContentType }
 
-// Default 404 removed — koru-orisha-media provides ~proc handler|zig (library + media).
+handler -> { status: 404, body: "Not Found", content_type: null }
 
 // ============================================================================
 // SERVE — a Koru flow over a platform pump
@@ -87,8 +87,21 @@ pub tor send { conn: *ConnHandle, status: u16, body: string, content_type: ?stri
 // Adding a platform is a `~proc run|<name>` in orisha/pump plus a line in the
 // variants block. Nothing in this file changes.
 
-// Upstream serve/pump omitted in this vendor (koruc companion double-emit).
-// Apps use listen/accept/send via run-accept-loop instead — see main.k.
+// ============================================================================
+// SERVE — a Koru flow over a platform pump
+// ============================================================================
+// `serve` used to be two ~200-line Zig bodies, one per readiness mechanism,
+// that differed in about twenty lines and duplicated everything else. The loop
+// now lives in orisha/pump, one variant per platform; what remains here is the
+// part that is the same everywhere, and it is a flow.
+//
+// Adding a platform is a `~proc run|<name>` in orisha/pump plus a line in the
+// variants block. Nothing in this file changes.
+//
+// pump.k / pump.kz are not beside this file. A sibling pump.kz is merged into
+// this stem (`ambiguous std`); `import orisha/pump` double-emits `koru_pump`.
+// Full upstream copy: vendor/upstream/orisha-pump/. This app uses
+// run-accept-loop until STREAM/Request ride `reply` *and* that emit is gone.
 
 pub tor run-accept-loop { port: u16 }
 
@@ -116,7 +129,8 @@ pub tor answer { raw: string } -> { head: string, body: string }
 // ============================================================================
 // PLATFORM SELECTION
 // ============================================================================
-// Vendor shim: no multi-variant pump selection (see serve|zig in index.kz).
+// Upstream: [build(linux)] selects orisha/pump:run = epoll, etc. Unused here
+// until this module can import orisha/pump without the companion double-emit.
 
 // ============================================================================
 // ROUTER - Pattern-branch router transform

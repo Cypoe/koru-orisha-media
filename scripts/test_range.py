@@ -58,7 +58,7 @@ class RangeTests(unittest.TestCase):
         self.assertFalse(path_ok("../etc/passwd"))
         self.assertFalse(path_ok("/etc/passwd"))
         self.assertFalse(path_ok(""))
-        self.assertTrue(path_ok("clips/demo.mp4"))
+        self.assertTrue(path_ok("movies/demo.mp4"))
 
     def test_html_escape(self):
         self.assertEqual(html_escape('a<b&c>"'), "a&lt;b&amp;c&gt;&quot;")
