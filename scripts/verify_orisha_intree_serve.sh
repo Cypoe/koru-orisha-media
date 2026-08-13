@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# In-tree compile of canonical serve against /src/orisha (W:\src\orisha).
+# Split-stage INTREE: original orisha/lib + serve.
+# Zig diagnostics are from `./backend output`, not the frontend log.
 set -u
 KORUC="${KORUC:-$(command -v koruc)}"
 STD="/usr/local/koru_std"
@@ -41,18 +42,28 @@ orisha:serve(port: 3090)
 | failed _ |> _
 EOF
 cd "$tmp"
-"$KORUC" main.k >"$tmp/log" 2>&1
-ec=$?
-echo "INTREE_SERVE exit=$ec"
-echo "duplicate=$(grep -c 'duplicate struct member' "$tmp/log" || true)"
-echo "ambiguous=$(grep -c 'ambiguous reference' "$tmp/log" || true)"
-grep -E "duplicate struct member|ambiguous reference|error\[KORU" "$tmp/log" | head -12 || true
-if [[ "$ec" -eq 0 ]]; then
-  echo "linked OK"
-else
-  echo "--- tail ---"
-  tail -12 "$tmp/log"
-fi
+echo "-- frontend: koruc -o backend.zig main.k --"
+"$KORUC" -o backend.zig main.k
+fec=$?
+echo "frontend exit=$fec"
+if [[ "$fec" -ne 0 ]]; then exit "$fec"; fi
+echo "-- zig build --build-file build_backend.zig --"
+zig build --build-file build_backend.zig
+zec=$?
+echo "zig build backend exit=$zec"
+if [[ "$zec" -ne 0 ]]; then exit "$zec"; fi
+cp -f zig-out/bin/backend ./backend
+chmod +x ./backend
+echo "-- ./backend output --"
+./backend output >backend.out 2>backend.err
+bec=$?
+echo "backend output exit=$bec"
+echo "duplicate=$(grep -c 'duplicate struct member' backend.err || true)"
+echo "ambiguous=$(grep -c 'ambiguous reference' backend.err || true)"
+head -40 backend.err
 if [[ -d /work ]]; then
-  cp -f "$tmp/log" /work/pump-emit-INTREE.log
+  mkdir -p /work/pump-emit-artifacts/INTREE
+  cp -f backend.err backend.out /work/pump-emit-artifacts/INTREE/ 2>/dev/null || true
+  [[ -f output_emitted.zig ]] && cp -f output_emitted.zig /work/pump-emit-artifacts/INTREE/
 fi
+exit "$bec"

@@ -24,11 +24,24 @@ Related koru work (2026-08-08, same pump seam):
 
 Those fixes hold for the small shapes they pin. They do not hold for Orisha-sized `index.k`+`index.kz` plus real `pump.kz`.
 
-Repro:
+Repro (split stages — Zig diagnostics are from `./backend output`, not the frontend log):
 
-- Original lib + serve: `bash scripts/verify_orisha_intree_serve.sh` (Docker: mount `/src/orisha`, same image as `scripts/repro_pump_emit_docker.sh`)
+```bash
+koruc -o backend.zig main.k   # frontend: backend.zig + program.ast.json
+zig build --build-file build_backend.zig
+./backend output              # emits output_emitted.zig and compiles it
+```
+
+Scripts:
+
+- `bash scripts/repro_pump_emit_backend.sh` — INTREE + G, writes `pump-emit-artifacts/{INTREE,G}/backend.err` and `output_emitted.zig`
+- Original lib + serve: `bash scripts/verify_orisha_intree_serve.sh`
 - Consumer variants F–I: `bash scripts/repro_pump_emit_docker.sh`
 - Tiny negative controls A–E: `bash scripts/repro_pump_emit.sh`
+
+On koruc 0.1.7 a bare `koruc main.k` also chains the backend (default `build_executable`); `--help` still describes that as “compile to .zig”. Use `-o backend.zig` when you want the frontend pass alone.
+
+Pins used for the backend capture (2026-08-13): koruc 0.1.7 sha256 `9e24dc39cb66a133d28f8715e4549430c48bd86a7941a7b71a9afd548e97762d`, koru `5c64de27`, Orisha `661fa9c`, zig 0.15.1.
 
 ## What fails
 

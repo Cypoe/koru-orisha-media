@@ -14,6 +14,32 @@ fi
 echo "koruc=$KORUC"
 "$KORUC" --version 2>/dev/null || true
 
+# Frontend only, then the backend stage that emits/compiles output_emitted.zig.
+# `koruc -o backend.zig` matches --help (emit .zig). Bare `koruc main.k` on 0.1.7
+# also chains this pipeline; -o makes the split unambiguous.
+compile_koru_program() {
+  rm -f frontend.log backend.err backend.out
+  "$KORUC" -o backend.zig main.k >frontend.log 2>&1
+  local fec=$?
+  if [[ "$fec" -ne 0 ]]; then
+    return "$fec"
+  fi
+  zig build --build-file build_backend.zig >>frontend.log 2>&1
+  local zec=$?
+  if [[ "$zec" -ne 0 ]]; then
+    return "$zec"
+  fi
+  local bin=zig-out/bin/backend
+  if [[ ! -x "$bin" ]]; then bin=./backend; fi
+  if [[ ! -x "$bin" ]]; then
+    echo "no backend binary" >>frontend.log
+    return 2
+  fi
+  cp -f "$bin" ./backend
+  chmod +x ./backend
+  ./backend output >backend.out 2>backend.err
+}
+
 run_case() {
   local name="$1" expect="$2" setup="$3"
   local tmp
@@ -27,22 +53,30 @@ run_case() {
 }
 EOF
   CASE_DIR="$tmp" eval "$setup"
-  (cd "$tmp" && "$KORUC" main.k >"$tmp/log" 2>&1)
+  (cd "$tmp" && compile_koru_program)
   local ec=$?
   local dup amb ok
-  dup=$(grep -c "duplicate struct member" "$tmp/log" || true)
-  amb=$(grep -c "ambiguous reference" "$tmp/log" || true)
+  dup=0
+  amb=0
+  if [[ -f "$tmp/backend.err" ]]; then
+    dup=$(grep -c "duplicate struct member" "$tmp/backend.err" || true)
+    amb=$(grep -c "ambiguous reference" "$tmp/backend.err" || true)
+  fi
   ok=0
   if [[ "$ec" -eq 0 ]]; then ok=1; fi
   printf 'CASE %s expect=%s exit=%s duplicate=%s ambiguous=%s dir=%s\n' \
     "$name" "$expect" "$ec" "$dup" "$amb" "$tmp"
-  if grep -E "duplicate struct member|ambiguous reference|error:" "$tmp/log" | head -20; then
+  if [[ -f "$tmp/backend.err" ]] && grep -E "duplicate struct member|ambiguous reference" "$tmp/backend.err" | head -20; then
     :
   elif [[ "$ok" -eq 1 ]]; then
     echo "  linked OK"
   else
-    echo "  --- log tail ---"
-    tail -20 "$tmp/log"
+    echo "  --- frontend.log tail ---"
+    tail -20 "$tmp/frontend.log"
+    if [[ -f "$tmp/backend.err" ]]; then
+      echo "  --- backend.err tail ---"
+      tail -20 "$tmp/backend.err"
+    fi
   fi
   echo
 }
@@ -208,20 +242,33 @@ run_orisha_case() {
   "paths": { "std": "$STD", "orisha": "./vendor/orisha" }
 }
 EOF
-  (cd "$tmp" && "$KORUC" main.k >"$tmp/log" 2>&1)
+  (cd "$tmp" && compile_koru_program)
   local ec=$?
   local dup amb
-  dup=$(grep -c "duplicate struct member" "$tmp/log" || true)
-  amb=$(grep -c "ambiguous reference" "$tmp/log" || true)
+  dup=0
+  amb=0
+  if [[ -f "$tmp/backend.err" ]]; then
+    dup=$(grep -c "duplicate struct member" "$tmp/backend.err" || true)
+    amb=$(grep -c "ambiguous reference" "$tmp/backend.err" || true)
+  fi
   printf 'CASE %s expect=%s exit=%s duplicate=%s ambiguous=%s dir=%s\n' \
     "$name" "$expect" "$ec" "$dup" "$amb" "$tmp"
-  grep -E "duplicate struct member|ambiguous reference" "$tmp/log" | head -8 || true
+  if [[ -f "$tmp/backend.err" ]]; then
+    grep -E "duplicate struct member|ambiguous reference" "$tmp/backend.err" | head -8 || true
+  fi
   if [[ "$ec" -ne 0 && "$dup" -eq 0 && "$amb" -eq 0 ]]; then
     echo "  --- other failure ---"
-    grep -E "error:|✗" "$tmp/log" | head -15 || tail -15 "$tmp/log"
+    if [[ -f "$tmp/backend.err" ]]; then
+      grep -E "error:|✗" "$tmp/backend.err" | head -15 || tail -15 "$tmp/backend.err"
+    else
+      grep -E "error:|✗" "$tmp/frontend.log" | head -15 || tail -15 "$tmp/frontend.log"
+    fi
   fi
   if [[ -d /work ]]; then
-    cp -f "$tmp/log" "/work/pump-emit-${name}.log" || true
+    mkdir -p "/work/pump-emit-artifacts/$name"
+    [[ -f "$tmp/frontend.log" ]] && cp -f "$tmp/frontend.log" "/work/pump-emit-artifacts/$name/"
+    [[ -f "$tmp/backend.err" ]] && cp -f "$tmp/backend.err" "/work/pump-emit-artifacts/$name/"
+    [[ -f "$tmp/output_emitted.zig" ]] && cp -f "$tmp/output_emitted.zig" "/work/pump-emit-artifacts/$name/"
   fi
   echo
 }
@@ -295,19 +342,28 @@ echo "=== INTREE: original orisha tree (orisha=lib) + serve ==="
 }
 EOF
   write_orisha_main_serve
-  (cd "$tmp" && "$KORUC" main.k >"$tmp/log" 2>&1)
+  (cd "$tmp" && compile_koru_program)
   ec=$?
-  dup=$(grep -c "duplicate struct member" "$tmp/log" || true)
-  amb=$(grep -c "ambiguous reference" "$tmp/log" || true)
+  dup=0
+  amb=0
+  if [[ -f "$tmp/backend.err" ]]; then
+    dup=$(grep -c "duplicate struct member" "$tmp/backend.err" || true)
+    amb=$(grep -c "ambiguous reference" "$tmp/backend.err" || true)
+  fi
   printf 'CASE INTREE expect=duplicate-koru_pump exit=%s duplicate=%s ambiguous=%s dir=%s\n' \
     "$ec" "$dup" "$amb" "$tmp"
-  grep -E "duplicate struct member|ambiguous reference" "$tmp/log" | head -8 || true
+  if [[ -f "$tmp/backend.err" ]]; then
+    grep -E "duplicate struct member|ambiguous reference" "$tmp/backend.err" | head -8 || true
+  fi
   if [[ "$ec" -ne 0 && "$dup" -eq 0 && "$amb" -eq 0 ]]; then
     echo "  --- other failure ---"
-    grep -E "error:|✗" "$tmp/log" | head -15 || tail -15 "$tmp/log"
+    tail -15 "$tmp/frontend.log"
+    [[ -f "$tmp/backend.err" ]] && tail -15 "$tmp/backend.err"
   fi
   if [[ -d /work ]]; then
-    cp -f "$tmp/log" /work/pump-emit-INTREE.log || true
+    mkdir -p /work/pump-emit-artifacts/INTREE
+    [[ -f "$tmp/backend.err" ]] && cp -f "$tmp/backend.err" /work/pump-emit-artifacts/INTREE/
+    [[ -f "$tmp/output_emitted.zig" ]] && cp -f "$tmp/output_emitted.zig" /work/pump-emit-artifacts/INTREE/
   fi
   echo
 fi
