@@ -1,5 +1,11 @@
 /* koru-orisha-media — product surface
-   Direction: ink on cool paper, teal accent, brand-first library. */
+   Direction: ink on cool paper, teal accent, brand-first library.
+   Visual language (not a port): Jellyseerr/Seerr item layout — poster + body,
+   overview, provider chips — https://github.com/fallenbagel/jellyseerr
+   (canonical; juandjara/jellyseer is an older fork; seerr-team/seerr is current).
+   Two spacing tokens from ElegantFin (Jellyfin theme, not used as a skin):
+   0.5em card radius, 0.75em stack gap — https://github.com/lscambo13/ElegantFin
+   Complete-page HTML only; no SPA, no Jellyfin chrome. */
 
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;600&display=swap");
 
@@ -14,6 +20,8 @@
   --line: #b8c4be;
   --danger: #8b3a2f;
   --radius: 2px;
+  --card-radius: 0.5em;
+  --stack-gap: 0.75em;
   --font-display: "Fraunces", "Palatino Linotype", Palatino, serif;
   --font-body: "Source Sans 3", "Segoe UI", sans-serif;
   --max: 52rem;
@@ -79,7 +87,25 @@ code {
   font-size: 1.15rem;
   color: var(--muted);
   max-width: 28rem;
-  margin: 0 0 2rem;
+  margin: 0 0 1rem;
+}
+
+.archive-note {
+  color: var(--muted);
+  font-size: 0.95rem;
+  max-width: 36rem;
+  margin: 0 0 1.25rem;
+}
+
+.home h2 {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 2.25rem 0 0.5rem;
+}
+
+.home #library-region {
+  margin-top: 0;
 }
 
 .home .cta {
@@ -245,15 +271,15 @@ form.search button:hover {
   color: var(--muted);
 }
 
-/* —— Item —— */
+/* —— Item (Jellyseerr-like poster + meta; physical facts stay first-class) —— */
 .item-layout {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--stack-gap);
 }
 
 @media (min-width: 40rem) {
   .item-layout.has-poster {
-    grid-template-columns: 12rem 1fr;
+    grid-template-columns: 10.5rem 1fr;
     align-items: start;
   }
 }
@@ -261,33 +287,113 @@ form.search button:hover {
 .item-poster img {
   display: block;
   width: 100%;
-  max-width: 12rem;
+  max-width: 10.5rem;
   height: auto;
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(26, 36, 33, 0.12);
+  border-radius: var(--card-radius);
+  box-shadow: 0 10px 28px rgba(26, 36, 33, 0.18);
 }
 
 .item-actions {
-  margin-top: 1.25rem;
+  margin-top: 1.1rem;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 1.25rem;
+  gap: 0.5rem 1rem;
   align-items: center;
 }
 
 .item-actions a.primary {
   display: inline-block;
-  padding: 0.55rem 1.1rem;
+  padding: 0.5rem 1rem;
   background: var(--ink);
   color: var(--surface);
   text-decoration: none;
   font-weight: 600;
-  border-radius: var(--radius);
+  border-radius: var(--card-radius);
 }
 
 .item-actions a.primary:hover {
   background: var(--accent-hot);
   color: #fff;
+}
+
+.pane-label {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+.catalogue {
+  margin: 0.35rem 0 0.85rem;
+}
+
+.overview {
+  margin: 0 0 0.65rem;
+  max-width: 42rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.provider-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.provider-links a.chip,
+.provider-links a {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 100em;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--surface);
+}
+
+.provider-links a.chip:hover,
+.provider-links a:hover {
+  border-color: var(--accent);
+  color: var(--accent-hot);
+}
+
+.archive {
+  margin: 0.5rem 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.archive .pane-label {
+  margin: 0;
+  padding: 0.45rem 0.75rem 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.archive .meta-line,
+.archive .probe {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.archive .meta-line:last-child,
+.archive .probe:last-child {
+  border-bottom: none;
+}
+
+.archive .probe {
+  background: transparent;
+  border-left: none;
+  border-radius: 0;
 }
 
 .meta-line {

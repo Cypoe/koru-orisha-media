@@ -1,0 +1,123 @@
+// Usage |js for the media navigation host (src/frontend/host.k).
+// Player resume + post-swap identity. Generic fetch/swap is koru/htmx.
+// File-level `playerSnapshot` / `playerIdentityOk` are the hooks the library
+// swap path calls (same prepend pattern as koru/dom's koruDomNode).
+// Names `playerIdentityOk` / `localStorage` are part of the HTTP test surface.
+
+function mediaIdFromPath() {
+    const m = location.pathname.match(/^\/watch\/([^/]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+function resumeKey(id) {
+    return "koru-media-resume:" + id;
+}
+
+function formatResumeTime(secs) {
+    const t = Math.max(0, Math.floor(secs || 0));
+    const m = Math.floor(t / 60);
+    const s = t % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+function playerSnapshot() {
+    const player = document.getElementById("player");
+    if (!player) return null;
+    return {
+        node: player,
+        id: player.getAttribute("data-media-id") || mediaIdFromPath(),
+    };
+}
+
+function playerIdentityOk(before) {
+    if (!before) return true;
+    const after = document.getElementById("player");
+    return !!(
+        after &&
+        after === before.node &&
+        after.getAttribute("data-media-id") === before.id
+    );
+}
+
+function showResumeUi(player, id, t) {
+    const ui = document.getElementById("resume-ui");
+    if (!ui || ui.getAttribute("data-bound") === "1") return;
+    ui.setAttribute("data-bound", "1");
+    ui.hidden = false;
+    ui.textContent = "";
+    const label = document.createElement("span");
+    label.textContent = "Resumed from " + formatResumeTime(t) + " · ";
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.textContent = "Restart";
+    restart.addEventListener("click", function () {
+        player.currentTime = 0;
+        try {
+            localStorage.removeItem(resumeKey(id));
+        } catch (_) {}
+        ui.hidden = true;
+        ui.textContent = "";
+    });
+    ui.appendChild(label);
+    ui.appendChild(restart);
+}
+
+~proc enhance-player|js {
+    if (typeof document === "undefined") return;
+
+    function enhancePlayer() {
+        const player = document.getElementById("player");
+        if (!player) return;
+        const id = player.getAttribute("data-media-id") || mediaIdFromPath();
+        if (!id) return;
+        try {
+            const saved = localStorage.getItem(resumeKey(id));
+            if (saved) {
+                const t = parseFloat(saved);
+                if (!isNaN(t) && t > 2) {
+                    player.addEventListener(
+                        "loadedmetadata",
+                        function () {
+                            if (t < (player.duration || Infinity) - 1) {
+                                player.currentTime = t;
+                                showResumeUi(player, id, t);
+                            }
+                        },
+                        { once: true }
+                    );
+                }
+            }
+            const save = function () {
+                try {
+                    localStorage.setItem(resumeKey(id), String(player.currentTime || 0));
+                } catch (_) {}
+            };
+            player.addEventListener("timeupdate", function () {
+                if (!player._koruSaveTimer) {
+                    player._koruSaveTimer = setTimeout(function () {
+                        player._koruSaveTimer = null;
+                        save();
+                    }, 1000);
+                }
+            });
+            player.addEventListener("pause", save);
+            player.addEventListener("ended", function () {
+                try {
+                    localStorage.removeItem(resumeKey(id));
+                } catch (_) {}
+                const ui = document.getElementById("resume-ui");
+                if (ui) {
+                    ui.hidden = true;
+                    ui.textContent = "";
+                }
+            });
+            window.addEventListener("pagehide", save);
+        } catch (_) {}
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", enhancePlayer);
+    } else {
+        enhancePlayer();
+    }
+}

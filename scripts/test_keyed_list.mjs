@@ -77,7 +77,7 @@ function keys(page) {
 async function main() {
   const jsPath = path.join(PUBLIC, "koru-dom-enhance.js");
   const st = await fs.stat(jsPath);
-  if (st.size < 1000) throw new Error("koru-dom-enhance.js missing or tiny — run build-browser.sh");
+  if (st.size < 1000) throw new Error("koru-dom-enhance.js missing or tiny — run build-frontend.sh");
 
   const { chromium } = loadPlaywright();
   const server = await startServer(PUBLIC);

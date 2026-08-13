@@ -1,255 +1,277 @@
-/*! koru-orisha-media progressive enhancement (optional).
- * HTMX-dialect host: honors hx-get / hx-target / hx-swap / hx-push-url.
- * Sends HX-Request (and Prefer) so /library can return a fragment.
- * Swaps only #library-region (list+pagination). Refuses targets that own #player.
- * Measures swap cost lightly (performance marks) before expanding koru/dom.
- * No-JS browsers keep plain href/forms.
- *
- * This is the vaxis/dom lesson applied to navigation: declare the request on
- * the element; the host loop does the work. Stock HTMX can replace this file.
- */
-(function () {
-  "use strict";
-
-  var DEFAULT_TARGET = "#library-region";
-
-  function mediaIdFromPath() {
-    var m = location.pathname.match(/^\/watch\/([^/]+)/);
+const __koru_len = { get() { return this.length; }, configurable: true };
+Object.defineProperty(String.prototype, "len", __koru_len);
+Object.defineProperty(Array.prototype, "len", __koru_len);
+// koru/htmx |js facet — generic fetch + region swap.
+// File-level helpers (same pattern as koru/dom's koruDomNode) are prepended
+// into the emit. ~proc run|js is the boot body invoked from a retained flow.
+// Function name `isSafeSwapTarget` is part of the HTTP test surface.
+function fragmentHeaders() {
+    return {
+        Accept: "text/html",
+        "HX-Request": "true",
+        Prefer: "return=minimal",
+    };
+}
+function isSafeSwapTarget(sel, protect) {
+    if (!sel || sel === "body" || sel === "html") return false;
+    if (protect) {
+        const p = protect.charAt(0) === "#" ? protect.slice(1) : protect;
+        if (sel === protect || sel === p || sel === "#" + p) return false;
+    }
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    if (protect) {
+        const guarded = document.querySelector(protect);
+        if (guarded && (el === guarded || (el.contains && el.contains(guarded)))) return false;
+    }
+    return true;
+}
+function hxGetUrl(el) {
+    const raw = el.getAttribute("hx-get");
+    if (!raw) return null;
+    try {
+        const u = new URL(raw, location.href);
+        if (el.tagName === "FORM") {
+            const fd = new FormData(el);
+            fd.forEach(function (v, k) {
+                u.searchParams.set(k, String(v));
+            });
+        }
+        return u.pathname + u.search;
+    } catch (_) {
+        return raw;
+    }
+}
+function swapInto(targetSel, html, pushUrl, protect, defaultTarget) {
+    if (!isSafeSwapTarget(targetSel, protect)) return false;
+    const before = typeof playerSnapshot === "function" ? playerSnapshot() : null;
+    const mark = "koru-hx-swap";
+    try {
+        if (window.performance && performance.mark) performance.mark(mark + "-start");
+    } catch (_) {}
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    const next =
+        tmp.querySelector(targetSel) ||
+        (defaultTarget ? tmp.querySelector(defaultTarget) : null);
+    if (!next) return false;
+    const cur = document.querySelector(targetSel);
+    if (!cur) return false;
+    cur.replaceWith(next);
+    if (pushUrl) history.pushState({ koruHx: true }, "", pushUrl);
+    try {
+        if (window.performance && performance.mark && performance.measure) {
+            performance.mark(mark + "-end");
+            performance.measure(mark, mark + "-start", mark + "-end");
+        }
+    } catch (_) {}
+    if (typeof playerIdentityOk === "function" && !playerIdentityOk(before)) return false;
+    return true;
+}
+function fetchAndSwap(url, target, pushUrl, fallbackUrl, protect, defaultTarget) {
+    if (!isSafeSwapTarget(target, protect)) {
+        location.href = fallbackUrl || url;
+        return;
+    }
+    fetch(url, { headers: fragmentHeaders() })
+        .then(function (r) {
+            return r.text();
+        })
+        .then(function (html) {
+            if (!swapInto(target, html, pushUrl, protect, defaultTarget)) {
+                location.href = fallbackUrl || url;
+            }
+        })
+        .catch(function () {
+            location.href = fallbackUrl || url;
+        });
+}
+// Usage |js for the media navigation host (src/frontend/host.k).
+// Player resume + post-swap identity. Generic fetch/swap is koru/htmx.
+// File-level `playerSnapshot` / `playerIdentityOk` are the hooks the library
+// swap path calls (same prepend pattern as koru/dom's koruDomNode).
+// Names `playerIdentityOk` / `localStorage` are part of the HTTP test surface.
+function mediaIdFromPath() {
+    const m = location.pathname.match(/^\/watch\/([^/]+)/);
     return m ? decodeURIComponent(m[1]) : null;
-  }
-
-  function resumeKey(id) {
+}
+function resumeKey(id) {
     return "koru-media-resume:" + id;
-  }
-
-  function formatResumeTime(secs) {
-    var t = Math.max(0, Math.floor(secs || 0));
-    var m = Math.floor(t / 60);
-    var s = t % 60;
+}
+function formatResumeTime(secs) {
+    const t = Math.max(0, Math.floor(secs || 0));
+    const m = Math.floor(t / 60);
+    const s = t % 60;
     return m + ":" + (s < 10 ? "0" : "") + s;
-  }
-
-  function showResumeUi(player, id, t) {
-    var ui = document.getElementById("resume-ui");
+}
+function playerSnapshot() {
+    const player = document.getElementById("player");
+    if (!player) return null;
+    return {
+        node: player,
+        id: player.getAttribute("data-media-id") || mediaIdFromPath(),
+    };
+}
+function playerIdentityOk(before) {
+    if (!before) return true;
+    const after = document.getElementById("player");
+    return !!(
+        after &&
+        after === before.node &&
+        after.getAttribute("data-media-id") === before.id
+    );
+}
+function showResumeUi(player, id, t) {
+    const ui = document.getElementById("resume-ui");
     if (!ui || ui.getAttribute("data-bound") === "1") return;
     ui.setAttribute("data-bound", "1");
     ui.hidden = false;
     ui.textContent = "";
-    var label = document.createElement("span");
+    const label = document.createElement("span");
     label.textContent = "Resumed from " + formatResumeTime(t) + " · ";
-    var restart = document.createElement("button");
+    const restart = document.createElement("button");
     restart.type = "button";
     restart.textContent = "Restart";
     restart.addEventListener("click", function () {
-      player.currentTime = 0;
-      try {
-        localStorage.removeItem(resumeKey(id));
-      } catch (_) {}
-      ui.hidden = true;
-      ui.textContent = "";
+        player.currentTime = 0;
+        try {
+            localStorage.removeItem(resumeKey(id));
+        } catch (_) {}
+        ui.hidden = true;
+        ui.textContent = "";
     });
     ui.appendChild(label);
     ui.appendChild(restart);
-  }
+}
+const main_module = {
+  enhance_player_event: {
+    handler(__koru_input) {
+      if (typeof document === "undefined") return;
 
-  function enhancePlayer() {
-    var player = document.getElementById("player");
-    if (!player) return;
-    var id = player.getAttribute("data-media-id") || mediaIdFromPath();
-    if (!id) return;
-    try {
-      var saved = localStorage.getItem(resumeKey(id));
+      function enhancePlayer() {
+      const player = document.getElementById("player");
+      if (!player) return;
+      const id = player.getAttribute("data-media-id") || mediaIdFromPath();
+      if (!id) return;
+      try {
+      const saved = localStorage.getItem(resumeKey(id));
       if (saved) {
-        var t = parseFloat(saved);
-        if (!isNaN(t) && t > 2) {
-          player.addEventListener(
-            "loadedmetadata",
-            function () {
-              if (t < (player.duration || Infinity) - 1) {
-                player.currentTime = t;
-                showResumeUi(player, id, t);
-              }
-            },
-            { once: true }
-          );
-        }
+      const t = parseFloat(saved);
+      if (!isNaN(t) && t > 2) {
+      player.addEventListener(
+      "loadedmetadata",
+      function () {
+      if (t < (player.duration || Infinity) - 1) {
+      player.currentTime = t;
+      showResumeUi(player, id, t);
       }
-      var save = function () {
-        try {
-          localStorage.setItem(resumeKey(id), String(player.currentTime || 0));
-        } catch (_) {}
+      },
+      { once: true }
+      );
+      }
+      }
+      const save = function () {
+      try {
+      localStorage.setItem(resumeKey(id), String(player.currentTime || 0));
+      } catch (_) {}
       };
       player.addEventListener("timeupdate", function () {
-        if (!player._koruSaveTimer) {
-          player._koruSaveTimer = setTimeout(function () {
-            player._koruSaveTimer = null;
-            save();
-          }, 1000);
-        }
+      if (!player._koruSaveTimer) {
+      player._koruSaveTimer = setTimeout(function () {
+      player._koruSaveTimer = null;
+      save();
+      }, 1000);
+      }
       });
       player.addEventListener("pause", save);
       player.addEventListener("ended", function () {
-        try {
-          localStorage.removeItem(resumeKey(id));
-        } catch (_) {}
-        var ui = document.getElementById("resume-ui");
-        if (ui) {
-          ui.hidden = true;
-          ui.textContent = "";
-        }
+      try {
+      localStorage.removeItem(resumeKey(id));
+      } catch (_) {}
+      const ui = document.getElementById("resume-ui");
+      if (ui) {
+      ui.hidden = true;
+      ui.textContent = "";
+      }
       });
       window.addEventListener("pagehide", save);
-    } catch (_) {}
-  }
-
-  function hxHeaders() {
-    return {
-      Accept: "text/html",
-      "HX-Request": "true",
-      Prefer: "return=minimal",
-    };
-  }
-
-  /** Refuse swaps that would destroy or replace the playing media element. */
-  function isSafeSwapTarget(sel) {
-    if (!sel || sel === "#player" || sel === "player" || sel === "body" || sel === "html") {
-      return false;
-    }
-    var el = document.querySelector(sel);
-    if (!el) return false;
-    if (el.id === "player") return false;
-    if (el.querySelector && el.querySelector("#player")) return false;
-    return true;
-  }
-
-  function playerSnapshot() {
-    var player = document.getElementById("player");
-    if (!player) return null;
-    return {
-      node: player,
-      id: player.getAttribute("data-media-id") || mediaIdFromPath(),
-    };
-  }
-
-  function playerIdentityOk(before) {
-    if (!before) return true;
-    var after = document.getElementById("player");
-    return !!(
-      after &&
-      after === before.node &&
-      after.getAttribute("data-media-id") === before.id
-    );
-  }
-
-  function swapInto(targetSel, html, pushUrl) {
-    if (!isSafeSwapTarget(targetSel)) return false;
-    var before = playerSnapshot();
-    var mark = "koru-hx-swap";
-    try {
-      if (window.performance && performance.mark) performance.mark(mark + "-start");
-    } catch (_) {}
-
-    var tmp = document.createElement("div");
-    tmp.innerHTML = html;
-    var next =
-      tmp.querySelector(targetSel) ||
-      tmp.querySelector("#library-region") ||
-      tmp.querySelector("ul");
-    if (!next) return false;
-    var cur = document.querySelector(targetSel);
-    if (!cur) return false;
-    cur.replaceWith(next);
-    if (pushUrl) history.pushState({ koruHx: true }, "", pushUrl);
-
-    try {
-      if (window.performance && performance.mark && performance.measure) {
-        performance.mark(mark + "-end");
-        performance.measure(mark, mark + "-start", mark + "-end");
+      } catch (_) {}
       }
-    } catch (_) {}
 
-    if (!playerIdentityOk(before)) return false;
-    return true;
-  }
-
-  function hxGetUrl(el) {
-    var raw = el.getAttribute("hx-get");
-    if (!raw) return null;
-    try {
-      var u = new URL(raw, location.href);
-      if (el.tagName === "FORM") {
-        var fd = new FormData(el);
-        fd.forEach(function (v, k) {
-          u.searchParams.set(k, String(v));
-        });
-      }
-      return u.pathname + u.search;
-    } catch (_) {
-      return raw;
-    }
-  }
-
-  function fetchAndSwap(url, target, pushUrl, fallbackUrl) {
-    if (!isSafeSwapTarget(target)) {
-      location.href = fallbackUrl || url;
-      return;
-    }
-    fetch(url, { headers: hxHeaders() })
-      .then(function (r) {
-        return r.text();
-      })
-      .then(function (html) {
-        if (!swapInto(target, html, pushUrl)) location.href = fallbackUrl || url;
-      })
-      .catch(function () {
-        location.href = fallbackUrl || url;
-      });
-  }
-
-  function enhanceHtmx() {
-    document.addEventListener("click", function (ev) {
-      var a = ev.target.closest && ev.target.closest("a[hx-get]");
-      if (!a) return;
-      var url = hxGetUrl(a);
-      var target = a.getAttribute("hx-target") || DEFAULT_TARGET;
-      if (!url) return;
-      ev.preventDefault();
-      var push =
-        a.getAttribute("hx-push-url") === "true"
-          ? a.getAttribute("href") || url
-          : null;
-      fetchAndSwap(url, target, push, a.getAttribute("href") || url);
-    });
-
-    document.addEventListener("submit", function (ev) {
-      var form = ev.target.closest && ev.target.closest("form[hx-get]");
-      if (!form) return;
-      var url = hxGetUrl(form);
-      var target = form.getAttribute("hx-target") || DEFAULT_TARGET;
-      if (!url) return;
-      ev.preventDefault();
-      var push = form.getAttribute("hx-push-url") === "true" ? url : null;
-      fetchAndSwap(url, target, push, url);
-    });
-
-    window.addEventListener("popstate", function () {
-      if (!/^\/library(\/|$)/.test(location.pathname)) return;
-      var region = document.querySelector(DEFAULT_TARGET);
-      if (!region) {
-        location.reload();
-        return;
-      }
-      fetchAndSwap(location.pathname + location.search, DEFAULT_TARGET, null, location.href);
-    });
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
+      if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", enhancePlayer);
+      } else {
       enhancePlayer();
-      enhanceHtmx();
-    });
-  } else {
-    enhancePlayer();
-    enhanceHtmx();
-  }
-})();
+      }
+    },
+  },
+  run_event: {
+    handler(__koru_input) {
+      const target = __koru_input.target;
+      const protect = __koru_input.protect;
+      const pop_prefix = __koru_input.pop_prefix;
+      if (typeof document === "undefined") return;
+      const defaultTarget = target;
+      const protectSel = protect;
+      const popPrefix = pop_prefix;
+
+      function enhanceNavigation() {
+      document.addEventListener("click", function (ev) {
+      const a = ev.target.closest && ev.target.closest("a[hx-get]");
+      if (!a) return;
+      const url = hxGetUrl(a);
+      const dest = a.getAttribute("hx-target") || defaultTarget;
+      if (!url) return;
+      ev.preventDefault();
+      const push =
+      a.getAttribute("hx-push-url") === "true"
+      ? a.getAttribute("href") || url
+      : null;
+      fetchAndSwap(url, dest, push, a.getAttribute("href") || url, protectSel, defaultTarget);
+      });
+
+      document.addEventListener("submit", function (ev) {
+      const form = ev.target.closest && ev.target.closest("form[hx-get]");
+      if (!form) return;
+      const url = hxGetUrl(form);
+      const dest = form.getAttribute("hx-target") || defaultTarget;
+      if (!url) return;
+      ev.preventDefault();
+      const push = form.getAttribute("hx-push-url") === "true" ? url : null;
+      fetchAndSwap(url, dest, push, url, protectSel, defaultTarget);
+      });
+
+      window.addEventListener("popstate", function () {
+      if (popPrefix && location.pathname.indexOf(popPrefix) !== 0) return;
+      const region = document.querySelector(defaultTarget);
+      if (!region) {
+      location.reload();
+      return;
+      }
+      fetchAndSwap(
+      location.pathname + location.search,
+      defaultTarget,
+      null,
+      location.href,
+      protectSel,
+      defaultTarget
+      );
+      });
+      }
+
+      if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", enhanceNavigation);
+      } else {
+      enhanceNavigation();
+      }
+    },
+  },
+  flow0() {
+    main_module.enhance_player_event.handler({});
+  },
+  flow1() {
+    main_module.run_event.handler({ target: "#library-region", protect: "#player", pop_prefix: "/library" });
+  },
+};
+main_module.flow0();
+main_module.flow1();

@@ -1,0 +1,150 @@
+// koru/htmx |js facet — generic fetch + region swap.
+// File-level helpers (same pattern as koru/dom's koruDomNode) are prepended
+// into the emit. ~proc run|js is the boot body invoked from a retained flow.
+// Function name `isSafeSwapTarget` is part of the HTTP test surface.
+
+function fragmentHeaders() {
+    return {
+        Accept: "text/html",
+        "HX-Request": "true",
+        Prefer: "return=minimal",
+    };
+}
+
+function isSafeSwapTarget(sel, protect) {
+    if (!sel || sel === "body" || sel === "html") return false;
+    if (protect) {
+        const p = protect.charAt(0) === "#" ? protect.slice(1) : protect;
+        if (sel === protect || sel === p || sel === "#" + p) return false;
+    }
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    if (protect) {
+        const guarded = document.querySelector(protect);
+        if (guarded && (el === guarded || (el.contains && el.contains(guarded)))) return false;
+    }
+    return true;
+}
+
+function hxGetUrl(el) {
+    const raw = el.getAttribute("hx-get");
+    if (!raw) return null;
+    try {
+        const u = new URL(raw, location.href);
+        if (el.tagName === "FORM") {
+            const fd = new FormData(el);
+            fd.forEach(function (v, k) {
+                u.searchParams.set(k, String(v));
+            });
+        }
+        return u.pathname + u.search;
+    } catch (_) {
+        return raw;
+    }
+}
+
+function swapInto(targetSel, html, pushUrl, protect, defaultTarget) {
+    if (!isSafeSwapTarget(targetSel, protect)) return false;
+    const before = typeof playerSnapshot === "function" ? playerSnapshot() : null;
+    const mark = "koru-hx-swap";
+    try {
+        if (window.performance && performance.mark) performance.mark(mark + "-start");
+    } catch (_) {}
+
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    const next =
+        tmp.querySelector(targetSel) ||
+        (defaultTarget ? tmp.querySelector(defaultTarget) : null);
+    if (!next) return false;
+    const cur = document.querySelector(targetSel);
+    if (!cur) return false;
+    cur.replaceWith(next);
+    if (pushUrl) history.pushState({ koruHx: true }, "", pushUrl);
+
+    try {
+        if (window.performance && performance.mark && performance.measure) {
+            performance.mark(mark + "-end");
+            performance.measure(mark, mark + "-start", mark + "-end");
+        }
+    } catch (_) {}
+
+    if (typeof playerIdentityOk === "function" && !playerIdentityOk(before)) return false;
+    return true;
+}
+
+function fetchAndSwap(url, target, pushUrl, fallbackUrl, protect, defaultTarget) {
+    if (!isSafeSwapTarget(target, protect)) {
+        location.href = fallbackUrl || url;
+        return;
+    }
+    fetch(url, { headers: fragmentHeaders() })
+        .then(function (r) {
+            return r.text();
+        })
+        .then(function (html) {
+            if (!swapInto(target, html, pushUrl, protect, defaultTarget)) {
+                location.href = fallbackUrl || url;
+            }
+        })
+        .catch(function () {
+            location.href = fallbackUrl || url;
+        });
+}
+
+~proc run|js {
+    if (typeof document === "undefined") return;
+    const defaultTarget = target;
+    const protectSel = protect;
+    const popPrefix = pop_prefix;
+
+    function enhanceNavigation() {
+        document.addEventListener("click", function (ev) {
+            const a = ev.target.closest && ev.target.closest("a[hx-get]");
+            if (!a) return;
+            const url = hxGetUrl(a);
+            const dest = a.getAttribute("hx-target") || defaultTarget;
+            if (!url) return;
+            ev.preventDefault();
+            const push =
+                a.getAttribute("hx-push-url") === "true"
+                    ? a.getAttribute("href") || url
+                    : null;
+            fetchAndSwap(url, dest, push, a.getAttribute("href") || url, protectSel, defaultTarget);
+        });
+
+        document.addEventListener("submit", function (ev) {
+            const form = ev.target.closest && ev.target.closest("form[hx-get]");
+            if (!form) return;
+            const url = hxGetUrl(form);
+            const dest = form.getAttribute("hx-target") || defaultTarget;
+            if (!url) return;
+            ev.preventDefault();
+            const push = form.getAttribute("hx-push-url") === "true" ? url : null;
+            fetchAndSwap(url, dest, push, url, protectSel, defaultTarget);
+        });
+
+        window.addEventListener("popstate", function () {
+            if (popPrefix && location.pathname.indexOf(popPrefix) !== 0) return;
+            const region = document.querySelector(defaultTarget);
+            if (!region) {
+                location.reload();
+                return;
+            }
+            fetchAndSwap(
+                location.pathname + location.search,
+                defaultTarget,
+                null,
+                location.href,
+                protectSel,
+                defaultTarget
+            );
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", enhanceNavigation);
+    } else {
+        enhanceNavigation();
+    }
+}

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run keyed list DOM test inside the official Playwright image (has browser deps).
+# Run keyed list DOM test inside the official Playwright image (has Chromium deps).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [[ ! -f public/koru-dom-enhance.js ]]; then
-  echo "missing public/koru-dom-enhance.js — run bash scripts/build-browser.sh" >&2
+  echo "missing public/koru-dom-enhance.js — run bash scripts/build-frontend.sh" >&2
   exit 2
 fi
 

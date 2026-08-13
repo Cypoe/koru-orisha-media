@@ -43,7 +43,7 @@ function __koru_dom_track(key, node) {
 function koruDomNode(key) {
     return __koru_dom_reg.get(key);
 }
-// Host |js facet for the Step 9 keyed list.
+// Host |js facet for the Step 9 keyed list (src/frontend, like koru-libs/dom/app).
 // make-title is deterministic so the demo/harness can assert row text.
 // swap-rows moves DOM nodes by store handle (koruDomNode) — reorder without
 // destroying identity.
@@ -134,7 +134,7 @@ const main_module = {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
         { const _auto_0 = __koru_item;         const t = main_module.make_title_event.handler({});
-        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, title: t, __site_line: 38 });
+        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, title: t, __site_line: 41 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -182,8 +182,8 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.title[__koru_new_row] = title.slice(0, 48);
       __koru_store_rows.len += 1;
       main_module.__store_inserted_rows_0_event.handler({ id: id, title: title, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
-      if (__site_line > 42) {
-      main_module.__store_qrow_rows_L42_event.handler({ row: __koru_new_row });
+      if (__site_line > 45) {
+      main_module.__store_qrow_rows_L45_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -223,16 +223,16 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       }
     },
   },
-  __store_qrow_rows_L42_event: {
+  __store_qrow_rows_L45_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
-      main_module.__store_qbody_rows_L42_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L45_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
-  __store_qbody_rows_L42_event: {
+  __store_qbody_rows_L45_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
       const h = __koru_input.h;
@@ -268,12 +268,12 @@ if (__koru_store_op.code == 6) {
     }
     },
   },
-  __store_qsweep_rows_L42_event: {
+  __store_qsweep_rows_L45_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L42_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L45_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -346,7 +346,7 @@ if (__koru_store_op.code == 6) {
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L42_event.handler({});
+      main_module.__store_qsweep_rows_L45_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -505,7 +505,7 @@ if (__koru_store_op.code == 6) {
     },
   },
   flow0() {
-    main_module.__store_qsweep_rows_L42_event.handler({});
+    main_module.__store_qsweep_rows_L45_event.handler({});
   },
   flow1() {
     const Handlers_5 = {

@@ -35,7 +35,7 @@ echo "== http: fixture media =="
 cleanup
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=fixtures/media \
-  -e KORU_MANIFEST=data/manifest.json \
+  -e KORU_MANIFEST=fixtures/manifest.json \
   -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$ROOT/data:/app/data:ro" \
   -v "$ROOT/fixtures:/app/fixtures:ro" \
@@ -53,8 +53,8 @@ KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=fixture python3 "$ROOT/
 echo "== http: escape + traversal =="
 cleanup
 SEC=$(mktemp -d)
-mkdir -p "$SEC/media/clips"
-printf 'z' > "$SEC/media/clips/x.mp4"
+mkdir -p "$SEC/media/movies"
+printf 'z' > "$SEC/media/movies/x.mp4"
 cat > "$SEC/manifest.json" <<'JSON'
 {
   "entries": [
@@ -62,7 +62,7 @@ cat > "$SEC/manifest.json" <<'JSON'
       "id": "m_xss",
       "kind": "movie",
       "title": "<script>alert(1)</script>",
-      "path": "clips/x.mp4",
+      "path": "movies/x.mp4",
       "bytes": 1,
       "modified_ns": 1,
       "mime": "video/mp4"
@@ -102,7 +102,7 @@ echo "== hot manifest reload =="
 bash scripts/test_reload.sh
 
 echo "== koru/dom emit =="
-bash scripts/test_browser_emit.sh
+bash scripts/test_frontend_emit.sh
 
 echo "== koru/dom keyed identity =="
 bash scripts/test_keyed_list.sh
