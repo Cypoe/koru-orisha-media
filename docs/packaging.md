@@ -16,8 +16,8 @@ bash scripts/build-image.sh --skip-compile
 Prepare a library and manifest:
 
 ```bash
-mkdir -p media data
-# copy or bind your library into ./media
+mkdir -p media/movies media/shows media/music data
+# copy or bind your library into ./media/{movies,shows,music}
 python3 scripts/index_media.py --root media --out data/manifest.json
 # or let the container index once: KORU_REINDEX=1 in compose.yaml
 ```
@@ -34,9 +34,10 @@ Container layout:
 | Path | Role |
 |------|------|
 | `/app/media-server` | HTTP binary |
-| `/app/public/` | browser assets |
-| `/media` | `KORU_MEDIA_ROOT` (volume) |
+| `/app/public/` | frontend assets |
+| `/media` | `KORU_MEDIA_ROOT` (volume; `movies/`, `shows/`, `music/` under one root) |
 | `/data/manifest.json` | `KORU_MANIFEST` (volume) |
+| `/data/semantic.json` | `KORU_SEMANTIC` (optional volume; `/` and `/library` list local files and play if absent) |
 
 Compose defaults are long-lived (no `KORU_IDLE_SECS`). The process listens on **3090** inside the container ([`main.k`](../main.k)); map the host port in `compose.yaml`.
 
@@ -46,7 +47,7 @@ Optional one-shot reindex on start: set `KORU_REINDEX=1` or pass `reindex` as th
 
 1. Build (or later pull) the image on a machine that can compile, or load a saved image onto the NAS.
 2. In **Container Manager → Project**, create a project from this repo’s [`compose.yaml`](../compose.yaml).
-3. Map a DSM shared folder (e.g. `/volume1/video`) to `/media` (read-only is fine).
+3. Map a DSM shared folder that contains `movies/`, `shows/`, and `music/` (e.g. `/volume1/video`) to `/media` (read-only is fine). One bind, not three.
 4. Map a writable folder to `/data` for `manifest.json` (and future art/cache).
 5. Publish port `3090` (or change the host side of the mapping).
 6. Index once (`KORU_REINDEX=1` for the first start, or run the indexer on a desktop against the same tree).

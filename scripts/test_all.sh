@@ -66,6 +66,7 @@ cleanup
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=fixtures/media \
   -e KORU_MANIFEST=fixtures/manifest.json \
+  -e KORU_SEMANTIC=fixtures/semantic.json \
   -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$ROOT/data:/app/data:ro" \
   -v "$ROOT/fixtures:/app/fixtures:ro" \
@@ -79,6 +80,26 @@ done
 
 cd "$ROOT"
 KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=fixture python3 "$ROOT/scripts/test_http.py"
+
+echo "== http: missing semantic snapshot =="
+cleanup
+docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
+  -e KORU_MEDIA_ROOT=fixtures/media \
+  -e KORU_MANIFEST=fixtures/manifest.json \
+  -e KORU_SEMANTIC=data/missing-semantic.json \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/data:/app/data:ro" \
+  -v "$ROOT/fixtures:/app/fixtures:ro" \
+  -v "$ROOT/public:/app/public:ro" \
+  -w /app debian:bookworm-slim /app/media-server >/dev/null
+
+for i in $(seq 1 50); do
+  if curl -sf "http://127.0.0.1:${PORT}/" >/dev/null; then break; fi
+  sleep 0.1
+done
+
+cd "$ROOT"
+KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=nonsemantic python3 "$ROOT/scripts/test_http.py"
 
 echo "== http: escape + traversal =="
 cleanup

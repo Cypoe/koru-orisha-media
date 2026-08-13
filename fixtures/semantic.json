@@ -3,21 +3,25 @@
   "assets": [
     {
       "id": "m_6d5d84",
-      "path": "clips/Arrival (2016).mp4",
+      "path": "movies/Arrival (2016).mp4",
       "kind": "movie",
       "role": "main",
-      "entity_ids": ["work.movie.arrival-2016"]
+      "entity_ids": [
+        "work.movie.arrival-2016"
+      ]
     },
     {
       "id": "m_31afda",
-      "path": "clips/beep.wav",
+      "path": "music/beep.wav",
       "kind": "audio",
       "role": "main",
-      "entity_ids": ["music.recording.beep"]
+      "entity_ids": [
+        "music.recording.beep"
+      ]
     },
     {
       "id": "m_ca931e",
-      "path": "clips/demo.mp4",
+      "path": "movies/demo.mp4",
       "kind": "movie",
       "role": "main",
       "entity_ids": []
@@ -30,24 +34,33 @@
       "title": "Arrival",
       "year": 2016,
       "description": "Fixture movie with hand-linked provider identities (no live API).",
-      "asset_ids": ["m_6d5d84"],
       "provider_ids": [
         {
           "provider": "imdb",
           "namespace": "title",
           "value": "tt2543164",
           "url": "https://www.imdb.com/title/tt2543164/",
-          "source": "user",
-          "confidence": 1.0
+          "retrieved_at": null,
+          "confidence": 1.0,
+          "source": "user"
+        },
+        {
+          "provider": "tmdb",
+          "namespace": "movie",
+          "value": "329865",
+          "url": "https://www.themoviedb.org/movie/329865",
+          "retrieved_at": null,
+          "confidence": 1.0,
+          "source": "user"
         },
         {
           "provider": "tvdb",
           "namespace": "movie",
           "value": "0",
           "url": null,
-          "source": "user",
+          "retrieved_at": null,
           "confidence": 0.0,
-          "retrieved_at": null
+          "source": "user"
         }
       ],
       "assertions": [
@@ -61,9 +74,13 @@
             "namespace": "title",
             "value": "Arrival"
           },
-          "status": "accepted",
-          "confidence": 1.0
+          "retrieved_at": null,
+          "confidence": 1.0,
+          "status": "accepted"
         }
+      ],
+      "asset_ids": [
+        "m_6d5d84"
       ]
     },
     {
@@ -71,27 +88,67 @@
       "type": "MusicRecording",
       "title": "beep",
       "year": null,
-      "asset_ids": ["m_31afda"],
+      "description": null,
       "provider_ids": [],
-      "assertions": []
+      "assertions": [],
+      "asset_ids": [
+        "m_31afda"
+      ]
     },
     {
       "id": "series.fixture-demo",
       "type": "TVSeries",
       "title": "Fixture Demo Series",
       "year": 2020,
-      "asset_ids": [],
+      "description": null,
       "provider_ids": [
         {
           "provider": "tvdb",
           "namespace": "series",
           "value": "121361",
           "url": "https://thetvdb.com/series/game-of-thrones",
-          "source": "user",
-          "confidence": 0.5
+          "retrieved_at": null,
+          "confidence": 0.5,
+          "source": "user"
         }
       ],
-      "assertions": []
+      "assertions": [],
+      "asset_ids": []
+    }
+  ],
+  "projections": [
+    {
+      "construction": "orisha.item",
+      "asset_id": "m_6d5d84",
+      "entity_id": "work.movie.arrival-2016",
+      "display_title": "Arrival",
+      "display_description": "Fixture movie with hand-linked provider identities (no live API)."
+    },
+    {
+      "construction": "orisha.links",
+      "asset_id": "m_6d5d84",
+      "entity_id": "work.movie.arrival-2016",
+      "tmdb_url": "https://www.themoviedb.org/movie/329865",
+      "imdb_url": "https://www.imdb.com/title/tt2543164/"
+    },
+    {
+      "construction": "schema.org.jsonld",
+      "asset_id": "m_6d5d84",
+      "entity_id": "work.movie.arrival-2016",
+      "jsonld": "{\"@context\":\"https://schema.org\",\"@type\":\"Movie\",\"@id\":\"https://media.local/item/m_6d5d84\",\"name\":\"Arrival\",\"contentUrl\":\"https://media.local/media/m_6d5d84\",\"datePublished\":\"2016\",\"sameAs\":[\"https://www.imdb.com/title/tt2543164/\",\"https://www.themoviedb.org/movie/329865\"],\"identifier\":[{\"@type\":\"PropertyValue\",\"propertyID\":\"imdb:title\",\"value\":\"tt2543164\"},{\"@type\":\"PropertyValue\",\"propertyID\":\"tmdb:movie\",\"value\":\"329865\"},{\"@type\":\"PropertyValue\",\"propertyID\":\"tvdb:movie\",\"value\":\"0\"}],\"image\":\"https://media.local/art/m_6d5d84\"}"
+    },
+    {
+      "construction": "orisha.item",
+      "asset_id": "m_31afda",
+      "entity_id": "music.recording.beep",
+      "display_title": "beep",
+      "display_description": ""
+    },
+    {
+      "construction": "schema.org.jsonld",
+      "asset_id": "m_31afda",
+      "entity_id": "music.recording.beep",
+      "jsonld": "{\"@context\":\"https://schema.org\",\"@type\":\"MusicRecording\",\"@id\":\"https://media.local/item/m_31afda\",\"name\":\"beep\",\"contentUrl\":\"https://media.local/media/m_31afda\"}"
     }
   ]
 }

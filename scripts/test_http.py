@@ -40,7 +40,7 @@ def main() -> int:
             print(f"ok: {msg}")
 
     if mode == "fixture":
-        manifest = json.loads((ROOT / "data" / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((ROOT / "fixtures" / "manifest.json").read_text(encoding="utf-8"))
         demo = next(e for e in manifest["entries"] if e["title"] == "demo")
         demo_id = demo["id"]
         empty = next(e for e in manifest["entries"] if e["title"] == "empty")
@@ -56,6 +56,7 @@ def main() -> int:
         check(f"/watch/{demo_id}".encode() in body, "library row watch affordance")
         check(b"<form" in body and b'name="q"' in body, "library search form")
         check("link" in hdrs and "self" in hdrs["link"], f"Link header on library: {hdrs.get('link')}")
+        check(b"class=\"archive-note\"" in body and b"projection index" in body, "library names catalogue overlay when index exists")
 
         st, hdrs, body = http("GET", "/library/movie")
         check(st == 200 and "Library — movie".encode() in body, "kind collection title")
@@ -192,11 +193,32 @@ def main() -> int:
 
         arrival = next((e for e in manifest["entries"] if "2016" in e.get("title", "")), None)
         if arrival and arrival.get("year") == 2016:
-            st, _, body = http("GET", f"/item/{arrival['id']}")
+            st, hdrs, body = http("GET", f"/item/{arrival['id']}")
             check(st == 200 and b"year 2016" in body, "item shows year")
             check(b"video <code>hevc</code>" in body and b"audio <code>aac</code>" in body, "item shows nested codecs")
+            check(b">Arrival<" in body and b"Arrival (2016)" in body, "item semantic title vs filename")
+            check(b"themoviedb.org/movie/329865" in body and b">TMDB<" in body, "item TMDB link")
+            check(b"imdb.com/title/tt2543164" in body and b">IMDb<" in body, "item IMDb link")
+            check(b'class="catalogue"' in body and b">Catalogue<" in body, "item catalogue pane")
+            check(b'class="overview"' in body and b"hand-linked provider" in body, "item catalogue overview")
+            check(b'class="archive"' in body and b">Local archive<" in body, "item local archive pane")
+            check(b"movies/Arrival (2016).mp4" in body, "item archive path")
+            check(b"size " in body and b" bytes" in body, "item archive byte size")
+            check(b"container" in body and b"<code>mp4</code>" in body, "item archive container")
+            link = hdrs.get("link", "")
+            check("themoviedb.org" in link and "imdb.com" in link, "item Link related providers")
+            check("format=jsonld" in link and "application/ld+json" in link, "item JSON-LD alternate Link")
+            st, jhdrs, jbody = http("GET", f"/item/{arrival['id']}?format=jsonld")
+            check(st == 200 and "ld+json" in jhdrs.get("content-type", ""), "jsonld content-type")
+            check(b'"@type":"Movie"' in jbody and b"imdb.com" in jbody and b"themoviedb.org" in jbody, "jsonld movie sameAs")
+            st, _, abody = http("GET", f"/item/{arrival['id']}", headers={"Accept": "application/json"})
+            check(st == 200 and b'"@type":"Movie"' in abody, "Accept application/json jsonld")
             st, _, wbody = http("GET", f"/watch/{arrival['id']}")
             check(st == 200 and b'class="probe"' in wbody and b"video <code>hevc</code>" in wbody, "watch shows nested codecs")
+            check(b">TMDB<" in wbody and b">IMDb<" in wbody, "watch provider line")
+            check(b'class="catalogue"' in wbody and b'class="archive"' in wbody, "watch catalogue vs archive")
+            check(b"Arrival (2016)" in wbody and b"size " in wbody and b" bytes" in wbody, "watch archive filename+bytes")
+            check(b'id="player"' in wbody, "watch player intact with semantic line")
         else:
             check(False, "Arrival (2016) fixture with year in manifest")
 
@@ -212,6 +234,10 @@ def main() -> int:
 
         st, _, body = http("GET", "/")
         check(st == 200 and b"Koru Media" in body and b"/app.css" in body and b"Open library" in body, "home brand surface")
+        check(b"Local movies" in body and b"Arrival (2016)" in body and demo_id.encode() in body, "home lists local movies")
+        check(f"/watch/{demo_id}".encode() in body, "home local movies are playable")
+        check(b"class=\"archive-note\"" in body and b"projection index" in body, "home names catalogue overlay when index exists")
+        check(b">TMDB<" not in body, "home is not a TMDB grid")
 
         st, _, body = http("GET", "/koru-dom-enhance.js")
         check(st == 200 and b"__koru_dom_track" in body, "koru-dom-enhance.js served")
@@ -224,10 +250,16 @@ def main() -> int:
 
         st, _, body = http("GET", f"/item/{demo_id}")
         check(b"/enhance.js" in body and b"/app.css" in body and b"item-actions" in body, "item page enhance + css")
+        check(b">TMDB<" not in body and b">IMDb<" not in body and b"themoviedb.org" not in body, "demo item has no provider links")
+        check(b'class="catalogue"' not in body and b'class="archive"' not in body, "demo item has no catalogue/archive split")
+        check(b">Local archive<" not in body, "demo item has no archive heading")
+        st, _, jdemo = http("GET", f"/item/{demo_id}?format=jsonld")
+        check(st == 404, "demo jsonld absent")
 
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body and b"/app.css" in body, "watch resume hooks")
         check(b'id="resume-ui"' in body and b'id="player"' in body, "watch resume-ui beside player")
+        check(b'class="catalogue"' not in body and b">TMDB<" not in body, "demo watch has no catalogue overlay")
         player_at = body.find(b'id="player"')
         resume_at = body.find(b'id="resume-ui"')
         check(player_at != -1 and resume_at != -1 and player_at < resume_at, "player precedes resume-ui")
@@ -249,6 +281,43 @@ def main() -> int:
         check(b"&lt;script&gt;" in body, "escaped script title")
         st, _, _ = http("GET", "/media/m_trav")
         check(st == 403, "traversal path forbidden")
+        st, _, body = http("GET", "/item/m_xss")
+        check(b">TMDB<" not in body and b"themoviedb.org" not in body, "missing semantic snapshot: no provider links")
+        check(b'class="catalogue"' not in body and b'class="archive"' not in body, "missing semantic snapshot: no catalogue split")
+
+    elif mode == "nonsemantic":
+        manifest = json.loads((ROOT / "fixtures" / "manifest.json").read_text(encoding="utf-8"))
+        arrival = next((e for e in manifest["entries"] if e.get("year") == 2016), None)
+        demo = next(e for e in manifest["entries"] if e["title"] == "demo")
+        if not arrival:
+            check(False, "Arrival fixture in manifest")
+        else:
+            st, _, body = http("GET", f"/item/{arrival['id']}")
+            check(st == 200 and b"Arrival (2016)" in body, "missing semantic: physical title")
+            check(b">TMDB<" not in body and b">IMDb<" not in body and b"themoviedb.org" not in body, "missing semantic: no provider links")
+            check(b'class="catalogue"' not in body and b'class="archive"' not in body, "missing semantic: physical HTML only")
+            check(b"container" in body and b"<code>mp4</code>" in body, "missing semantic: container still shown")
+            st, _, jbody = http("GET", f"/item/{arrival['id']}?format=jsonld")
+            check(st == 404, "missing semantic: jsonld absent")
+            st, _, wbody = http("GET", f"/watch/{arrival['id']}")
+            check(st == 200 and b'id="player"' in wbody, "missing semantic: watch still plays")
+            check(b">TMDB<" not in wbody, "missing semantic: watch has no providers")
+        st, _, body = http("GET", f"/media/{demo['id']}")
+        check(st == 200 and body == b"hello world\n", "missing semantic: physical playback")
+        st, _, home = http("GET", "/")
+        check(st == 200 and b"Open library" in home, "missing semantic: home still serves")
+        check(b"Arrival (2016)" in home and demo["id"].encode() in home, "missing semantic: home lists local movies")
+        check(f"/watch/{demo['id']}".encode() in home, "missing semantic: home movies are playable")
+        check(b">TMDB<" not in home and b">IMDb<" not in home and b"themoviedb.org" not in home, "missing semantic: home has no catalogue chips")
+        check(b"class=\"archive-note\"" in home and b"without a catalogue fetch" in home, "missing semantic: home is local archive")
+        st, _, lib = http("GET", "/library")
+        check(st == 200 and b"Arrival (2016)" in lib and demo["id"].encode() in lib, "missing semantic: library lists local files")
+        check(f"/watch/{demo['id']}".encode() in lib, "missing semantic: library watch affordance")
+        check(b">TMDB<" not in lib and b'class="catalogue"' not in lib, "missing semantic: library has no catalogue chips")
+        check(b"without a catalogue fetch" in lib, "missing semantic: library is local archive")
+        st, _, movies = http("GET", "/library/movie")
+        check(st == 200 and b"Arrival (2016)" in movies and demo["id"].encode() in movies, "missing semantic: movie collection lists local files")
+        check(b">TMDB<" not in movies, "missing semantic: movie collection has no catalogue chips")
 
     else:
         print(f"unknown mode {mode}", file=sys.stderr)

@@ -45,6 +45,16 @@ Physical identity answers: "Which bytes are these?"
 
 ### Local semantic identity
 
+`work.movie.*` is **not** a URL. These three strings name different layers. Only the physical asset id is an HTTP key:
+
+| id | layer | used at |
+|----|-------|---------|
+| `m_6d5d84` | physical asset | `/item/{id}`, `/watch/{id}`, `/media/{id}` |
+| `work.movie.arrival-2016` | local work (`Entity.id`: type `Movie`, slug `arrival-2016`) | semantic graph only |
+| `tmdb:movie:329865` / `imdb:title:tt2543164` | provider identities | assertions / `sameAs`, never the local primary key |
+
+`work.movie.arrival-2016` answers “what thing does the user mean?” It is **not** `/item/work.movie.arrival-2016`. The `work.{kind}.{slug}` scheme is the combinatorial type registry (new kinds are new registry rows, not new URL prefixes). Do not put `work.movie` in routes.
+
 A local semantic entity is an application-owned stable identifier. Examples include:
 
 - `work.movie.arrival-2016`;
@@ -54,7 +64,7 @@ A local semantic entity is an application-owned stable identifier. Examples incl
 - `music.recording.so-what`;
 - `person.miles-davis`.
 
-The exact identifier format is implementation detail. It must be opaque at the HTTP boundary and stable across metadata refreshes and provider outages.
+The exact identifier format is implementation detail (`work.movie.*` above). It must be opaque at the HTTP boundary and stable across metadata refreshes and provider outages.
 
 Semantic identity answers: "What thing does the user mean?"
 
@@ -115,6 +125,52 @@ This distinction matters for music especially. An album concept, a particular re
 An asset is a local file or byte resource. It may represent a full work, one episode, one recording, a subtitle file, an artwork file, or another related resource.
 
 A local asset carries physical facts and references one or more semantic entities. It may also have a role such as `main`, `bonus`, `trailer`, `subtitle`, `cover`, or `fanart`.
+
+## Closed system, extendable set
+
+The core graph is identity and provenance only. Representations (HTML titles, JSON-LD, catalogue URLs) are not fields on `Entity`.
+
+The vocabulary is **closed in shape** and **open in membership**. A valid entity is the product:
+
+```text
+(type ∈ EntityType registry)
+  × (assertions whose property ∈ that type’s admitted set)
+  × (optional namespaced provider_ids)
+```
+
+New media kinds are new registry rows, not new snapshot keys or `Entity` dataclass fields. Unknown types in a snapshot are **kept** in the core graph and **skipped** by constructions that do not list them. Do not drop them. Episode/season graph is out of scope until those types are registered with constructions.
+
+### EntityType registry
+
+Each row has an id, the assertion properties it admits, and the constructions that may project it. Default rows:
+
+| id | admitted properties | constructions |
+|---|---|---|
+| `Movie` | `name`, `description` | `orisha.item`, `orisha.links`, `schema.org.jsonld` |
+| `MusicRecording` | `name`, `description` | `orisha.item`, `orisha.links`, `schema.org.jsonld` |
+| `TVSeries` | `name`, `description` | none (stub; fixture `series.fixture-demo` is kept, not projected) |
+
+Register further types (for example `TVEpisode`) later without changing `Entity`.
+
+### Assertion.property registry
+
+Allowed properties for this slice: `name`, `description`. Add rows later. Do not add ad-hoc fields on `Entity` for catalogue text.
+
+### Named constructions
+
+Stage 7 writes a top-level `projections[]` array of **named construction rows**, each `{ "construction": "...", "asset_id": "...", ...fields }`. Unlinked assets (demo `m_ca931e`) get no rows. Types not in a construction’s target set get no row for that construction.
+
+| construction | consumer | fields |
+|---|---|---|
+| `orisha.item` | item/watch HTML | `display_title`, `display_description` |
+| `orisha.links` | Link header + HTML chips | `tmdb_url`, `imdb_url` (omit empty; no row if both empty) |
+| `schema.org.jsonld` | `?format=jsonld` / Accept json | compact JSON-LD string |
+
+Orisha scrapes `projections[]` and merges rows by opaque `asset_id` into one join for those three constructions. Missing `projections`, missing construction keys, or missing rows for an asset = physical-only for that affordance. Handlers do not read `display_*` / `jsonld` off `Entity`, and they do not fall back to `Entity.title` as a catalogue name.
+
+Earlier snapshots stored `display_title`, `display_description`, and `jsonld` on `Entity`, then as a single mixed `projections[]` blob. **The leak is fixed:** those keys are ignored on `Entity` load; mixed blobs without `construction` are skipped.
+
+Python: registries and `project_all` live in [`scripts/semantic_schema.py`](../scripts/semantic_schema.py). [`scripts/project_semantic.py`](../scripts/project_semantic.py) runs every construction.
 
 ## Schema.org projection
 
@@ -283,7 +339,7 @@ physical manifest generation
 semantic snapshot
   -> works, releases, people, provider IDs, assertions
 projection/index
-  -> collection views and page-ready lookup tables
+  -> top-level projections[] of named constructions keyed by opaque asset id
 ```
 
 The request process may load a joined or precomputed projection for speed. The source layers should remain distinguishable so a changed provider description does not look like changed file bytes.
@@ -294,7 +350,7 @@ An asset can remain playable if semantic enrichment fails. A semantic entity can
 
 Local canonical URLs are authoritative for local navigation:
 
-- `/item/{id}` for a semantic item;
+- `/item/{id}` for an item page (`id` is the physical opaque asset id `m_*`, not `work.movie.*`);
 - `/media/{asset-id}` for bytes;
 - `/art/{asset-id}` for local artwork;
 - `/provider/{provider}/{namespace}/{value}` only if a provider view is intentionally exposed.
@@ -332,9 +388,9 @@ python3 scripts/enrich_tvdb.py --in fixtures/semantic.json --out /tmp/semantic.j
 3. Add deterministic fixture-based identity resolution. **Done** — `resolve_asset`.
 4. Add provider identity storage without provider API calls. **Done** — hand-linked IMDb/TVDB on fixtures.
 5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Started** — [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py) (preferred live path; fixture in CI). [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) remains for recorded TVDB payloads / optional v4 keys.
-6. Add provenance-aware conflict resolution.
-7. Precompute collection projections for Orisha requests.
-8. Expose provider links and capability affordances only when data and permission exist.
+6. Add provenance-aware conflict resolution. **Done** — `resolve_name_conflict` keeps both name assertions (`accepted` / `superseded`); `join_asset` looks up by opaque asset id.
+7. Precompute collection projections for Orisha requests. **Done** — [`scripts/project_semantic.py`](../scripts/project_semantic.py) runs named constructions (`orisha.item`, `orisha.links`, `schema.org.jsonld`) into top-level `projections[]` (not fields on `Entity`). Orisha loads `KORU_SEMANTIC` (default `data/semantic.json`) with the physical manifest. Missing `projections` or missing constructions is physical HTML only. First presentable is the local archive: `/` and `/library` list playable manifest files even when the fetched index is absent.
+8. Expose provider links and capability affordances only when data and permission exist. **Done** — item/watch HTML + `Link` related/alternate when the join hits; demo/unlinked assets stay physical-only.
 
 ## Invariants
 
@@ -347,3 +403,4 @@ python3 scripts/enrich_tvdb.py --in fixtures/semantic.json --out /tmp/semantic.j
 - A provider outage does not break direct playback or basic browsing.
 - Request handlers consume local projections, not remote provider APIs.
 - Schema.org is a projection vocabulary, not the complete internal schema.
+- `Entity` holds identity and provenance only; named constructions live in `projections[]`. **Fixed** — the representation leak into the graph is closed. The type/property set is extendable via registry rows.

@@ -23,7 +23,7 @@ Do not native-cross-compile `media-server` inside [spksrc](https://github.com/Sy
 
 | DSM side | Container | Notes |
 |----------|-----------|--------|
-| Shared folder (wizard) | `/media` | Library; prefer read-only |
+| Shared folder with `movies/` `shows/` `music/` (wizard) | `/media` | Library; prefer read-only; one bind |
 | Package data dir | `/data` | `manifest.json` (writable) |
 | Host port (wizard) | `3090` | Process listen port is fixed in-container |
 

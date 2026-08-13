@@ -6,6 +6,14 @@ HTML is the default representation for human navigation. Clients may request JSO
 
 Every representation should have a canonical URL and may include `Link` headers such as `rel="self"`, `rel="alternate"`, `rel="up"`, or `rel="related"`.
 
+`GET /item/{id}` is HTML by default. When a semantic join exists, the same URL also offers JSON-LD:
+
+- `GET /item/{id}?format=jsonld` or `Accept: application/ld+json` / `Accept: application/json`
+- `Link: </item/{id}?format=jsonld>; rel="alternate"; type="application/ld+json"`
+- Provider catalogue URLs (TMDB, IMDb) appear as HTML links and `rel="related"` only when present on the local snapshot
+
+When a join hits, item/watch HTML splits **catalogue** (prefetched named constructions: `orisha.item` display strings, `orisha.links` provider URLs) from **local archive** (filename, path, container, probe, bytes). Orisha scrapes `projections[]` and merges by asset id; handlers never call TMDB or ffprobe, and they do not read representation fields off `Entity`. Missing `semantic.json`, an empty `projections[]`, or missing constructions leaves physical item HTML unchanged and playback intact. `/` and `/library` always list local manifest files; catalogue chips appear only when those constructions exist.
+
 ## Methods
 
 - `GET` retrieves a representation or media bytes.
@@ -35,6 +43,6 @@ Mutating controls are rendered only when authorized. Absence of a form is meanin
 
 ## Enhanced requests
 
-A browser enhancement may request a fragment using a normal `GET` plus an opt-in header. The server returns a fragment with a clear target identity and may return a redirect for navigation requests. The complete HTML response remains the fallback for clients that do not understand the enhancement.
+An enhanced client may request a fragment using a normal `GET` plus an opt-in header. The server returns a fragment with a clear target identity and may return a redirect for navigation requests. The complete HTML response remains the fallback for clients that do not understand the enhancement.
 
 No endpoint should require HTMX, Koru-generated JavaScript, or a custom client merely to browse or play a supported file.
