@@ -18,6 +18,36 @@ python3 scripts/test_enrich_tmdb.py -v
 echo "== unit: manifest parse =="
 python3 scripts/test_manifest_parse.py -v
 
+echo "== unit: json publish (vendor/json via src/json usage, or Python fallback) =="
+jp=0
+bash scripts/build-json-publish.sh || jp=$?
+if [[ "$jp" -eq 0 ]]; then
+  echo "json-publish built (vendor/json)"
+elif [[ "$jp" -eq 2 ]]; then
+  echo "skip json-publish — Python fallback (docs/current-apis.md)"
+else
+  echo "json-publish compile/link failed — Python fallback (docs/current-apis.md)"
+fi
+python3 scripts/test_json_publish.py -v
+echo "== unit: json codec (parse + emit) =="
+if [[ -f bin/json-publish ]]; then
+  python3 scripts/test_json.py -v
+else
+  echo "FAIL: bin/json-publish required for json codec tests" >&2
+  exit 1
+fi
+echo "== unit: json koru (yyjson tests/basic+features port) =="
+jk=0
+bash scripts/test_json_koru.sh || jk=$?
+if [[ "$jk" -eq 0 ]]; then
+  echo "json koru tests OK"
+elif [[ "$jk" -eq 2 ]]; then
+  echo "skip json koru tests — no koruc"
+else
+  echo "FAIL: json koru tests" >&2
+  exit 1
+fi
+
 if [[ ! -f bin/media-server ]]; then
   echo "bin/media-server missing — run bash scripts/build-docker.sh" >&2
   exit 2

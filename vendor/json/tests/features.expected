@@ -1,0 +1,10 @@
+x = 1
+y = 2
+age as string: wrong-type
+missing: not-found
+second tag: computing
+index out of range
+pi = 3.5
+active = true
+bad json at byte 1: unexpected character, expected a string key
+done

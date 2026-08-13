@@ -1,0 +1,74 @@
+// Port of W:\src\koru-libs\yyjson\tests\features.kz against vendor/json.
+// Phantom Doc/Builder negatives are not applicable (no Doc<open!>).
+//
+// EXPECTED output:
+//   x = 1
+//   y = 2
+//   age as string: wrong-type
+//   missing: not-found
+//   second tag: computing
+//   index out of range
+//   pi = 3.5
+//   active = true
+//   bad json at byte 1: unexpected character, expected a string key
+//   done
+
+~import json
+~import std/io
+
+~json:parse(text: "{\"x\": 1, \"y\": 2}")
+| ok doc |> json:root(doc): root_v |> json:object.each(doc, v: root_v)
+    ! entry e |> json:as.int(doc, v: e.value.?)
+        | ok n |> std/io:print.ln("{{ e.key:s }} = {{ n:d }}")
+        | wrong-type |> std/io:print.ln("{{ e.key:s }}: wrong type")
+    | done |> json:close(doc)
+    | not-an-object |> json:close(doc) |> std/io:print.ln("not an object")
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"age\": 36}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "age")
+    | found age_v |> json:as.string(doc, v: age_v)
+        | ok _ |> std/io:print.ln("age as string: SHOULD NOT HAPPEN") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("age as string: wrong-type") |> json:close(doc)
+    | not-found |> std/io:print.ln("age: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"age\": 36}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "missing")
+    | found _ |> std/io:print.ln("missing: SHOULD NOT HAPPEN") |> json:close(doc)
+    | not-found |> std/io:print.ln("missing: not-found") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "[\"math\", \"computing\"]")
+| ok doc |> json:root(doc): root_v |> json:array.get(doc, v: root_v, index: 1)
+    | found tag_v |> json:as.string(doc, v: tag_v)
+        | ok s |> std/io:print.ln("second tag: {{ s:s }}") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("second tag: wrong type") |> json:close(doc)
+    | out-of-range |> std/io:print.ln("index out of range") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "[\"math\", \"computing\"]")
+| ok doc |> json:root(doc): root_v |> json:array.get(doc, v: root_v, index: 5)
+    | found _ |> std/io:print.ln("SHOULD NOT HAPPEN") |> json:close(doc)
+    | out-of-range |> std/io:print.ln("index out of range") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"pi\": 3.5}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "pi")
+    | found pi_v |> json:as.double(doc, v: pi_v)
+        | ok f |> std/io:print.ln("pi = {{ f:any }}") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("pi: wrong type") |> json:close(doc)
+    | not-found |> std/io:print.ln("pi: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"active\": true}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "active")
+    | found active_v |> json:as.bool(doc, v: active_v)
+        | ok b |> std/io:print.ln("active = {{ b:any }}") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("active: wrong type") |> json:close(doc)
+    | not-found |> std/io:print.ln("active: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{bad}")
+| ok doc |> json:close(doc) |> std/io:print.ln("SHOULD NOT PARSE")
+| err e |> std/io:print.ln("bad json at byte {{ e.pos:d }}: {{ e.msg:s }}") |> std/io:print.ln("done")

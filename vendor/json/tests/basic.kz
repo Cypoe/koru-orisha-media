@@ -1,0 +1,39 @@
+// Port of W:\src\koru-libs\yyjson\tests\basic.kz against vendor/json.
+// Same flows and expected output; import json (no libyyjson, no Doc<open!>).
+//
+// EXPECTED output:
+//   name: ada
+//   age: 36
+//   tag: math
+//   tag: computing
+//   done
+
+~import json
+~import std/io
+
+~json:parse(text: "{\"name\": \"ada\", \"age\": 36}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "name")
+    | found name_v |> json:as.string(doc, v: name_v)
+        | ok name |> std/io:print.ln("name: {{ name:s }}") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("name: wrong type") |> json:close(doc)
+    | not-found |> std/io:print.ln("name: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"name\": \"ada\", \"age\": 36}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "age")
+    | found age_v |> json:as.int(doc, v: age_v)
+        | ok age |> std/io:print.ln("age: {{ age:d }}") |> json:close(doc)
+        | wrong-type |> std/io:print.ln("age: wrong type") |> json:close(doc)
+    | not-found |> std/io:print.ln("age: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+~json:parse(text: "{\"tags\": [\"math\", \"computing\"]}")
+| ok doc |> json:root(doc): root_v |> json:object.get(doc, v: root_v, key: "tags")
+    | found tags_v |> json:array.each(doc, v: tags_v)
+        ! item t |> json:as.string(doc, v: t)
+            | ok s |> std/io:print.ln("tag: {{ s:s }}")
+            | wrong-type |> std/io:print.ln("tag: wrong type")
+        | done |> json:close(doc) |> std/io:print.ln("done")
+        | not-an-array |> json:close(doc) |> std/io:print.ln("tags: not an array")
+    | not-found |> std/io:print.ln("tags: missing") |> json:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")

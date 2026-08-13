@@ -1,0 +1,436 @@
+// json — tiny parse + emit (not koru/yyjson). No pkg-config / libyyjson.
+// Request handlers do not import this module.
+
+const std = @import("std");
+
+pub const Json = union(enum) {
+    null,
+    boolean: bool,
+    number: []const u8,
+    string: []const u8,
+    array: []Json,
+    object: []Kv,
+};
+
+pub const Kv = struct { key: []const u8, value: Json };
+
+pub const ParseError = error{ InvalidJson, OutOfMemory };
+
+pub const Diag = struct {
+    pos: usize = 0,
+    msg: []const u8 = "invalid JSON",
+};
+
+const Parser = struct {
+    text: []const u8,
+    i: usize = 0,
+    allocator: std.mem.Allocator,
+    err_pos: usize = 0,
+    err_msg: []const u8 = "invalid JSON",
+
+    fn peek(self: Parser) ?u8 {
+        if (self.i >= self.text.len) return null;
+        return self.text[self.i];
+    }
+
+    fn skip(self: *Parser) void {
+        while (self.i < self.text.len) {
+            const ch = self.text[self.i];
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') {
+                self.i += 1;
+            } else break;
+        }
+    }
+
+    fn fail(self: *Parser, msg: []const u8) ParseError {
+        self.err_pos = self.i;
+        self.err_msg = msg;
+        return error.InvalidJson;
+    }
+
+    fn eat(self: *Parser, want: u8) ParseError!void {
+        self.skip();
+        if (self.peek() != want) return self.fail("unexpected character");
+        self.i += 1;
+    }
+};
+
+fn hexVal(ch: u8) ParseError!u8 {
+    if (ch >= '0' and ch <= '9') return ch - '0';
+    if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
+    return error.InvalidJson;
+}
+
+fn appendUtf8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, cp: u21) ParseError!void {
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidJson;
+    out.appendSlice(allocator, buf[0..n]) catch return error.OutOfMemory;
+}
+
+fn parseString(p: *Parser) ParseError![]const u8 {
+    try p.eat('"');
+    var out: std.ArrayList(u8) = .empty;
+    while (p.i < p.text.len) {
+        const ch = p.text[p.i];
+        p.i += 1;
+        if (ch == '"') return out.toOwnedSlice(p.allocator) catch return error.OutOfMemory;
+        if (ch == '\\') {
+            if (p.i >= p.text.len) return error.InvalidJson;
+            const e = p.text[p.i];
+            p.i += 1;
+            switch (e) {
+                '"', '\\', '/' => out.append(p.allocator, e) catch return error.OutOfMemory,
+                'b' => out.append(p.allocator, 0x08) catch return error.OutOfMemory,
+                'f' => out.append(p.allocator, 0x0c) catch return error.OutOfMemory,
+                'n' => out.append(p.allocator, '\n') catch return error.OutOfMemory,
+                'r' => out.append(p.allocator, '\r') catch return error.OutOfMemory,
+                't' => out.append(p.allocator, '\t') catch return error.OutOfMemory,
+                'u' => {
+                    if (p.i + 4 > p.text.len) return error.InvalidJson;
+                    var cp: u21 = 0;
+                    var h: usize = 0;
+                    while (h < 4) : (h += 1) {
+                        cp = (cp << 4) | try hexVal(p.text[p.i]);
+                        p.i += 1;
+                    }
+                    try appendUtf8(&out, p.allocator, cp);
+                },
+                else => return error.InvalidJson,
+            }
+            continue;
+        }
+        if (ch < 0x20) return error.InvalidJson;
+        out.append(p.allocator, ch) catch return error.OutOfMemory;
+    }
+    return error.InvalidJson;
+}
+
+fn parseNumber(p: *Parser) ParseError![]const u8 {
+    const start = p.i;
+    if (p.peek() == '-') p.i += 1;
+    if (p.i >= p.text.len or p.text[p.i] < '0' or p.text[p.i] > '9') return error.InvalidJson;
+    if (p.text[p.i] == '0') {
+        p.i += 1;
+        if (p.i < p.text.len and p.text[p.i] >= '0' and p.text[p.i] <= '9') return error.InvalidJson;
+    } else {
+        while (p.i < p.text.len and p.text[p.i] >= '0' and p.text[p.i] <= '9') p.i += 1;
+    }
+    if (p.i < p.text.len and p.text[p.i] == '.') {
+        p.i += 1;
+        const frac = p.i;
+        while (p.i < p.text.len and p.text[p.i] >= '0' and p.text[p.i] <= '9') p.i += 1;
+        if (p.i == frac) return error.InvalidJson;
+    }
+    if (p.i < p.text.len and (p.text[p.i] == 'e' or p.text[p.i] == 'E')) {
+        p.i += 1;
+        if (p.i < p.text.len and (p.text[p.i] == '+' or p.text[p.i] == '-')) p.i += 1;
+        const exp = p.i;
+        while (p.i < p.text.len and p.text[p.i] >= '0' and p.text[p.i] <= '9') p.i += 1;
+        if (p.i == exp) return error.InvalidJson;
+    }
+    const raw = p.text[start..p.i];
+    const copy = p.allocator.alloc(u8, raw.len) catch return error.OutOfMemory;
+    @memcpy(copy, raw);
+    return copy;
+}
+
+fn parseArray(p: *Parser) ParseError![]Json {
+    try p.eat('[');
+    p.skip();
+    var items: std.ArrayList(Json) = .empty;
+    if (p.peek() == ']') {
+        p.i += 1;
+        return items.toOwnedSlice(p.allocator) catch return error.OutOfMemory;
+    }
+    while (true) {
+        items.append(p.allocator, try parseValue(p)) catch return error.OutOfMemory;
+        p.skip();
+        if (p.peek() == ']') {
+            p.i += 1;
+            return items.toOwnedSlice(p.allocator) catch return error.OutOfMemory;
+        }
+        try p.eat(',');
+        p.skip();
+        if (p.peek() == ']') return error.InvalidJson;
+    }
+}
+
+fn parseObject(p: *Parser) ParseError![]Kv {
+    try p.eat('{');
+    p.skip();
+    var items: std.ArrayList(Kv) = .empty;
+    if (p.peek() == '}') {
+        p.i += 1;
+        return items.toOwnedSlice(p.allocator) catch return error.OutOfMemory;
+    }
+    while (true) {
+        p.skip();
+        if (p.peek() != '"') return p.fail("unexpected character, expected a string key");
+        const key = try parseString(p);
+        try p.eat(':');
+        const value = try parseValue(p);
+        items.append(p.allocator, .{ .key = key, .value = value }) catch return error.OutOfMemory;
+        p.skip();
+        if (p.peek() == '}') {
+            p.i += 1;
+            return items.toOwnedSlice(p.allocator) catch return error.OutOfMemory;
+        }
+        try p.eat(',');
+        p.skip();
+        if (p.peek() == '}') return error.InvalidJson;
+    }
+}
+
+fn parseValue(p: *Parser) ParseError!Json {
+    p.skip();
+    const ch = p.peek() orelse return p.fail("unexpected end of input");
+    if (ch == '"') return .{ .string = try parseString(p) };
+    if (ch == '{') return .{ .object = try parseObject(p) };
+    if (ch == '[') return .{ .array = try parseArray(p) };
+    if (ch == 't') {
+        if (p.i + 4 > p.text.len or !std.mem.eql(u8, p.text[p.i .. p.i + 4], "true")) return p.fail("unexpected character");
+        p.i += 4;
+        return .{ .boolean = true };
+    }
+    if (ch == 'f') {
+        if (p.i + 5 > p.text.len or !std.mem.eql(u8, p.text[p.i .. p.i + 5], "false")) return p.fail("unexpected character");
+        p.i += 5;
+        return .{ .boolean = false };
+    }
+    if (ch == 'n') {
+        if (p.i + 4 > p.text.len or !std.mem.eql(u8, p.text[p.i .. p.i + 4], "null")) return p.fail("unexpected character");
+        p.i += 4;
+        return .null;
+    }
+    if (ch == '-' or (ch >= '0' and ch <= '9')) return .{ .number = try parseNumber(p) };
+    return p.fail("unexpected character");
+}
+
+pub fn parseJsonDiag(allocator: std.mem.Allocator, text: []const u8, diag: *Diag) ParseError!Json {
+    var p = Parser{ .text = text, .allocator = allocator };
+    const v = parseValue(&p) catch |err| {
+        diag.pos = p.err_pos;
+        diag.msg = p.err_msg;
+        return err;
+    };
+    p.skip();
+    if (p.i != p.text.len) {
+        diag.pos = p.i;
+        diag.msg = "unexpected trailing data";
+        return error.InvalidJson;
+    }
+    return v;
+}
+
+pub fn parseJson(allocator: std.mem.Allocator, text: []const u8) ParseError!Json {
+    var diag: Diag = .{};
+    return parseJsonDiag(allocator, text, &diag);
+}
+
+pub fn appendEscaped(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) void {
+    out.append(allocator, '"') catch {};
+    for (s) |ch| {
+        switch (ch) {
+            '"' => out.appendSlice(allocator, "\\\"") catch {},
+            '\\' => out.appendSlice(allocator, "\\\\") catch {},
+            0x08 => out.appendSlice(allocator, "\\b") catch {},
+            0x0c => out.appendSlice(allocator, "\\f") catch {},
+            '\n' => out.appendSlice(allocator, "\\n") catch {},
+            '\r' => out.appendSlice(allocator, "\\r") catch {},
+            '\t' => out.appendSlice(allocator, "\\t") catch {},
+            else => {
+                if (ch < 0x20) {
+                    const hex = "0123456789abcdef";
+                    var buf = [_]u8{ '\\', 'u', '0', '0', hex[ch >> 4], hex[ch & 0x0f] };
+                    out.appendSlice(allocator, &buf) catch {};
+                } else {
+                    out.append(allocator, ch) catch {};
+                }
+            },
+        }
+    }
+    out.append(allocator, '"') catch {};
+}
+
+fn emitValue(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: Json) void {
+    switch (v) {
+        .null => out.appendSlice(allocator, "null") catch {},
+        .boolean => |b| out.appendSlice(allocator, if (b) "true" else "false") catch {},
+        .number => |n| out.appendSlice(allocator, n) catch {},
+        .string => |s| appendEscaped(out, allocator, s),
+        .array => |arr| {
+            out.append(allocator, '[') catch {};
+            for (arr, 0..) |item, i| {
+                if (i > 0) out.append(allocator, ',') catch {};
+                emitValue(out, allocator, item);
+            }
+            out.append(allocator, ']') catch {};
+        },
+        .object => |obj| {
+            out.append(allocator, '{') catch {};
+            for (obj, 0..) |kv, i| {
+                if (i > 0) out.append(allocator, ',') catch {};
+                appendEscaped(out, allocator, kv.key);
+                out.append(allocator, ':') catch {};
+                emitValue(out, allocator, kv.value);
+            }
+            out.append(allocator, '}') catch {};
+        },
+    }
+}
+
+pub fn emitJson(allocator: std.mem.Allocator, v: Json) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    emitValue(&out, allocator, v);
+    out.append(allocator, '\n') catch {};
+    return out.toOwnedSlice(allocator) catch "{}\n";
+}
+
+pub const Value = Json;
+
+pub const Doc = struct {
+    root: Json,
+    allocator: std.mem.Allocator,
+};
+
+pub const Entry = struct {
+    key: []const u8,
+    value: ?*Value,
+};
+
+fn deinitJson(allocator: std.mem.Allocator, v: Json) void {
+    switch (v) {
+        .string => |s| allocator.free(s),
+        .number => |n| allocator.free(n),
+        .array => |arr| {
+            for (arr) |elem| deinitJson(allocator, elem);
+            allocator.free(arr);
+        },
+        .object => |obj| {
+            for (obj) |kv| {
+                allocator.free(kv.key);
+                deinitJson(allocator, kv.value);
+            }
+            allocator.free(obj);
+        },
+        else => {},
+    }
+}
+
+~proc parse|zig {
+    const allocator = std.heap.page_allocator;
+    var diag: Diag = .{};
+    const val = parseJsonDiag(allocator, text, &diag) catch |e| {
+        if (e == error.OutOfMemory) {
+            return .{ .err = .{ .code = 2, .pos = 0, .msg = "out of memory" } };
+        }
+        return .{ .err = .{ .code = 1, .pos = diag.pos, .msg = diag.msg } };
+    };
+    const d = allocator.create(Doc) catch @panic("json: OOM allocating Doc");
+    d.* = .{ .root = val, .allocator = allocator };
+    return .{ .ok = d };
+}
+
+~proc close|zig {
+    deinitJson(doc.allocator, doc.root);
+    doc.allocator.destroy(doc);
+}
+
+~proc root|zig {
+    return &doc.root;
+}
+
+~proc object.get|zig {
+    _ = doc;
+    switch (v.*) {
+        .object => |obj| {
+            for (obj) |*kv| {
+                if (std.mem.eql(u8, kv.key, key)) return .{ .found = &kv.value };
+            }
+            return .{ .not_found = .{} };
+        },
+        else => return .{ .not_found = .{} },
+    }
+}
+
+~proc array.get|zig {
+    _ = doc;
+    if (index < 0) return .{ .out_of_range = .{} };
+    switch (v.*) {
+        .array => |arr| {
+            const i: usize = @intCast(index);
+            if (i >= arr.len) return .{ .out_of_range = .{} };
+            return .{ .found = &arr[i] };
+        },
+        else => return .{ .out_of_range = .{} },
+    }
+}
+
+~proc array.each|zig {
+    _ = doc;
+    switch (v.*) {
+        .array => |arr| {
+            for (arr) |*elem| {
+                item(elem);
+            }
+            return .{ .done = .{} };
+        },
+        else => return .{ .not_an_array = .{} },
+    }
+}
+
+~proc object.each|zig {
+    const j = @import("root").koru_json;
+    _ = doc;
+    switch (v.*) {
+        .object => |obj| {
+            var __entry: j.Entry = undefined;
+            for (obj) |*kv| {
+                __entry = j.Entry{ .key = kv.key, .value = &kv.value };
+                entry(&__entry);
+            }
+            return .{ .done = .{} };
+        },
+        else => return .{ .not_an_object = .{} },
+    }
+}
+
+~proc as.string|zig {
+    _ = doc;
+    switch (v.*) {
+        .string => |s| return .{ .ok = s },
+        else => return .{ .wrong_type = .{} },
+    }
+}
+
+~proc as.int|zig {
+    _ = doc;
+    switch (v.*) {
+        .number => |n| {
+            if (std.mem.indexOfAny(u8, n, ".eE") != null) return .{ .wrong_type = .{} };
+            const parsed = std.fmt.parseInt(i64, n, 10) catch return .{ .wrong_type = .{} };
+            return .{ .ok = parsed };
+        },
+        else => return .{ .wrong_type = .{} },
+    }
+}
+
+~proc as.double|zig {
+    _ = doc;
+    switch (v.*) {
+        .number => |n| {
+            const parsed = std.fmt.parseFloat(f64, n) catch return .{ .wrong_type = .{} };
+            return .{ .ok = parsed };
+        },
+        else => return .{ .wrong_type = .{} },
+    }
+}
+
+~proc as.bool|zig {
+    _ = doc;
+    switch (v.*) {
+        .boolean => |b| return .{ .ok = b },
+        else => return .{ .wrong_type = .{} },
+    }
+}

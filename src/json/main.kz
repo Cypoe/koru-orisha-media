@@ -1,0 +1,64 @@
+// json-publish CLI — usage of vendor/json. Fixture shapes are app schema.
+
+const std = @import("std");
+
+fn appendKey(out: *std.ArrayList(u8), allocator: std.mem.Allocator, key: []const u8) void {
+    koru_json.appendEscaped(out, allocator, key);
+    out.appendSlice(allocator, ": ") catch {};
+}
+
+fn emitEntries(allocator: std.mem.Allocator, id: []const u8, kind: []const u8, title: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "{\n  ") catch {};
+    appendKey(&out, allocator, "entries");
+    out.appendSlice(allocator, "[\n    {\n      ") catch {};
+    appendKey(&out, allocator, "id");
+    koru_json.appendEscaped(&out, allocator, id);
+    out.appendSlice(allocator, ",\n      ") catch {};
+    appendKey(&out, allocator, "kind");
+    koru_json.appendEscaped(&out, allocator, kind);
+    out.appendSlice(allocator, ",\n      ") catch {};
+    appendKey(&out, allocator, "title");
+    koru_json.appendEscaped(&out, allocator, title);
+    out.appendSlice(allocator, "\n    }\n  ]\n}\n") catch {};
+    return out.toOwnedSlice(allocator) catch "{}\n";
+}
+
+fn emitProjections(allocator: std.mem.Allocator, asset_id: []const u8, construction: []const u8, display_title: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "{\n  ") catch {};
+    appendKey(&out, allocator, "projections");
+    out.appendSlice(allocator, "[\n    {\n      ") catch {};
+    appendKey(&out, allocator, "asset_id");
+    koru_json.appendEscaped(&out, allocator, asset_id);
+    out.appendSlice(allocator, ",\n      ") catch {};
+    appendKey(&out, allocator, "construction");
+    koru_json.appendEscaped(&out, allocator, construction);
+    out.appendSlice(allocator, ",\n      ") catch {};
+    appendKey(&out, allocator, "display_title");
+    koru_json.appendEscaped(&out, allocator, display_title);
+    out.appendSlice(allocator, "\n    }\n  ]\n}\n") catch {};
+    return out.toOwnedSlice(allocator) catch "{}\n";
+}
+
+fn failParse() noreturn {
+    const msg = "json parse error\n";
+    _ = std.fs.File.stderr().write(msg) catch {};
+    std.process.exit(1);
+}
+
+~proc emit|zig {
+    const allocator = std.heap.c_allocator;
+    var args = std.process.args();
+    _ = args.next();
+    const cmd = args.next() orelse "emit-entries";
+    if (std.mem.eql(u8, cmd, "parse")) {
+        const raw = std.fs.File.stdin().readToEndAlloc(allocator, 8 * 1024 * 1024) catch failParse();
+        const val = koru_json.parseJson(allocator, raw) catch failParse();
+        return koru_json.emitJson(allocator, val);
+    }
+    if (std.mem.eql(u8, cmd, "emit-projections")) {
+        return emitProjections(allocator, "m_fixture", "orisha.item", "Demo");
+    }
+    return emitEntries(allocator, "m_fixture", "movie", "demo");
+}
