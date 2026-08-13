@@ -58,9 +58,9 @@ One patch per bullet. Not a dump of the media app. Details: [vendor/README.md](.
 2. **`STREAM:v1` + raw `HTTP/1.` in `send`** — bounded chunked file send + pre-rendered heads. Tests: 206/HEAD/empty/one-byte/416. Producer stays app.
 3. **`run-accept-loop` + idle + `streamsBusy()`** — Zig serve path with STREAM/Request. Tests: `test_idle.sh`, `test_reload.sh`.
 4. **Keep `answer|zig` on the same parse** — already unified here; pump `reply` port is later.
-5. **Pump sibling emit (koruc)** — not an Orisha logic bug. Canonical `serve` links; this vendor’s `index.kz` + sibling `pump.kz` does not (`ambiguous std` / `duplicate koru_pump`). Writeup + repro: [upstream-pump-emit.md](upstream-pump-emit.md). Filed: [korulang/koru#2](https://github.com/korulang/koru/issues/2), defensive [korulang/orisha#1](https://github.com/korulang/orisha/issues/1) (`pump_std` like `router_std`).
+5. **Pump sibling emit (koruc)** — original `lib/` + `orisha:serve` fails (`duplicate koru_pump`); this vendor’s `index.kz` + unused sibling `pump.kz` fails (`ambiguous std`). Tiny 110_030-shaped packages still link. Writeup + repro: [upstream-pump-emit.md](upstream-pump-emit.md). Filed: [korulang/koru#2](https://github.com/korulang/koru/issues/2), defensive [korulang/orisha#1](https://github.com/korulang/orisha/issues/1) (`pump_std` like `router_std`; does not fix the serve double-emit).
 
-**Post-rebuild probe (Orisha `main`, koru `5c64de27`, fresh `koruc`):** full pump is at `vendor/upstream/orisha-pump/` (not beside `index.k`). Minimal `orisha:serve` against upstream lib links. This media binary still cannot compile pump into `import orisha`. Details and repro: [upstream-pump-emit.md](upstream-pump-emit.md). STREAM/Request remain on `send`.
+**Post-rebuild probe (Orisha `661fa9c`, koru `5c64de27`, koruc 0.1.7):** full pump is at `vendor/upstream/orisha-pump/` (not beside `index.k`). Minimal `orisha:serve` against upstream `lib/` does **not** link (`duplicate koru_pump`). This media binary still cannot compile pump into `import orisha`. Details and repro: [upstream-pump-emit.md](upstream-pump-emit.md). STREAM/Request remain on `send`.
 
 Media HTML, graph scrape, and JSON-LD *routing* stay out of Orisha.
 

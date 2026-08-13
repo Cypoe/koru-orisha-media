@@ -12,7 +12,7 @@ Upstream Orisha (`W:\src\orisha\lib`) ships pump as the main development line (`
 | `vendor/orisha/index.k` | This app's `run-accept-loop` (not `orisha:serve`) |
 | `vendor/orisha/index.kz` | Request parse / STREAM `send` / idle (vendor extras) |
 
-The files cannot sit next to `index.k` in `vendor/orisha/`. `import orisha` maps at the directory; a sibling `pump.kz` is then merged into the same emitted struct as `index.kz` (`ambiguous reference` on `std` — `routing.kz` avoids this by naming `router_std`). `import orisha/pump` makes a nested module, and then koruc double-emits that companion into `koru_pump`. A minimal `orisha:serve` app against `W:\src\orisha\lib` links; this media binary hits both bugs.
+The files cannot sit next to `index.k` in `vendor/orisha/`. `import orisha` maps at the directory; a sibling `pump.kz` is then merged into the same emitted struct as `index.kz` (`ambiguous reference` on `std` — `routing.kz` avoids this by naming `router_std`). `import orisha/pump` makes a nested module, and then koruc double-emits that companion into `koru_pump`. Original `W:\src\orisha\lib` + canonical `orisha:serve` hits that second failure on koruc 0.1.7 (`duplicate struct member` inside `koru_pump`); this media binary also hits the unused-sibling `ambiguous std` shape. See [docs/upstream-pump-emit.md](../docs/upstream-pump-emit.md).
 
 Omitting pump from git was the wrong answer. Compiling it into this binary is still unsafe.
 

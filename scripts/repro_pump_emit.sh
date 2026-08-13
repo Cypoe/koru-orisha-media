@@ -190,8 +190,8 @@ write_orisha_main_serve() {
 import orisha
 orisha:handler -> { status: 200, body: "ok", content_type: "text/plain" }
 orisha:serve(port: 3090)
-| shutdown s |> _
-| failed f |> _
+| shutdown _ |> _
+| failed _ |> _
 EOF
 }
 
@@ -271,7 +271,45 @@ setup_I() {
   write_orisha_main_serve
 }
 
-echo "=== I: upstream orisha lib + serve — control ==="
-run_orisha_case I "should-link" 'setup_I'
+echo "=== I: upstream orisha lib + serve ==="
+run_orisha_case I "duplicate-koru_pump" 'setup_I'
+
+ORISHA_ROOT="${ORISHA_ROOT:-}"
+if [[ -z "$ORISHA_ROOT" && -d /src/orisha/lib ]]; then
+  ORISHA_ROOT=/src/orisha
+elif [[ -z "$ORISHA_ROOT" && -d /mnt/w/src/orisha/lib ]]; then
+  ORISHA_ROOT=/mnt/w/src/orisha
+fi
+if [[ -n "$ORISHA_ROOT" && -d "$ORISHA_ROOT/lib" ]]; then
+echo "=== INTREE: original orisha tree (orisha=lib) + serve ==="
+  tmp=$(mktemp -d /tmp/pump-emit-INTREE.XXXXXX)
+  CASE_DIR="$tmp"
+  echo "ORISHA_ROOT=$ORISHA_ROOT"
+  mkdir -p "$tmp"
+  cp -a "$ORISHA_ROOT/lib" "$tmp/lib"
+  cat >"$tmp/koru.json" <<EOF
+{
+  "name": "pump-emit-INTREE",
+  "version": "0.0.1",
+  "paths": { "std": "$STD", "orisha": "lib" }
+}
+EOF
+  write_orisha_main_serve
+  (cd "$tmp" && "$KORUC" main.k >"$tmp/log" 2>&1)
+  ec=$?
+  dup=$(grep -c "duplicate struct member" "$tmp/log" || true)
+  amb=$(grep -c "ambiguous reference" "$tmp/log" || true)
+  printf 'CASE INTREE expect=duplicate-koru_pump exit=%s duplicate=%s ambiguous=%s dir=%s\n' \
+    "$ec" "$dup" "$amb" "$tmp"
+  grep -E "duplicate struct member|ambiguous reference" "$tmp/log" | head -8 || true
+  if [[ "$ec" -ne 0 && "$dup" -eq 0 && "$amb" -eq 0 ]]; then
+    echo "  --- other failure ---"
+    grep -E "error:|✗" "$tmp/log" | head -15 || tail -15 "$tmp/log"
+  fi
+  if [[ -d /work ]]; then
+    cp -f "$tmp/log" /work/pump-emit-INTREE.log || true
+  fi
+  echo
+fi
 fi
 
