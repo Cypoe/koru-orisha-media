@@ -45,8 +45,9 @@ cat > "$BUILD/koru.json" <<EOF
   "description": "Direct-play personal media library on Koru/Orisha",
   "paths": {
     "std": "${HOME}/src/koru-build/koru_std",
-    "orisha": "./vendor/orisha-lib",
-    "koru": "/mnt/w/src/koru-libs"
+    "orisha": "./vendor/orisha",
+    "koru": "./vendor/koru-libs",
+    "media": "./src"
   }
 }
 EOF

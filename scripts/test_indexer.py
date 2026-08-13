@@ -26,7 +26,11 @@ class IndexerTests(unittest.TestCase):
             self.assertIn("entries", data)
             self.assertGreaterEqual(len(data["entries"]), 1)
             paths = {e["path"] for e in data["entries"]}
-            self.assertIn("clips/demo.mp4", paths)
+            self.assertIn("movies/demo.mp4", paths)
+            self.assertIn("music/beep.wav", paths)
+            kinds = {e["path"]: e["kind"] for e in data["entries"]}
+            self.assertEqual(kinds["movies/demo.mp4"], "movie")
+            self.assertEqual(kinds["music/beep.wav"], "audio")
             for e in data["entries"]:
                 self.assertTrue(e["id"].startswith("m_"))
                 self.assertNotIn("..", e["path"])
@@ -37,9 +41,9 @@ class IndexerTests(unittest.TestCase):
     def test_year_from_stem(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            (clips / "Arrival (2016).mp4").write_bytes(b"x")
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            (movies / "Arrival (2016).mp4").write_bytes(b"x")
             out = Path(td) / "manifest.json"
             subprocess.check_call(
                 [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
@@ -50,43 +54,43 @@ class IndexerTests(unittest.TestCase):
     def test_poster_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            (clips / "show.mp4").write_bytes(b"vid")
-            (clips / "show.jpg").write_bytes(b"\xff\xd8fake")
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            (movies / "show.mp4").write_bytes(b"vid")
+            (movies / "show.jpg").write_bytes(b"\xff\xd8fake")
             out = Path(td) / "manifest.json"
             subprocess.check_call(
                 [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
             )
             data = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(len(data["entries"]), 1)
-            self.assertEqual(data["entries"][0]["poster"], "clips/show.jpg")
+            self.assertEqual(data["entries"][0]["poster"], "movies/show.jpg")
             self.assertEqual(data["entries"][0]["container"], "mp4")
 
     def test_subtitle_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            (clips / "show.mp4").write_bytes(b"vid")
-            (clips / "show.vtt").write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n", encoding="utf-8")
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            (movies / "show.mp4").write_bytes(b"vid")
+            (movies / "show.vtt").write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHi\n", encoding="utf-8")
             out = Path(td) / "manifest.json"
             subprocess.check_call(
                 [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
             )
             data = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(len(data["entries"]), 1)
-            self.assertEqual(data["entries"][0]["subtitle"], "clips/show.vtt")
+            self.assertEqual(data["entries"][0]["subtitle"], "movies/show.vtt")
             # .vtt is not indexed as its own media entry
             paths = {e["path"] for e in data["entries"]}
-            self.assertNotIn("clips/show.vtt", paths)
+            self.assertNotIn("movies/show.vtt", paths)
 
     def test_audio_kind_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            (clips / "tone.wav").write_bytes(b"RIFF")
+            music = root / "music"
+            music.mkdir(parents=True)
+            (music / "tone.wav").write_bytes(b"RIFF")
             out = Path(td) / "manifest.json"
             subprocess.check_call(
                 [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
@@ -94,8 +98,32 @@ class IndexerTests(unittest.TestCase):
             data = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(len(data["entries"]), 1)
             self.assertEqual(data["entries"][0]["kind"], "audio")
-            self.assertEqual(data["entries"][0]["path"], "clips/tone.wav")
+            self.assertEqual(data["entries"][0]["path"], "music/tone.wav")
             self.assertEqual(data["entries"][0]["container"], "wav")
+
+    def test_kind_from_library_root(self) -> None:
+        """Directory root wins: movies→movie, shows→tv, music→audio."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            (root / "movies").mkdir(parents=True)
+            (root / "shows" / "Demo").mkdir(parents=True)
+            (root / "music").mkdir(parents=True)
+            (root / "movies" / "film.mp4").write_bytes(b"v")
+            (root / "movies" / "bonus.wav").write_bytes(b"RIFF")
+            (root / "shows" / "Demo" / "S01E01.mkv").write_bytes(b"e")
+            (root / "music" / "track.mp4").write_bytes(b"a")
+            (root / "loose.mp4").write_bytes(b"x")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            kinds = {e["path"]: e["kind"] for e in data["entries"]}
+            self.assertEqual(kinds["movies/film.mp4"], "movie")
+            self.assertEqual(kinds["movies/bonus.wav"], "movie")
+            self.assertEqual(kinds["shows/Demo/S01E01.mkv"], "tv")
+            self.assertEqual(kinds["music/track.mp4"], "audio")
+            self.assertEqual(kinds["loose.mp4"], "movie")
 
     def test_ids_stable_for_same_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -166,23 +194,23 @@ class IndexerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            media = clips / "show.mp4"
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            media = movies / "show.mp4"
             media.write_bytes(b"vid-bytes")
             before = mod.index_root(root, write_id_sidecars=True)
             self.assertEqual(len(before), 1)
             eid = before[0]["id"]
-            self.assertTrue((clips / "show.mp4.id").is_file())
-            renamed = clips / "renamed.mp4"
+            self.assertTrue((movies / "show.mp4.id").is_file())
+            renamed = movies / "renamed.mp4"
             media.rename(renamed)
             # Leave show.mp4.id in place — indexer must reclaim it.
-            self.assertFalse((clips / "renamed.mp4.id").exists())
+            self.assertFalse((movies / "renamed.mp4.id").exists())
             after = mod.index_root(root)
-            self.assertEqual(after[0]["path"], "clips/renamed.mp4")
+            self.assertEqual(after[0]["path"], "movies/renamed.mp4")
             self.assertEqual(after[0]["id"], eid)
-            self.assertTrue((clips / "renamed.mp4.id").is_file())
-            self.assertFalse((clips / "show.mp4.id").exists())
+            self.assertTrue((movies / "renamed.mp4.id").is_file())
+            self.assertFalse((movies / "show.mp4.id").exists())
 
     def test_id_sidecar_survives_cross_dir_move(self) -> None:
         """Cross-directory move: fingerprint in sidecar uniquely reclaim identity."""
@@ -190,28 +218,28 @@ class IndexerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
+            movies = root / "movies"
             other = root / "other"
-            clips.mkdir(parents=True)
+            movies.mkdir(parents=True)
             other.mkdir(parents=True)
-            media = clips / "show.mp4"
+            media = movies / "show.mp4"
             media.write_bytes(b"move-bytes")
             before = mod.index_root(root, write_id_sidecars=True)
             eid = before[0]["id"]
-            side_meta = json.loads((clips / "show.mp4.id").read_text(encoding="utf-8"))
+            side_meta = json.loads((movies / "show.mp4.id").read_text(encoding="utf-8"))
             self.assertEqual(side_meta["id"], eid)
             self.assertIn("bytes", side_meta)
             self.assertIn("modified_ns", side_meta)
 
             dest = other / "moved.mp4"
             media.rename(dest)
-            # Orphan remains under clips/; media is under other/.
-            self.assertTrue((clips / "show.mp4.id").is_file())
+            # Orphan remains under movies/; media is under other/.
+            self.assertTrue((movies / "show.mp4.id").is_file())
             after = mod.index_root(root, write_id_sidecars=True)
             self.assertEqual(after[0]["path"], "other/moved.mp4")
             self.assertEqual(after[0]["id"], eid)
             self.assertTrue((other / "moved.mp4.id").is_file())
-            self.assertFalse((clips / "show.mp4.id").exists())
+            self.assertFalse((movies / "show.mp4.id").exists())
 
     def test_id_sidecar_ambiguous_same_dir_not_moved(self) -> None:
         """Two orphans + two unmatched in one dir: do not guess."""
@@ -219,23 +247,23 @@ class IndexerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
-            clips = root / "clips"
-            clips.mkdir(parents=True)
-            a = clips / "a.mp4"
-            b = clips / "b.mp4"
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            a = movies / "a.mp4"
+            b = movies / "b.mp4"
             a.write_bytes(b"aaa")
             b.write_bytes(b"bbb")
             # Legacy id-only sidecars (no fingerprint) for both.
-            (clips / "a.mp4.id").write_text('{"id": "m_aaaaaa"}\n', encoding="utf-8")
-            (clips / "b.mp4.id").write_text('{"id": "m_bbbbbb"}\n', encoding="utf-8")
-            a.rename(clips / "x.mp4")
-            b.rename(clips / "y.mp4")
+            (movies / "a.mp4.id").write_text('{"id": "m_aaaaaa"}\n', encoding="utf-8")
+            (movies / "b.mp4.id").write_text('{"id": "m_bbbbbb"}\n', encoding="utf-8")
+            a.rename(movies / "x.mp4")
+            b.rename(movies / "y.mp4")
             moved = mod.reclaim_orphaned_id_sidecars(root)
             self.assertEqual(moved, 0)
-            self.assertTrue((clips / "a.mp4.id").is_file())
-            self.assertTrue((clips / "b.mp4.id").is_file())
-            self.assertFalse((clips / "x.mp4.id").exists())
-            self.assertFalse((clips / "y.mp4.id").exists())
+            self.assertTrue((movies / "a.mp4.id").is_file())
+            self.assertTrue((movies / "b.mp4.id").is_file())
+            self.assertFalse((movies / "x.mp4.id").exists())
+            self.assertFalse((movies / "y.mp4.id").exists())
 
     def test_injectable_probe_merges_fields(self) -> None:
         import importlib.util

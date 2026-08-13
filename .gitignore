@@ -10,13 +10,14 @@ scripts/.pw/
 # Local compose library mount (see compose.yaml)
 media/
 
+# Local runtime volumes (compose ./data). CI uses fixtures/.
+data/*
+!data/.gitkeep
+
 # Secrets (provider keys — never commit)
 .env
 .env.*
 !.env.example
-
-# Local runtime semantic snapshot (may contain enrichment)
-data/semantic.json
 
 # Editor / OS
 .DS_Store

@@ -227,7 +227,25 @@ def resolve_entry_id(
     return eid
 
 
-def kind_for(path: Path) -> str:
+# First path component under the media root (Jellyfin-style). Directory wins
+# over extension so a .wav under movies/ is still kind movie.
+LIBRARY_ROOT_KINDS = {
+    "movies": "movie",
+    "shows": "tv",
+    "music": "audio",
+}
+
+
+def kind_for(path: Path, root: Optional[Path] = None) -> str:
+    """Kind from library root (movies/shows/music), else extension fallback."""
+    if root is not None:
+        try:
+            top = path.relative_to(root).parts[0].lower()
+        except (ValueError, IndexError):
+            top = ""
+        mapped = LIBRARY_ROOT_KINDS.get(top)
+        if mapped:
+            return mapped
     ext = path.suffix.lower()
     if ext in VIDEO_EXT:
         return "movie"
@@ -318,6 +336,10 @@ def probe_ftyp(path: Path) -> Optional[dict]:
 PROBES = {
     "none": lambda _p: None,
     "ftyp": probe_ftyp,
+    # Future (not registered, not a CI/runtime dep): PROBES["ffprobe"] = probe_ffprobe
+    # would shell `ffprobe -v quiet -print_format json -show_format -show_streams`
+    # and map streams into the same nested video[] / audio[] keys. See docs/manifest.md.
+    # Never call from Orisha request handlers.
 }
 
 
@@ -356,7 +378,7 @@ def index_root(
             seen.add(eid)
             entry: dict = {
                 "id": eid,
-                "kind": kind_for(full),
+                "kind": kind_for(full, root),
                 "title": full.stem,
                 "path": rel,
                 "bytes": st.st_size,

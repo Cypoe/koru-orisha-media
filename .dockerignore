@@ -7,7 +7,6 @@ agent-transcripts
 !public/**
 docs
 spk
-browser
 fixtures
 vendor
 src

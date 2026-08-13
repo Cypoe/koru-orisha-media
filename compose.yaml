@@ -2,8 +2,11 @@
 # Build: bash scripts/build-image.sh
 # Run:   docker compose up
 #
-# Put library files under ./media (or change the volume) and ensure
-# ./data/manifest.json exists (or set KORU_REINDEX=1 once).
+# Library layout (one bind, Jellyfin-style roots):
+#   ./media/movies  ./media/shows  ./media/music
+# Indexer walks that single root. Ensure ./data/manifest.json exists
+# (or set KORU_REINDEX=1 once). data/ is gitignored local runtime;
+# fixtures/ is the CI library.
 
 services:
   media:
@@ -14,6 +17,7 @@ services:
     environment:
       KORU_MEDIA_ROOT: /media
       KORU_MANIFEST: /data/manifest.json
+      KORU_SEMANTIC: /data/semantic.json
       # Uncomment once to (re)build the manifest from /media:
       # KORU_REINDEX: "1"
     volumes:
