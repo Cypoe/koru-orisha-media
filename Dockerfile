@@ -16,11 +16,14 @@ COPY public /app/public
 COPY scripts/index_media.py /app/scripts/index_media.py
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
+# Local compose bind-mounts one parent onto /media. NAS compose bind-mounts
+# three DSM shares onto /media/{movies,shows,music}.
 RUN chmod +x /app/media-server /app/entrypoint.sh \
-    && mkdir -p /media /data
+    && mkdir -p /media/movies /media/shows /media/music /data
 
 ENV KORU_MEDIA_ROOT=/media \
-    KORU_MANIFEST=/data/manifest.json
+    KORU_MANIFEST=/data/manifest.json \
+    KORU_SEMANTIC=/data/semantic.json
 
 EXPOSE 3090
 

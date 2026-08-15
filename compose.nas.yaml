@@ -1,0 +1,26 @@
+# Image-only compose for Synology Container Manager (no build context).
+# 1. docker load the tarball from scripts/save-image.sh
+# 2. First start: keep KORU_REINDEX=1; later set it to "0" (or remove it)
+#
+# SigmaNAS layout: three DSM shares, not one parent with movies/shows/music.
+# The indexer still walks KORU_MEDIA_ROOT=/media.
+# semantic.json is optional — browse and play work from the physical manifest.
+
+services:
+  media:
+    image: koru-orisha-media:local
+    ports:
+      - "3090:3090"
+    environment:
+      KORU_MEDIA_ROOT: /media
+      KORU_MANIFEST: /data/manifest.json
+      KORU_SEMANTIC: /data/semantic.json
+      KORU_REINDEX: "1"
+      # Optional cheap container brand on first index:
+      # KORU_INDEX_PROBE: ftyp
+    volumes:
+      - /volume1/movies:/media/movies:ro
+      - /volume1/shows:/media/shows:ro
+      - /volume1/music:/media/music:ro
+      - /volume1/docker/koru-orisha-media:/data
+    restart: unless-stopped

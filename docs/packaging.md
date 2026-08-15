@@ -5,11 +5,11 @@ Local-first runtime image and compose project. The published image does **not** 
 ## Local build and run
 
 ```bash
-# Compile bin/media-server (needs koruc mounts — see scripts/build-docker.sh),
-# then build image koru-orisha-media:local
+# Compile bin/media-server + emit public/*.js (needs koruc mounts — see
+# scripts/build-docker.sh), then build image koru-orisha-media:local
 bash scripts/build-image.sh
 
-# Or, if bin/media-server is already a current Linux binary:
+# Or, if bin/media-server and public/*.js are already current:
 bash scripts/build-image.sh --skip-compile
 ```
 
@@ -35,24 +35,47 @@ Container layout:
 |------|------|
 | `/app/media-server` | HTTP binary |
 | `/app/public/` | frontend assets |
-| `/media` | `KORU_MEDIA_ROOT` (volume; `movies/`, `shows/`, `music/` under one root) |
+| `/media` | `KORU_MEDIA_ROOT` (local: one bind of a parent that contains `movies/`, `shows/`, `music/`) |
+| `/media/movies` `/media/shows` `/media/music` | NAS: three DSM share binds (see [`compose.nas.yaml`](../compose.nas.yaml)) |
 | `/data/manifest.json` | `KORU_MANIFEST` (volume) |
 | `/data/semantic.json` | `KORU_SEMANTIC` (optional volume; `/` and `/library` list local files and play if absent) |
 
 Compose defaults are long-lived (no `KORU_IDLE_SECS`). The process listens on **3090** inside the container ([`main.k`](../main.k)); map the host port in `compose.yaml`.
 
-Optional one-shot reindex on start: set `KORU_REINDEX=1` or pass `reindex` as the container command.
+Optional one-shot reindex on start: set `KORU_REINDEX=1` or pass `reindex` as the container command. Optional `KORU_INDEX_PROBE=ftyp` adds cheap container-brand notes on that pass. `semantic.json` is not required for browse or play.
+
+The runtime still uses `orisha:run-accept-loop` (not `orisha:serve`). One `STREAM` (a movie) occupies the accept loop until it finishes — other tabs wait. That is independent of packaging; do not switch to pump/`serve` until koruc stops double-emitting `koru_pump`.
+
+## Throw onto a NAS (no registry, no SSH)
+
+Build on a machine that has `koruc`, then copy a tarball. Synology Container Manager’s `docker load` wants a **docker-archive**, not an `oci-layout` directory.
+
+```bash
+bash scripts/build-image.sh
+bash scripts/save-image.sh
+# → dist/koru-orisha-media.tar.gz
+```
+
+On the NAS (SSH or File Station + Container Manager terminal):
+
+```bash
+docker load -i koru-orisha-media.tar.gz
+```
+
+Then create a Container Manager **Project** from [`compose.nas.yaml`](../compose.nas.yaml). On SigmaNAS that file already bind-mounts `/volume1/movies`, `/volume1/shows`, and `/volume1/music` onto `/media/{movies,shows,music}`, plus `/volume1/docker/koru-orisha-media` onto `/data`. First start keeps `KORU_REINDEX=1`; after `manifest.json` exists, set it to `"0"`. Open `http://<nas>:3090/library` (or `http://sigmanas:3090/library`).
+
+That compose file has no `build:` — the NAS never needs `koruc`.
 
 ## Synology Container Manager
 
-1. Build (or later pull) the image on a machine that can compile, or load a saved image onto the NAS.
-2. In **Container Manager → Project**, create a project from this repo’s [`compose.yaml`](../compose.yaml).
-3. Map a DSM shared folder that contains `movies/`, `shows/`, and `music/` (e.g. `/volume1/video`) to `/media` (read-only is fine). One bind, not three.
-4. Map a writable folder to `/data` for `manifest.json` (and future art/cache).
+1. Load the saved image (above) or later pull a registry tag.
+2. Create a project from [`compose.nas.yaml`](../compose.nas.yaml) (image-only) or this repo’s [`compose.yaml`](../compose.yaml) if the repo is on the NAS.
+3. Bind the three library shares onto `/media/movies`, `/media/shows`, and `/media/music` (read-only is fine). Do not bind a single parent unless that parent actually contains those three directories.
+4. Map a writable folder to `/data` for `manifest.json` (and optional `semantic.json`).
 5. Publish port `3090` (or change the host side of the mapping).
 6. Index once (`KORU_REINDEX=1` for the first start, or run the indexer on a desktop against the same tree).
 
-Updates while local-only: rebuild with `scripts/build-image.sh`, then recreate the project/container. After you publish to a registry, change `image:` to a tagged remote and use Container Manager’s update / `docker compose pull`.
+Updates while local-only: rebuild + `scripts/save-image.sh`, `docker load` on the NAS, then recreate the project/container. After you publish to a registry, change `image:` to a tagged remote and use Container Manager’s update / `docker compose pull`.
 
 ## Publish later (GHCR) — recommended
 
