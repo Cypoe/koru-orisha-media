@@ -102,7 +102,7 @@ class IndexerTests(unittest.TestCase):
             self.assertEqual(data["entries"][0]["container"], "wav")
 
     def test_kind_from_library_root(self) -> None:
-        """Directory root wins: movies→movie, shows→tv, music→audio."""
+        """Library root names the work; audio under movies/shows is extra."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "media"
             (root / "movies").mkdir(parents=True)
@@ -120,7 +120,7 @@ class IndexerTests(unittest.TestCase):
             data = json.loads(out.read_text(encoding="utf-8"))
             kinds = {e["path"]: e["kind"] for e in data["entries"]}
             self.assertEqual(kinds["movies/film.mp4"], "movie")
-            self.assertEqual(kinds["movies/bonus.wav"], "movie")
+            self.assertEqual(kinds["movies/bonus.wav"], "extra")
             self.assertEqual(kinds["shows/Demo/S01E01.mkv"], "tv")
             self.assertEqual(kinds["music/track.mp4"], "audio")
             self.assertEqual(kinds["loose.mp4"], "movie")
@@ -304,6 +304,218 @@ class IndexerTests(unittest.TestCase):
             entries = mod.index_root(root, probe=mod.probe_ftyp)
             self.assertEqual(entries[0]["video"][0]["brand"], "isom")
             self.assertEqual(entries[0]["video"][0]["codec"], "unknown")
+
+    def test_extras_and_books_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            movie_dir = root / "movies" / "Arrival (2016)"
+            extras = movie_dir / "extras"
+            extras.mkdir(parents=True)
+            (movie_dir / "Arrival (2016).mkv").write_bytes(b"m")
+            (extras / "featurette.mkv").write_bytes(b"x")
+            books = root / "books"
+            books.mkdir(parents=True)
+            (books / "note.epub").write_bytes(b"e")
+            (root / "musicVidoes").mkdir(parents=True)
+            (root / "musicVidoes" / "clip.mp4").write_bytes(b"v")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            kinds = {e["path"]: e["kind"] for e in data["entries"]}
+            self.assertEqual(kinds["movies/Arrival (2016)/Arrival (2016).mkv"], "movie")
+            self.assertEqual(kinds["movies/Arrival (2016)/extras/featurette.mkv"], "extra")
+            self.assertEqual(kinds["books/note.epub"], "book")
+            self.assertEqual(kinds["musicVidoes/clip.mp4"], "musicVideo")
+
+    def test_bind_maps_share_name(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            movies = Path(td) / "movies"
+            movies.mkdir()
+            (movies / "film.mp4").write_bytes(b"v")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    str(INDEXER),
+                    "--bind",
+                    f"movies={movies}",
+                    "--out",
+                    str(out),
+                ]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["entries"][0]["path"], "movies/film.mp4")
+            self.assertEqual(data["entries"][0]["kind"], "movie")
+
+    def test_work_key_and_display_title(self) -> None:
+        mod = self._load_indexer()
+        ep = "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E01 - Kassa.mkv"
+        ost = "shows/Andor [tt9253284]/soundtrack/01 - Andor (Main Title Theme) - Episode 5.mp3"
+        self.assertEqual(mod.work_key(ep), "shows/Andor [tt9253284]")
+        self.assertEqual(mod.work_key(ost), "shows/Andor [tt9253284]")
+        self.assertEqual(
+            mod.work_key("shows/Andor [tt9253284]/clips/deleted.mkv"),
+            "shows/Andor [tt9253284]",
+        )
+        self.assertEqual(mod.work_display_title("shows/Andor [tt9253284]"), "Andor")
+        self.assertEqual(
+            mod.work_display_title("movies/Movie (2021) [imdbid-tt12801262]"),
+            "Movie",
+        )
+        self.assertEqual(mod.parse_imdb_id(ep), "tt9253284")
+        self.assertEqual(mod.parse_imdb_id("movies/Film [imdbid-tt12801262]/Film.mkv"), "tt12801262")
+        self.assertEqual(mod.parse_season_episode(ep), (1, 1))
+        self.assertEqual(
+            mod.parse_season_episode("shows/X/Season 02/untitled.mkv"),
+            (2, 0),
+        )
+
+    def test_andor_layout_kinds_posters_nfo(self) -> None:
+        """Jellyfin/Sonarr Andor tree: one series work, soundtrack extra, series poster, nfo title."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            series = root / "shows" / "Andor [tt9253284]"
+            season = series / "Andor (2022) Season - 1 [tt9253284]"
+            ost = series / "soundtrack"
+            season.mkdir(parents=True)
+            ost.mkdir(parents=True)
+            (series / "poster.jpg").write_bytes(b"\xff\xd8fake")
+            ep = season / "Andor - S01E01 - Kassa.mkv"
+            ep.write_bytes(b"vid")
+            (season / "Andor - S01E01 - Kassa.nfo").write_text(
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                "<episodedetails>\n"
+                "  <title>Kassa</title>\n"
+                "  <showtitle>Andor</showtitle>\n"
+                "  <plot>Cassian Andor&apos;s journey begins on Ferrix.</plot>\n"
+                "  <aired>2022-09-21</aired>\n"
+                "  <rating>8.4</rating>\n"
+                "</episodedetails>\n",
+                encoding="utf-8",
+            )
+            (series / "tvshow.nfo").write_text(
+                "<tvshow>\n"
+                "  <title>Andor</title>\n"
+                "  <plot>A spy thriller set in the Star Wars universe.</plot>\n"
+                "  <premiered>2022-09-21</premiered>\n"
+                "  <ratings><rating name=\"imdb\" max=\"10\"><value>8.4</value></rating></ratings>\n"
+                "</tvshow>\n",
+                encoding="utf-8",
+            )
+            trailers = series / "trailers"
+            trailers.mkdir()
+            (trailers / "Andor - Official Trailer.mp4").write_bytes(b"vid")
+            (ost / "01 - Andor (Main Title Theme) - Episode 5.mp3").write_bytes(b"ID3")
+            (series / "01 - Andor (Main Title Theme) - Episode 5.flac").write_bytes(b"fLaC")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            by_path = {e["path"]: e for e in data["entries"]}
+            video = by_path[
+                "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E01 - Kassa.mkv"
+            ]
+            theme = by_path[
+                "shows/Andor [tt9253284]/soundtrack/01 - Andor (Main Title Theme) - Episode 5.mp3"
+            ]
+            loose_audio = by_path[
+                "shows/Andor [tt9253284]/01 - Andor (Main Title Theme) - Episode 5.flac"
+            ]
+            self.assertEqual(video["kind"], "tv")
+            self.assertEqual(theme["kind"], "extra")
+            self.assertEqual(loose_audio["kind"], "extra")
+            self.assertEqual(video["title"], "Kassa")
+            self.assertEqual(video["work_title"], "Andor")
+            self.assertEqual(video["work_key"], "shows/Andor [tt9253284]")
+            self.assertEqual(theme["work_key"], video["work_key"])
+            self.assertEqual(video["season"], 1)
+            self.assertEqual(video["episode"], 1)
+            self.assertEqual(video["imdb_id"], "tt9253284")
+            self.assertEqual(video["poster"], "shows/Andor [tt9253284]/poster.jpg")
+            self.assertEqual(theme["poster"], "shows/Andor [tt9253284]/poster.jpg")
+            self.assertEqual(video["plot"], "Cassian Andor's journey begins on Ferrix.")
+            self.assertEqual(video["aired"], "2022-09-21")
+            self.assertEqual(video["rating"], "8.4")
+            self.assertEqual(video["work_plot"], "A spy thriller set in the Star Wars universe.")
+            self.assertEqual(video["work_aired"], "2022-09-21")
+            self.assertEqual(video["work_rating"], "8.4")
+            trailer = by_path[
+                "shows/Andor [tt9253284]/trailers/Andor - Official Trailer.mp4"
+            ]
+            self.assertEqual(trailer["kind"], "extra")
+            self.assertEqual(trailer["work_key"], video["work_key"])
+
+    def test_embedded_audio_cover_last_resort(self) -> None:
+        jpeg = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            album = root / "music" / "Artist" / "Album"
+            album.mkdir(parents=True)
+            (album / "01 - Track.mp3").write_bytes(b"ID3" + jpeg + b"\xff\xfb")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(data["entries"]), 1)
+            self.assertEqual(data["entries"][0]["poster"], "music/Artist/Album/cover.jpg")
+            cover = album / "cover.jpg"
+            self.assertTrue(cover.is_file())
+            self.assertTrue(cover.read_bytes().startswith(b"\xff\xd8"))
+
+    def test_embedded_cover_skipped_when_sidecar_exists(self) -> None:
+        jpeg = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            album = root / "music" / "Artist" / "Album"
+            album.mkdir(parents=True)
+            (album / "folder.png").write_bytes(b"png")
+            (album / "01 - Track.mp3").write_bytes(b"ID3" + jpeg)
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["entries"][0]["poster"], "music/Artist/Album/folder.png")
+            self.assertFalse((album / "cover.jpg").exists())
+
+    def test_poster_walks_to_work_not_library_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            shows = root / "shows"
+            series = shows / "Andor [tt9253284]"
+            season = series / "Season 01"
+            season.mkdir(parents=True)
+            (shows / "poster.jpg").write_bytes(b"lib")
+            (series / "folder.png").write_bytes(b"ser")
+            (season / "Andor - S01E02 - That Would Be Me.mkv").write_bytes(b"v")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(data["entries"]), 1)
+            self.assertEqual(data["entries"][0]["poster"], "shows/Andor [tt9253284]/folder.png")
+            self.assertEqual(data["entries"][0]["season"], 1)
+            self.assertEqual(data["entries"][0]["episode"], 2)
+
+    def test_nfo_skipped_when_huge(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "media"
+            movies = root / "movies"
+            movies.mkdir(parents=True)
+            (movies / "show.mp4").write_bytes(b"vid")
+            nfo = movies / "show.nfo"
+            nfo.write_text("<title>" + ("x" * (65 * 1024)) + "</title>\n", encoding="utf-8")
+            out = Path(td) / "manifest.json"
+            subprocess.check_call(
+                [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
+            )
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["entries"][0]["title"], "show")
 
 
 if __name__ == "__main__":

@@ -84,6 +84,91 @@
       "modified_ns": 1786505274827093600,
       "path": "movies/onebyte.mp4",
       "title": "onebyte"
+    },
+    {
+      "bytes": 1,
+      "container": "mkv",
+      "id": "m_and1e1",
+      "kind": "tv",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828093600,
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E01 - Kassa.mkv",
+      "plot": "Cassian Andor's journey begins on Ferrix.",
+      "aired": "2022-09-21",
+      "rating": "8.2",
+      "title": "Kassa",
+      "work_plot": "A spy thriller set in the Star Wars universe.",
+      "work_aired": "2022-09-21",
+      "work_rating": "8.4",
+      "year": 2022
+    },
+    {
+      "bytes": 1,
+      "container": "mkv",
+      "id": "m_and1e2",
+      "kind": "tv",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828093700,
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E02 - That Would Be Me.mkv",
+      "title": "That Would Be Me",
+      "work_plot": "A spy thriller set in the Star Wars universe.",
+      "work_aired": "2022-09-21",
+      "work_rating": "8.4",
+      "year": 2022
+    },
+    {
+      "bytes": 1,
+      "container": "mkv",
+      "id": "m_and2e1",
+      "kind": "tv",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828093800,
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 2 [tt9253284]/Andor - S02E01 - One Way Out.mkv",
+      "title": "One Way Out",
+      "work_plot": "A spy thriller set in the Star Wars universe.",
+      "work_aired": "2022-09-21",
+      "work_rating": "8.4",
+      "year": 2022
+    },
+    {
+      "bytes": 3,
+      "container": "mp3",
+      "id": "m_andost",
+      "kind": "extra",
+      "mime": "audio/mpeg",
+      "modified_ns": 1786505274828093900,
+      "path": "shows/Andor [tt9253284]/soundtrack/01 - Andor (Main Title Theme) - Episode 5.mp3",
+      "title": "Andor (Main Title Theme)"
+    },
+    {
+      "bytes": 1,
+      "container": "mp4",
+      "id": "m_andtrl",
+      "kind": "extra",
+      "mime": "video/mp4",
+      "modified_ns": 1786505274828093950,
+      "path": "shows/Andor [tt9253284]/trailers/Andor - Official Trailer.mp4",
+      "title": "Andor - Official Trailer"
+    },
+    {
+      "bytes": 3,
+      "container": "mp3",
+      "id": "m_dpot",
+      "kind": "audio",
+      "mime": "audio/mpeg",
+      "modified_ns": 1786505274828094000,
+      "path": "music/Daft Punk/Discovery/01 - One More Time.mp3",
+      "title": "One More Time"
+    },
+    {
+      "bytes": 3,
+      "container": "mp3",
+      "id": "m_dpae",
+      "kind": "audio",
+      "mime": "audio/mpeg",
+      "modified_ns": 1786505274828094100,
+      "path": "music/Daft Punk/Discovery/02 - Aerodynamic.mp3",
+      "title": "Aerodynamic"
     }
   ]
 }

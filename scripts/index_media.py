@@ -100,7 +100,7 @@ def write_id_sidecar(
 def _is_media_filename(name: str) -> bool:
     if name.endswith(ID_SIDECAR_SUFFIX):
         return False
-    return Path(name).suffix.lower() in VIDEO_EXT | AUDIO_EXT
+    return Path(name).suffix.lower() in VIDEO_EXT | AUDIO_EXT | BOOK_EXT
 
 
 def reclaim_orphaned_id_sidecars(root: Path) -> int:
@@ -227,23 +227,88 @@ def resolve_entry_id(
     return eid
 
 
-# First path component under the media root (Jellyfin-style). Directory wins
-# over extension so a .wav under movies/ is still kind movie.
+# First path component under the media root (Jellyfin-style). Library root
+# names the work; file kind then uses extras folders and MIME/ext so audio
+# under shows/movies is extra, not tv/movie. Mirrors src/graph.kz fileKind.
 LIBRARY_ROOT_KINDS = {
     "movies": "movie",
     "shows": "tv",
     "music": "audio",
+    "books": "book",
+    "musicvideos": "musicVideo",
+    "musicvidoes": "musicVideo",  # existing DSM share spelling
 }
+
+# Jellyfin extras folders plus soundtrack/ost/score used in this library.
+# https://jellyfin.org/docs/general/server/media/movies
+EXTRA_DIR_NAMES = {
+    "extras",
+    "extra",
+    "featurettes",
+    "featurette",
+    "trailers",
+    "trailer",
+    "shorts",
+    "short",
+    "interviews",
+    "interview",
+    "scenes",
+    "deleted scenes",
+    "behind the scenes",
+    "behind-the-scenes",
+    "samples",
+    "sample",
+    "other",
+    "theme-music",
+    "theme music",
+    "clips",
+    "backdrops",
+    "soundtrack",
+    "ost",
+    "score",
+}
+
+NFO_MAX = 64 * 1024
+POSTER_NAMES = ("poster", "folder", "cover", "show")
+
+BOOK_EXT = {".epub", ".pdf", ".cbz", ".cbr", ".mobi", ".azw3"}
+
+mimetypes.add_type("audio/flac", ".flac")
+mimetypes.add_type("audio/ogg", ".ogg")
+mimetypes.add_type("application/epub+zip", ".epub")
+mimetypes.add_type("application/x-mobipocket-ebook", ".mobi")
+mimetypes.add_type("application/vnd.amazon.ebook", ".azw3")
+mimetypes.add_type("application/vnd.comicbook+zip", ".cbz")
+mimetypes.add_type("application/vnd.comicbook-rar", ".cbr")
+
+
+def path_is_extra(rel_parts: tuple[str, ...]) -> bool:
+    for part in rel_parts:
+        if part.lower() in EXTRA_DIR_NAMES:
+            return True
+    return False
+
+
+def _kind_from_parts(rel_parts: tuple[str, ...], ext: str) -> Optional[str]:
+    if path_is_extra(rel_parts):
+        return "extra"
+    if not rel_parts:
+        return None
+    mapped = LIBRARY_ROOT_KINDS.get(rel_parts[0].lower())
+    if mapped in ("movie", "tv") and ext in AUDIO_EXT:
+        return "extra"
+    return mapped
 
 
 def kind_for(path: Path, root: Optional[Path] = None) -> str:
-    """Kind from library root (movies/shows/music), else extension fallback."""
+    """Extras folder, then MIME under movies/shows, then library root, then ext."""
+    rel_parts: tuple[str, ...] = ()
     if root is not None:
         try:
-            top = path.relative_to(root).parts[0].lower()
-        except (ValueError, IndexError):
-            top = ""
-        mapped = LIBRARY_ROOT_KINDS.get(top)
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            rel_parts = path.parts
+        mapped = _kind_from_parts(rel_parts, path.suffix.lower())
         if mapped:
             return mapped
     ext = path.suffix.lower()
@@ -251,7 +316,22 @@ def kind_for(path: Path, root: Optional[Path] = None) -> str:
         return "movie"
     if ext in AUDIO_EXT:
         return "audio"
+    if ext in BOOK_EXT:
+        return "book"
     return "file"
+
+
+def kind_for_prefixed(path: Path, root: Path, library_name: str) -> str:
+    try:
+        rel_parts = path.relative_to(root).parts
+    except ValueError:
+        rel_parts = path.parts
+    if library_name:
+        rel_parts = (library_name,) + rel_parts
+    mapped = _kind_from_parts(rel_parts, path.suffix.lower())
+    if mapped:
+        return mapped
+    return kind_for(path, None)
 
 
 def mime_for(path: Path) -> str:
@@ -263,20 +343,224 @@ def container_for(path: Path) -> str:
     return path.suffix.lower().lstrip(".") or "bin"
 
 
+def work_key(rel: str) -> str:
+    """Jellyfin-style work folder. Mirrors src/graph.kz workKey."""
+    parts = rel.split("/")
+    if not parts:
+        return rel
+    dirs = parts[:-1]
+    keep = len(dirs)
+    for i, seg in enumerate(dirs):
+        if seg.lower() in EXTRA_DIR_NAMES:
+            keep = i
+            break
+    root = dirs[0].lower() if dirs else ""
+    if root in ("shows", "tv"):
+        want = 2
+    elif root == "music":
+        want = 3
+    else:
+        want = 2
+    dirs_keep = min(keep, want)
+    if dirs_keep <= 1:
+        name = parts[-1]
+        dot = name.rfind(".")
+        stem = name[:dot] if dot > 0 else name
+        if len(parts) == 1:
+            return stem
+        return "/".join(parts[:-1] + [stem])
+    return "/".join(parts[:dirs_keep])
+
+
+def parse_season_episode(path: str) -> tuple[int, int]:
+    """SxxEyy on the file stem, else Sonarr Season - N / Season 01 folders."""
+    file_name = path.rsplit("/", 1)[-1]
+    m = re.search(r"(?<![A-Za-z0-9])S(\d{1,2})E(\d{1,3})", file_name, re.I)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    season = 0
+    for seg in path.split("/"):
+        sm = re.search(r"(?<![A-Za-z0-9])season[\s._-]*(\d{1,2})", seg, re.I)
+        if sm:
+            n = int(sm.group(1))
+            if n:
+                season = n
+    return season, 0
+
+
+def parse_imdb_id(path: str) -> str:
+    """First [tt…] or [imdbid-tt…] in the path. Local assertion only — no HTTP."""
+    for m in re.finditer(r"\[([^\[\]]+)\]", path):
+        inside = m.group(1).strip()
+        tt = re.fullmatch(r"tt(\d+)", inside, re.I)
+        if tt:
+            return "tt" + tt.group(1)
+        imdb = re.fullmatch(r"imdbid-tt(\d+)", inside, re.I)
+        if imdb:
+            return "tt" + imdb.group(1)
+    return ""
+
+
+def work_display_title(key: str) -> str:
+    """Folder name with [tt…]/[imdbid-…]/(year) stripped. Mirrors graph.kz."""
+    name = key.rsplit("/", 1)[-1]
+
+    def _strip_tag(m):
+        inside = m.group(1).strip()
+        if re.fullmatch(r"tt\d+", inside, re.I):
+            return ""
+        if re.match(r"(imdbid-|imdb-|tmdbid-|tmdb-|tvdbid-|tvdb-)", inside, re.I):
+            return ""
+        return m.group(0)
+
+    name = re.sub(r"\[([^\[\]]+)\]", _strip_tag, name)
+    name = re.sub(r"\((?:19|20)\d{2}\)", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name or key.rsplit("/", 1)[-1]
+
+
 def find_poster(root: Path, media: Path) -> Optional[str]:
-    """Cheap sidecar artwork only — no container probe / FFmpeg."""
+    """Sidecar art beside the file, then parents up to the work directory."""
     stem = media.with_suffix("")
     for ext in POSTER_EXT:
         cand = Path(str(stem) + ext)
         if cand.is_file():
             return cand.relative_to(root).as_posix()
-    parent = media.parent
-    for name in ("poster", "folder", "cover"):
-        for ext in POSTER_EXT:
-            cand = parent / f"{name}{ext}"
-            if cand.is_file():
-                return cand.relative_to(root).as_posix()
+    rel = media.relative_to(root).as_posix()
+    work = work_key(rel)
+    slash = rel.rfind("/")
+    dir_rel = rel[:slash] if slash >= 0 else ""
+    while True:
+        parent_path = root / dir_rel if dir_rel else root
+        for name in POSTER_NAMES:
+            for ext in POSTER_EXT:
+                cand = parent_path / f"{name}{ext}"
+                if cand.is_file():
+                    return cand.relative_to(root).as_posix()
+        if not dir_rel or dir_rel == work:
+            break
+        if not (dir_rel.startswith(work) and len(dir_rel) > len(work) and dir_rel[len(work)] == "/"):
+            break
+        slash = dir_rel.rfind("/")
+        dir_rel = dir_rel[:slash] if slash >= 0 else ""
     return None
+
+
+def _xml_unescape(raw: str) -> str:
+    from html import unescape
+
+    return unescape(raw).strip()
+
+
+def _xml_tag(text: str, tag: str) -> str:
+    open_m = re.search(rf"<{tag}\b[^>]*>", text, re.I)
+    if not open_m:
+        return ""
+    rest = text[open_m.end() :]
+    cdata = re.match(r"<!\[CDATA\[(.*?)\]\]>", rest, re.S)
+    if cdata:
+        return _xml_unescape(cdata.group(1))
+    close = re.search(rf"</{tag}>", rest, re.I)
+    if not close:
+        return ""
+    return _xml_unescape(rest[: close.start()])
+
+
+def parse_nfo_text(text: str) -> dict:
+    """Offline Kodi/Jellyfin nfo: title, plot, aired/premiered, rating."""
+    title = _xml_tag(text, "title")
+    plot = _xml_tag(text, "plot") or _xml_tag(text, "outline")
+    aired = _xml_tag(text, "aired") or _xml_tag(text, "premiered")
+    rating = _xml_tag(text, "value") or _xml_tag(text, "rating")
+    if "<" in rating:
+        rating = ""
+    lower = text.lower()
+    return {
+        "title": title,
+        "plot": plot,
+        "aired": aired,
+        "rating": rating,
+        "episode_scope": "episodedetails" in lower,
+        "work_scope": "<tvshow" in lower or "<movie" in lower,
+    }
+
+
+def read_nfo(path: Path) -> Optional[dict]:
+    if not path.is_file():
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size <= 0 or size > NFO_MAX:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    parsed = parse_nfo_text(text)
+    if not any(parsed.get(k) for k in ("title", "plot", "aired", "rating")):
+        return None
+    return parsed
+
+
+def nfo_title(media: Path) -> Optional[str]:
+    """Sibling .nfo <title> when the file is small. Offline hydrate only."""
+    parsed = read_nfo(media.with_suffix(".nfo"))
+    if not parsed:
+        return None
+    title = parsed.get("title") or ""
+    return title or None
+
+
+def work_nfo(root: Path, work: str) -> Optional[dict]:
+    if not work:
+        return None
+    work_dir = root / work
+    for name in ("tvshow.nfo", "movie.nfo"):
+        parsed = read_nfo(work_dir / name)
+        if parsed:
+            return parsed
+    return None
+
+
+def find_jpeg_in(buf: bytes) -> Optional[bytes]:
+    """Cheap SOI..EOI scan (ID3 APIC / MP4 covr). No ffmpeg."""
+    i = 0
+    while i + 3 < len(buf):
+        soi = buf.find(b"\xff\xd8\xff", i)
+        if soi < 0:
+            return None
+        eoi = buf.find(b"\xff\xd9", soi + 3)
+        if eoi < 0:
+            return None
+        blob = buf[soi : eoi + 2]
+        if 16 <= len(blob) <= 512 * 1024:
+            return blob
+        i = soi + 1
+    return None
+
+
+def extract_embedded_cover(root: Path, media: Path) -> Optional[str]:
+    """Last-resort poster: JPEG inside an audio file, written as cover.jpg."""
+    if media.suffix.lower() not in AUDIO_EXT:
+        return None
+    cover = media.parent / "cover.jpg"
+    if cover.is_file():
+        return cover.relative_to(root).as_posix()
+    try:
+        with media.open("rb") as f:
+            buf = f.read(256 * 1024)
+    except OSError:
+        return None
+    jpeg = find_jpeg_in(buf)
+    if not jpeg:
+        return None
+    try:
+        cover.write_bytes(jpeg)
+    except OSError:
+        return None
+    return cover.relative_to(root).as_posix()
 
 
 def find_subtitle(root: Path, media: Path) -> Optional[str]:
@@ -348,6 +632,7 @@ def index_root(
     *,
     probe: Optional[ProbeFn] = None,
     write_id_sidecars: bool = False,
+    library_name: str = "",
 ) -> list:
     entries = []  # type: List[Dict[str, Any]]
     seen: set[str] = set()
@@ -361,7 +646,8 @@ def index_root(
             full = Path(dirpath) / name
             if not _is_media_filename(name):
                 continue
-            rel = full.relative_to(root).as_posix()
+            rel_under = full.relative_to(root).as_posix()
+            rel = f"{library_name}/{rel_under}" if library_name else rel_under
             # Reject escapes (walk shouldn't produce them; belt-and-suspenders).
             if rel.startswith("../") or rel.startswith("/") or "\\" in rel:
                 raise SystemExit(f"refusing path: {rel}")
@@ -376,23 +662,54 @@ def index_root(
             if eid in seen:
                 raise SystemExit(f"duplicate id {eid} for {rel}")
             seen.add(eid)
+            wk = work_key(rel)
+            se = parse_season_episode(rel)
+            imdb = parse_imdb_id(rel)
+            sibling = read_nfo(full.with_suffix(".nfo"))
+            title = (sibling.get("title") if sibling else None) or full.stem
             entry: dict = {
                 "id": eid,
-                "kind": kind_for(full, root),
-                "title": full.stem,
+                "kind": kind_for_prefixed(full, root, library_name),
+                "title": title,
                 "path": rel,
                 "bytes": st.st_size,
                 "modified_ns": st.st_mtime_ns,
                 "mime": mime_for(full),
                 "container": container_for(full),
+                "work_key": wk,
+                "work_title": work_display_title(wk),
+                "season": se[0],
+                "episode": se[1],
             }
+            if imdb:
+                entry["imdb_id"] = imdb
+            if sibling:
+                if sibling.get("plot"):
+                    entry["plot"] = sibling["plot"]
+                if sibling.get("aired"):
+                    entry["aired"] = sibling["aired"]
+                if sibling.get("rating"):
+                    entry["rating"] = sibling["rating"]
+            disk_wk = wk
+            if library_name and wk.startswith(library_name + "/"):
+                disk_wk = wk[len(library_name) + 1 :]
+            wn = work_nfo(root, disk_wk)
+            if wn:
+                if wn.get("plot"):
+                    entry["work_plot"] = wn["plot"]
+                if wn.get("aired"):
+                    entry["work_aired"] = wn["aired"]
+                if wn.get("rating"):
+                    entry["work_rating"] = wn["rating"]
             poster = find_poster(root, full)
+            if not poster:
+                poster = extract_embedded_cover(root, full)
             if poster:
-                entry["poster"] = poster
+                entry["poster"] = f"{library_name}/{poster}" if library_name else poster
             subtitle = find_subtitle(root, full)
             if subtitle:
-                entry["subtitle"] = subtitle
-            year = year_from_name(full.stem)
+                entry["subtitle"] = f"{library_name}/{subtitle}" if library_name else subtitle
+            year = year_from_name(full.stem) or year_from_name(full.parent.name)
             if year is not None:
                 entry["year"] = year
             if probe is not None:
@@ -422,7 +739,14 @@ def atomic_write(path: Path, payload: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--root", type=Path, required=True, help="Media root to walk")
+    ap.add_argument("--root", type=Path, help="Media root to walk (movies/shows/music/… children)")
+    ap.add_argument(
+        "--bind",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Walk PATH as library root NAME (repeatable; e.g. movies=/volume1/movies)",
+    )
     ap.add_argument("--out", type=Path, required=True, help="Manifest output path")
     ap.add_argument(
         "--write-id-sidecars",
@@ -439,16 +763,47 @@ def main() -> int:
         help="Optional offline container probe (never runs in the request process)",
     )
     args = ap.parse_args()
-    root = args.root.resolve()
-    if not root.is_dir():
-        print(f"not a directory: {root}", file=sys.stderr)
+    if bool(args.root) == bool(args.bind):
+        print("specify exactly one of --root or --bind NAME=PATH", file=sys.stderr)
         return 2
     probe = PROBES[args.probe]
-    entries = index_root(
-        root,
-        probe=None if args.probe == "none" else probe,
-        write_id_sidecars=args.write_id_sidecars,
-    )
+    probe_fn = None if args.probe == "none" else probe
+    if args.root:
+        root = args.root.resolve()
+        if not root.is_dir():
+            print(f"not a directory: {root}", file=sys.stderr)
+            return 2
+        entries = index_root(
+            root,
+            probe=probe_fn,
+            write_id_sidecars=args.write_id_sidecars,
+        )
+    else:
+        entries = []
+        seen: set[str] = set()
+        for spec in args.bind:
+            if "=" not in spec:
+                print(f"bind must be NAME=PATH: {spec}", file=sys.stderr)
+                return 2
+            name, raw = spec.split("=", 1)
+            name = name.strip().strip("/")
+            path = Path(raw).resolve()
+            if not name or not path.is_dir():
+                print(f"not a directory: {path}", file=sys.stderr)
+                return 2
+            chunk = index_root(
+                path,
+                probe=probe_fn,
+                write_id_sidecars=args.write_id_sidecars,
+                library_name=name,
+            )
+            for e in chunk:
+                if e["id"] in seen:
+                    print(f"duplicate id {e['id']} for {e['path']}", file=sys.stderr)
+                    return 2
+                seen.add(e["id"])
+            entries.extend(chunk)
+        entries.sort(key=lambda e: e["title"].lower())
     atomic_write(args.out.resolve(), {"entries": entries})
     print(f"wrote {len(entries)} entries -> {args.out}")
     return 0
