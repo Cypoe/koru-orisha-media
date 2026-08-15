@@ -22,10 +22,19 @@ Requires a prebuilt `koruc` at `$HOME/src/koru-build/zig-out/bin/koruc` (see [do
 
 ## Index
 
+The NAS indexer is the Koru binary (`catalog.kz` `reindex`). Empty catalog or `KORU_REINDEX=1` walks enabled folders under `KORU_MEDIA_ROOT`. Settings → Reindex (or `bash scripts/nas-index.sh`) touches `reindex.requested`; the next idle request walks. Python is not required on the NAS.
+
 ```bash
+# optional JSON fixture for CI / fallback import when the SQLite catalog is empty:
 python3 scripts/index_media.py --root fixtures/media --out data/manifest.json
-# optional JSON fixture (Koru src/json writer if bin/json-publish exists):
 python3 scripts/json_publish.py --out /tmp/json-publish-fixture.json
+```
+
+Optional catalogue overlay (host-side TMDB/TVDB into `hydrate_works`; no-ops without API keys; never in request handlers; not the indexer):
+
+```bash
+python3 scripts/hydrate_catalog.py --catalog data/catalog.sqlite
+# docker exec … hydrate  → prints the same host-side instruction (image has no Python)
 ```
 
 ## Test
@@ -53,13 +62,13 @@ bash scripts/build-image.sh          # compile + docker build → koru-orisha-me
 # bash scripts/build-image.sh --skip-compile   # if bin/media-server is already current
 
 mkdir -p media/movies media/shows media/music data
-# put library files in ./media/movies, ./media/shows, ./media/music, then:
-python3 scripts/index_media.py --root media --out data/manifest.json
+# put library files in ./media/movies, ./media/shows, ./media/music
+# empty catalog walks /media on boot (or set KORU_REINDEX=1)
 
 docker compose up
 ```
 
-Open `http://127.0.0.1:3090/library`. Env defaults inside the image: `KORU_MEDIA_ROOT=/media`, `KORU_MANIFEST=/data/manifest.json` (no idle exit). See [docs/packaging.md](docs/packaging.md) for NAS tarball (`scripts/save-image.sh` + `compose.nas.yaml`), Synology Container Manager, GHCR, and SPK prep.
+Open `http://127.0.0.1:3090/library`. Env defaults: `KORU_MEDIA_ROOT=/media`, `KORU_CATALOG=/data/catalog.sqlite`. See [docs/packaging.md](docs/packaging.md) for the NAS registry (`sigmanas.local:9500` + `publish-registry.sh`), Container Manager pull, WebStation `KORU_BASE_PATH`, and SPK prep.
 
 ### Dev bind-mount (fixtures)
 
@@ -85,7 +94,8 @@ One production app (not a browser app + a media app + a json-publish app). Mappi
 |------|------|
 | `main.k` | entry: `orisha:handler` → `media:dispatch`, then `orisha:run-accept-loop` |
 | `src/index.k` + `index.kz` | representation dispatch (`media:dispatch`) |
-| `src/graph.kz` | graph load (manifest + semantic core) |
+| `src/graph.kz` | graph load (SQLite catalog + semantic overlay) |
+| `src/catalog.kz` | SQLite index + filesystem walker |
 | `src/consumers.kz` | named constructions → HTML / JSON-LD / bytes |
 | `src/frontend/` | usage only: `host.k` (`import koru/htmx`) → `public/enhance.js`; `main.k` (`import koru/dom`) → `public/koru-dom-enhance.js` |
 | `vendor/koru-libs/` | `dom/` (vendored `koru/dom` stem) + `htmx/` (our navigation host lib) |
@@ -94,7 +104,8 @@ One production app (not a browser app + a media app + a json-publish app). Mappi
 | `vendor/orisha/` | HTTP: accept-loop, Range, `STREAM:v1` consumer, `header()` |
 | `vendor/upstream/orisha-pump/` | Upstream `pump.k` / `pump.kz` (not on the compile path; see vendor/README.md) |
 | `public/` | generated frontend output (`enhance.js`, `koru-dom-enhance.js`, CSS, demo HTML) |
-| `scripts/index_media.py` | one-shot indexer (Python; JSON publish fallback) |
+| `scripts/index_media.py` | optional JSON fixture / CI fallback (not the NAS indexer) |
+| `scripts/hydrate_catalog.py` | host-side TMDB/TVDB → `hydrate_works` overlay (not in the image; not the indexer) |
 | `Dockerfile` / `compose.yaml` | local runtime image + compose (see [docs/packaging.md](docs/packaging.md)) |
 | `fixtures/media/` | CI library: `movies/`, `music/` (`shows/` when a TV fixture exists) |
 | `fixtures/manifest.json` | CI physical snapshot |

@@ -1,0 +1,10 @@
+# NOT started by this repo. The live registry is a separate project:
+#   /volume1/docker/registry   (port 9500, container typically docker-registry)
+#
+# This file is only a reminder of that layout. Do not `compose up` it from
+# koru-orisha-media — a second registry on 9500 would fight the real one.
+#
+# From the build machine:
+#   bash scripts/publish-registry.sh
+# Container Manager image:
+#   sigmanas.local:9500/koru-orisha-media:latest

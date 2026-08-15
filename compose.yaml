@@ -4,22 +4,27 @@
 #
 # Library layout (one bind, Jellyfin-style roots):
 #   ./media/movies  ./media/shows  ./media/music
-# Indexer walks that single root. Ensure ./data/manifest.json exists
-# (or set KORU_REINDEX=1 once). data/ is gitignored local runtime;
-# fixtures/ is the CI library.
+# Empty /data/catalog.sqlite walks /media on boot. data/ is gitignored local
+# runtime; fixtures/ is the CI library.
 
 services:
   media:
     build: .
     image: koru-orisha-media:local
+    pull_policy: never
     ports:
       - "3090:3090"
     environment:
       KORU_MEDIA_ROOT: /media
+      KORU_CATALOG: /data/catalog.sqlite
       KORU_MANIFEST: /data/manifest.json
       KORU_SEMANTIC: /data/semantic.json
-      # Uncomment once to (re)build the manifest from /media:
+      # Uncomment once to (re)walk /media into the catalog:
       # KORU_REINDEX: "1"
+      # Overlay tables only (no provider HTTP). Hydrate is host-side Python:
+      # KORU_HYDRATE: "1"
+      # WebStation-style path prefix (empty in local compose). Not /media:
+      # KORU_BASE_PATH: /korisha
     volumes:
       - ./media:/media:ro
       - ./data:/data

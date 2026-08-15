@@ -1,26 +1,54 @@
 # Image-only compose for Synology Container Manager (no build context).
-# 1. docker load the tarball from scripts/save-image.sh
-# 2. First start: keep KORU_REINDEX=1; later set it to "0" (or remove it)
+# Image lives in the NAS registry at /volume1/docker/registry (port 9500).
+# Publish from the build machine, then create/recreate this project — CM pulls.
 #
-# SigmaNAS layout: three DSM shares, not one parent with movies/shows/music.
-# The indexer still walks KORU_MEDIA_ROOT=/media.
-# semantic.json is optional — browse and play work from the physical manifest.
+#   bash scripts/publish-registry.sh
+#
+# CM registry: sigmanas.local:9500
+# NAS dockerd insecure: 127.0.0.1:9500 (sigmanas.local → 127.0.0.1)
+# user: is PUID/PGID. Do not set KORU_IDLE_SECS.
+# musicVidoes is the existing DSM share name (typo kept).
+# WebStation alias: KORU_BASE_PATH must match the alias (live: /korisha).
+# Any alias works except /media — that name is the byte-stream route (GET /media/{id}).
+# Settings (/korisha/settings) chooses which /media/* folders the binary indexer walks.
+# Bind mounts below are Compose/DSM; the process cannot remount shares.
 
 services:
   media:
-    image: koru-orisha-media:local
+    image: sigmanas.local:9500/koru-orisha-media:latest
+    pull_policy: always
+    restart: unless-stopped
+    user: "1026:100"
     ports:
       - "3090:3090"
     environment:
-      KORU_MEDIA_ROOT: /media
-      KORU_MANIFEST: /data/manifest.json
-      KORU_SEMANTIC: /data/semantic.json
-      KORU_REINDEX: "1"
-      # Optional cheap container brand on first index:
-      # KORU_INDEX_PROBE: ftyp
+      - PUID=1026
+      - PGID=100
+      - TZ=Europe/Berlin
+      - KORU_MEDIA_ROOT=/media
+      - KORU_CATALOG=/data/catalog.sqlite
+      - KORU_MANIFEST=/data/manifest.json
+      - KORU_SEMANTIC=/data/semantic.json
+      - KORU_BASE_PATH=/korisha
     volumes:
+      - /volume1/docker/koru-orisha-media/config:/config
+      - /volume1/docker/koru-orisha-media/data:/data
       - /volume1/movies:/media/movies:ro
       - /volume1/shows:/media/shows:ro
       - /volume1/music:/media/music:ro
-      - /volume1/docker/koru-orisha-media:/data
+      - /volume1/books:/media/books:ro
+      - /volume1/musicVidoes:/media/musicVideos:ro
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - com.centurylinklabs.watchtower.scope=koru
+
+  # Leave commented until we try automatic deploy/restart.
+  watchtower:
+    image: nickfedor/watchtower
     restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_SCOPE=koru
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

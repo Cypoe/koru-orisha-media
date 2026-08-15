@@ -1,33 +1,27 @@
-# Runtime image for koru-orisha-media.
-# Expects a prebuilt Linux binary at bin/media-server (see scripts/build-image.sh).
-FROM debian:bookworm-slim
+# Runtime image — Glance-style: alpine + one binary. No Python, no gosu, no Debian.
+# Empty catalog walks /media on boot. Optional JSON import if catalog is empty.
+# PUID is Docker `user:` in compose.nas.yaml, not a fat entrypoint.
+FROM alpine:3.22
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-      python3 \
-      zlib1g \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache tzdata
 
 WORKDIR /app
 
 COPY bin/media-server /app/media-server
 COPY public /app/public
-COPY scripts/index_media.py /app/scripts/index_media.py
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
-# Local compose bind-mounts one parent onto /media. NAS compose bind-mounts
-# three DSM shares onto /media/{movies,shows,music}.
-RUN chmod +x /app/media-server /app/entrypoint.sh \
-    && mkdir -p /media/movies /media/shows /media/music /data
+RUN sed -i 's/\r$//' /app/entrypoint.sh \
+    && chmod +x /app/media-server /app/entrypoint.sh \
+    && mkdir -p /media/movies /media/shows /media/music /media/books /media/musicVideos /data /config \
+    && echo entrypoint-tz-optional >/dev/null
 
 ENV KORU_MEDIA_ROOT=/media \
+    KORU_CATALOG=/data/catalog.sqlite \
     KORU_MANIFEST=/data/manifest.json \
-    KORU_SEMANTIC=/data/semantic.json
+    KORU_SEMANTIC=/data/semantic.json \
+    TZ=Europe/Berlin
 
 EXPOSE 3090
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -sf http://127.0.0.1:3090/library >/dev/null || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
