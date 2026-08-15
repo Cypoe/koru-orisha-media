@@ -4,7 +4,7 @@ The manifest is a published snapshot, not a request-time database dependency.
 
 ## Library roots
 
-Mount **one** media root that contains Jellyfin-style folders. The indexer walks that single tree and sets `kind` from the first path component:
+Mount **one** media root that contains Jellyfin-style folders. Settings persists which of those folders to walk (`library_roots` in the catalog). Defaults: `movies`, `shows`, `music`, `books`, `musicVideos`. Disabled mounts are skipped. The NAS indexer is `catalog.kz` `reindex` (binary), not `scripts/index_media.py`. Kind still comes from the first path component:
 
 | folder | `kind` | example |
 |--------|--------|---------|
@@ -75,7 +75,7 @@ The request process never probes. **FFmpeg / ffprobe must never run in Orisha re
 
 ### Stopgap (current)
 
-The indexer accepts an injectable offline probe (`scripts/index_media.py` `--probe` / `index_root(..., probe=...)`). Built-in `ftyp` peeks ISO BMFF brands for `.mp4`/`.m4v`/`.mov` without FFmpeg — enough for the personal milestone without requiring FFmpeg on the server path. Nested `video` / `audio` fields are stored in the published manifest; Orisha surfaces first-track `brand` / `codec` on item and watch pages as honest probe notes (not a client capability matrix).
+The NAS indexer is `catalog.kz` `reindex` (Settings / `nas-index.sh` / `KORU_REINDEX=1`). It peeks ISO BMFF `ftyp` brands for `.mp4`/`.m4v`/`.mov` without FFmpeg. `scripts/index_media.py` `--probe ftyp` remains a JSON fixture / CI fallback, not what runs on Synology. Nested `video` / `audio` fields are stored in the published manifest; Orisha surfaces first-track `brand` / `codec` on item and watch pages as honest probe notes (not a client capability matrix).
 
 This is the Jellyseerr-fast contrast vs Jellyfin: catalogue text and stream facts are **precomputed** (`project_semantic.py` named constructions / indexer `probe=`) and scraped from local JSON. Request handlers never call TMDB or ffprobe. Jellyfin’s live metadata/probe path is the anti-pattern here (heavy idle process, weak caching). Missing `semantic.json` still serves `/`, `/library`, physical HTML, and `/media/{id}` bytes — the local archive is the product.
 

@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +92,89 @@ def fetch_series(token: str, series_id: str) -> dict:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
+
+
+def fetch_remote_id(token: str, remote_id: str) -> dict:
+    req = urllib.request.Request(
+        f"{TVDB_API}/search/remoteid/{urllib.parse.quote(remote_id, safe='')}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+
+def series_id_from_remote(payload: dict) -> str:
+    data = payload.get("data")
+    rows: list = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        for key in ("series", "movies", "episodes"):
+            v = data.get(key)
+            if isinstance(v, list):
+                rows.extend(v)
+            elif isinstance(v, dict):
+                rows.append(v)
+        if not rows:
+            rows = [data]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        series = row.get("series") if isinstance(row.get("series"), dict) else row
+        if not isinstance(series, dict):
+            continue
+        sid = series.get("id") or series.get("tvdb_id")
+        if sid:
+            return str(sid)
+    return ""
+
+
+def overlay_from_tvdb(
+    payload: dict,
+    *,
+    imdb_id: str,
+    work_key: str = "",
+    series_id: str = "",
+) -> dict:
+    """SQLite hydrate_works row fields from a TVDB series payload. No network."""
+    data = payload.get("data") or payload
+    name = data.get("name") or data.get("Name") or ""
+    overview = data.get("overview") or data.get("Overview") or ""
+    year = 0
+    yraw = data.get("year") or data.get("firstAired") or data.get("first_air_time")
+    if isinstance(yraw, str) and len(yraw) >= 4 and yraw[:4].isdigit():
+        year = int(yraw[:4])
+    elif isinstance(yraw, int):
+        year = yraw
+    image = data.get("image") or data.get("imageUrl") or ""
+    if isinstance(image, str) and image.startswith("/"):
+        image = f"https://artworks.thetvdb.com{image}"
+    elif not isinstance(image, str):
+        image = ""
+    names: list[str] = []
+    chars = data.get("characters") or data.get("actors") or []
+    if isinstance(chars, list):
+        for c in chars:
+            if not isinstance(c, dict):
+                continue
+            n = c.get("personName") or c.get("name") or c.get("Name")
+            if isinstance(n, str) and n.strip() and n.strip() not in names:
+                names.append(n.strip())
+            if len(names) >= 12:
+                break
+    sid = str(data.get("id") or series_id)
+    return {
+        "imdb_id": imdb_id,
+        "work_key": work_key,
+        "source": "tvdb",
+        "tmdb_id": "",
+        "tvdb_id": sid,
+        "title": name if isinstance(name, str) else "",
+        "plot": overview if isinstance(overview, str) else "",
+        "year": year,
+        "poster_url": image,
+        "actors": "|".join(names),
+    }
 
 
 def apply_series_payload(

@@ -5,6 +5,10 @@
     "name": "Game of Thrones",
     "slug": "game-of-thrones",
     "year": "2011",
-    "overview": "Recorded TVDB series payload for offline enrichment tests."
+    "overview": "Recorded TVDB series payload for offline enrichment tests.",
+    "image": "https://artworks.thetvdb.com/banners/posters/121361-1.jpg",
+    "characters": [
+      { "personName": "Peter Dinklage", "name": "Tyrion Lannister" }
+    ]
   }
 }

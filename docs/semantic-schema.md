@@ -381,13 +381,45 @@ python3 scripts/enrich_tvdb.py --in fixtures/semantic.json --out /tmp/semantic.j
   --fixture fixtures/tvdb/series_121361.json
 ```
 
+## SQLite hydrate overlay (Wave 4)
+
+Offline job, not the HTTP request path. [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) reads distinct `entries.imdb_id` values (`[tt…]` already on disk), calls TMDB `/find` then movie/tv+credits (TVDB optional), and upserts `hydrate_works`. Reindex does **not** wipe this table (nfo overlay is rebuilt from disk; provider overlay is not).
+
+Table `hydrate_works`:
+
+| column | role |
+|--------|------|
+| `imdb_id` | primary key (`tt…`) |
+| `work_key` | catalog work path (informational) |
+| `source` | `tmdb`, `tvdb`, or `tmdb+tvdb` |
+| `tmdb_id` / `tvdb_id` | provider ids |
+| `title` / `plot` / `year` | catalogue text (plot used when nfo plot is empty) |
+| `poster_url` | `https://image.tmdb.org/…` or TVDB artwork URL |
+| `actors` | pipe-separated names (JSON-LD `actor` / HTML `.cast`) |
+| `retrieved_at` | UTC timestamp |
+
+```bash
+# No keys → exit 0 skip:
+python3 scripts/hydrate_catalog.py --catalog data/catalog.sqlite
+
+# CI:
+python3 scripts/hydrate_catalog.py --catalog /tmp/catalog.sqlite \
+  --fixture fixtures/tmdb/movie_329865.json --imdb tt2543164 --kind movie
+```
+
+`KORU_HYDRATE=1` on `media-server` only logs that overlay tables exist. `docker exec … hydrate` is a no-op (Alpine image has no Python). Do not put API keys in compose or the runtime image.
+
+## Integrations (follow-up only)
+
+Not in product this pass: Seerr Requests, Approve/Decline, blocklist-as-Seerr, user accounts, transcoding, or a plugin marketplace. After the work surface is stable, optional follow-ups are **clients** (Plex/Jellyfin-style remote) and **webhooks** (library changed). Document here when those land; do not invent Overseerr.
+
 ## Implementation stages
 
 1. Define local `Asset`, `Entity`, `ProviderIdentity`, and `Assertion` types with no network access. **Done** — [`scripts/semantic_schema.py`](../scripts/semantic_schema.py) + [`fixtures/semantic.json`](../fixtures/semantic.json).
 2. Add Schema.org/JSON-LD projection for one movie and one music recording. **Done** — `project_jsonld` (Arrival + beep).
 3. Add deterministic fixture-based identity resolution. **Done** — `resolve_asset`.
 4. Add provider identity storage without provider API calls. **Done** — hand-linked IMDb/TVDB on fixtures.
-5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Started** — [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py) (preferred live path; fixture in CI). [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) remains for recorded TVDB payloads / optional v4 keys.
+5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Done** for SQLite overlay — [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) writes `hydrate_works` from [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py) (preferred) and [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) (optional). Semantic-snapshot enrichers remain for `semantic.json`. Handlers only **read** overlay tables.
 6. Add provenance-aware conflict resolution. **Done** — `resolve_name_conflict` keeps both name assertions (`accepted` / `superseded`); `join_asset` looks up by opaque asset id.
 7. Precompute collection projections for Orisha requests. **Done** — [`scripts/project_semantic.py`](../scripts/project_semantic.py) runs named constructions (`orisha.item`, `orisha.links`, `schema.org.jsonld`) into top-level `projections[]` (not fields on `Entity`). Orisha loads `KORU_SEMANTIC` (default `data/semantic.json`) with the physical manifest. Missing `projections` or missing constructions is physical HTML only. First presentable is the local archive: `/` and `/library` list playable manifest files even when the fetched index is absent.
 8. Expose provider links and capability affordances only when data and permission exist. **Done** — item/watch HTML + `Link` related/alternate when the join hits; demo/unlinked assets stay physical-only.

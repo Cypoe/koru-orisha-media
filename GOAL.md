@@ -77,7 +77,7 @@ The indexer must never be required for an ordinary library request. It may be ru
 
 #### Deferred / future indexer (endgame)
 
-The first milestone’s walker (`scripts/index_media.py` with optional `--probe ftyp`) is a **stopgap**. It must not freeze the long-term design into a permanent in-process directory walk inside Orisha or a forever-Python indexer.
+The first milestone’s JSON walker (`scripts/index_media.py` with optional `--probe ftyp`) is a **fixture / CI fallback**. It must not be required on the NAS. Today’s Synology indexer is the in-process Koru walk (`catalog.kz` `reindex`, Settings / `reindex.requested`). That must not freeze the long-term design into a forever-Python indexer; a later Synology Indexer feed can still replace the walk.
 
 Later, prefer this shape (still outside the request plane):
 

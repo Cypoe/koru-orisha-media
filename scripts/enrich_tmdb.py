@@ -89,7 +89,7 @@ def tmdb_get(path: str, *, token: str = "", api_key: str = "") -> dict:
 
 def fetch_movie(tmdb_id: str, *, token: str = "", api_key: str = "") -> dict:
     return tmdb_get(
-        f"/movie/{urllib.parse.quote(tmdb_id)}?append_to_response=external_ids",
+        f"/movie/{urllib.parse.quote(tmdb_id)}?append_to_response=external_ids,credits",
         token=token,
         api_key=api_key,
     )
@@ -97,10 +97,95 @@ def fetch_movie(tmdb_id: str, *, token: str = "", api_key: str = "") -> dict:
 
 def fetch_tv(tmdb_id: str, *, token: str = "", api_key: str = "") -> dict:
     return tmdb_get(
-        f"/tv/{urllib.parse.quote(tmdb_id)}?append_to_response=external_ids",
+        f"/tv/{urllib.parse.quote(tmdb_id)}?append_to_response=external_ids,credits",
         token=token,
         api_key=api_key,
     )
+
+
+def fetch_find(imdb_id: str, *, token: str = "", api_key: str = "") -> dict:
+    return tmdb_get(
+        f"/find/{urllib.parse.quote(imdb_id)}?external_source=imdb_id",
+        token=token,
+        api_key=api_key,
+    )
+
+
+def pick_find_kind(payload: dict, hint: str = "") -> tuple[str, str] | None:
+    """Return (kind, tmdb_id) from a /find payload. hint is movie|tv."""
+    movies = payload.get("movie_results") or []
+    tvs = payload.get("tv_results") or []
+    if hint == "tv" and tvs:
+        return ("tv", str(tvs[0].get("id") or ""))
+    if hint == "movie" and movies:
+        return ("movie", str(movies[0].get("id") or ""))
+    if movies:
+        return ("movie", str(movies[0].get("id") or ""))
+    if tvs:
+        return ("tv", str(tvs[0].get("id") or ""))
+    return None
+
+
+def poster_url_from_path(poster_path: object) -> str:
+    if not isinstance(poster_path, str) or not poster_path:
+        return ""
+    if poster_path.startswith("https://") or poster_path.startswith("http://"):
+        return poster_path
+    if poster_path.startswith("/"):
+        return f"https://image.tmdb.org/t/p/w500{poster_path}"
+    return ""
+
+
+def actors_from_credits(payload: dict, limit: int = 12) -> str:
+    credits = payload.get("credits") or {}
+    cast = credits.get("cast") if isinstance(credits, dict) else None
+    if not isinstance(cast, list):
+        cast = payload.get("cast") if isinstance(payload.get("cast"), list) else []
+    ranked: list[tuple[int, str]] = []
+    for c in cast:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("original_name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        order = c.get("order")
+        ranked.append((order if isinstance(order, int) else 999, name.strip()))
+    ranked.sort(key=lambda x: x[0])
+    names: list[str] = []
+    for _, name in ranked:
+        if name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return "|".join(names)
+
+
+def overlay_from_tmdb(
+    payload: dict,
+    *,
+    imdb_id: str,
+    work_key: str = "",
+    kind: str = "movie",
+) -> dict:
+    """SQLite hydrate_works row fields from a TMDB movie/tv payload. No network."""
+    _ = kind
+    tmdb_id = str(payload.get("id") or "")
+    title = payload.get("title") or payload.get("name") or ""
+    overview = payload.get("overview") or ""
+    year = _year_from(payload) or 0
+    imdb = _imdb_id(payload) or imdb_id
+    return {
+        "imdb_id": imdb,
+        "work_key": work_key,
+        "source": "tmdb",
+        "tmdb_id": tmdb_id,
+        "tvdb_id": "",
+        "title": title if isinstance(title, str) else "",
+        "plot": overview if isinstance(overview, str) else "",
+        "year": year,
+        "poster_url": poster_url_from_path(payload.get("poster_path")),
+        "actors": actors_from_credits(payload),
+    }
 
 
 def _year_from(payload: dict) -> int | None:

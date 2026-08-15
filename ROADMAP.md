@@ -23,7 +23,7 @@
 - Publish manifests atomically.
 - Hot reload when manifest mtime changes and no media streams are active.
 
-**Stopgap vs endgame (docs only — not implemented yet):** today’s Python walker + `--probe ftyp` is the personal-milestone path. Later catalog feed should follow the Synology Indexer / File Station indexing pattern (consume Synology’s media index the way Radarr/Jellyfin do — not a permanent in-process walker as the long-term design). Richer metadata gathering later uses **ffmpeg/ffprobe in the offline indexer or Synology-fed batch only**, never in request handlers. Prefer **yyjson** (Koru lift / system `libyyjson`) over forever-`scripts/index_media.py` for the long-term manifest + indexer JSON stack. Opaque IDs + atomic publish stay.
+**Stopgap vs endgame (docs only):** the NAS indexer is `catalog.kz` `reindex` (Settings / `nas-index.sh` / `KORU_REINDEX=1`). `scripts/index_media.py` remains a JSON fixture / CI fallback, not what runs on Synology. Later catalog feed may follow the Synology Indexer / File Station indexing pattern (consume Synology’s media index the way Radarr/Jellyfin do). Richer metadata gathering later uses **ffmpeg/ffprobe in the offline indexer or Synology-fed batch only**, never in request handlers. Prefer **yyjson** (Koru lift / system `libyyjson`) over forever-`scripts/index_media.py` for the long-term manifest JSON stack. Opaque IDs + atomic publish stay.
 
 ## Phase 3: hypermedia interaction
 
@@ -80,11 +80,11 @@ Not more docs. Ranked concrete features:
 2. **Indexer depth** — landed: injectable `--probe` / `probe=` hook (`ftyp` built-in) + `--write-id-sidecars` + auto-move of orphaned `*.id` sidecars on rename/move (fingerprint or same-dir 1:1) + WebVTT subtitle sidecar path. Orisha item/watch surface nested first-track `video`/`audio` brand/codec probe notes. Richer codec/stream facts are an **endgame offline** concern (ffprobe / Synology-fed batch), not the next Orisha code slice.
 3. **Frontend Step 9 hardening** — landed: watch related shelf swaps `#library-region` only; emitted `public/enhance.js` (`koru/htmx` + usage `host.k`) refuses targets that own `#player`, checks node identity after swap, `performance.mark` on swaps, popstate re-fetch; watch `#resume-ui` (Resumed from / Restart) without recreating `#player`. Still open: measured koru/dom only if marks justify it.
 
-Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, switching this app from `run-accept-loop` to `orisha:serve` (pump is vendored; STREAM/Request still missing on `reply`), sendfile/mmap, or another extraction-only doc pass. Live catalogue enrichment uses **offline TMDB** (`scripts/enrich_tmdb.py`); TVDB remains optional.
+Do **not** next: Synology Indexer integration, FFmpeg/ffprobe plumbing, vendoring `yyjson.c` into this media binary or Docker image, switching this app from `run-accept-loop` to `orisha:serve` (pump is vendored; STREAM/Request still missing on `reply`), sendfile/mmap, or another extraction-only doc pass. Live catalogue enrichment uses **offline TMDB** ([`scripts/hydrate_catalog.py`](scripts/hydrate_catalog.py) → `hydrate_works`; [`scripts/enrich_tmdb.py`](scripts/enrich_tmdb.py) for `semantic.json`). TVDB remains optional. Request handlers never call providers.
 
 ## Explicitly deferred
 
-Transcoding, HLS/DASH, background metadata services, recommendation systems, remote media discovery, and a large client compatibility layer.
+Transcoding, HLS/DASH, background metadata services, recommendation systems, remote media discovery, a large client compatibility layer, **Seerr Requests / Approve / Decline / blocklist-as-Seerr**, user accounts, and a plugin marketplace. Client and webhook integrations wait until the work surface is stable.
 
 ### Deferred future indexer (endgame; no code this pass)
 
@@ -95,4 +95,4 @@ Documented so Phase 2 / GOAL stay coherent with packaging notes:
 | Catalog source | Synology Indexer / File Station indexing feed (Radarr/Jellyfin-style), not a permanent in-process walker | Still publishes opaque IDs + atomic manifest snapshots Orisha already loads |
 | Probe / metadata | `ffmpeg` / `ffprobe` in the **offline indexer** or Synology-fed batch | **Never** in Orisha request handlers or the HTTP media path |
 | Today’s probe | `--probe ftyp` + nested `video`/`audio` | Stopgap for the personal milestone without requiring FFmpeg on the server path |
-| JSON stack | **`vendor/json`** tiny writer (not `koru/yyjson`); CLI usage `src/json` | Python fallback if koruc missing. Do not vendor `yyjson.c` into `bin/media-server`. Full indexer remains `scripts/index_media.py`. Request path stays graph scrape. |
+| JSON stack | **`vendor/json`** tiny writer (not `koru/yyjson`); CLI usage `src/json` | Python fallback if koruc missing. Do not vendor `yyjson.c` into `bin/media-server`. NAS indexer is `catalog.kz` `reindex`; `scripts/index_media.py` is fixture JSON only. Request path stays graph scrape. |
