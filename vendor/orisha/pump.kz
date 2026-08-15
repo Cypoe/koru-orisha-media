@@ -1,0 +1,1032 @@
+// Orisha — the pump.
+//
+// A pump owns the accept-and-readiness loop for exactly one platform. It reads
+// a request off the wire and fires `arrived` once per request; everything a
+// pump does NOT do — parsing, routing, response shaping — belongs to the Koru
+// flow that consumes the stream, and is written once for every platform.
+//
+// The point of the split: a new platform is a `~proc run|<name>` body, not a
+// copy of the server. Selection is a build-time variant, so the unselected
+// pumps are not merely unused — they are not emitted at all.
+//
+//   ~[build(linux)]std/build:variants { "orisha/pump:run": "epoll" }
+//
+// The `unikraft` variant is the reason this file exists: a unikernel has no
+// second thread to spawn and no kqueue, so it needs its own loop — and now
+// that loop is the only thing it needs.
+//
+// Note the `$mod.` qualification through both loop bodies: a proc body that
+// carries effect branches splices into its CALLER, where this module's scope
+// does not exist. The compiler refuses the bare names and says so.
+
+// Host aliases are pump_* like routing.kz's router_std: a sibling pump.kz
+// nested under the package index must not declare const std / posix / c or
+// Zig reports ambiguous reference against the parent's same names.
+const pump_std = @import("std");
+const pump_posix = pump_std.posix;
+const pump_c = pump_std.c;
+
+// One request, read and waiting for its answer. `raw` borrows the pump's read
+// buffer and is valid for the duration of the `arrived` arm only.
+//
+// `fd` is `c_int`, not `pump_posix.fd_t`. Exchange is reachable from every pump
+// including the unikernel one, and on `x86_64-freestanding` `pump_std.posix` has no
+// syscall layer to name a descriptor type with. `c_int` is what `accept`
+// returns on every target we build, and it is what `pump_posix.fd_t` already is on
+// Linux and macOS, so the hosted pumps are unaffected.
+pub const Exchange = struct {
+    fd: c_int,
+    raw: []const u8,
+    keep_alive: bool = true,
+};
+
+const READ_BUFFER = 4096;
+const MAX_EVENTS = 64;
+
+// io_uring: how deep the submission ring is, and the tag that marks an accept
+// completion apart from a connection's.
+//
+// kqueue and epoll ask "which of these is ready, so I can then read it". io_uring
+// inverts that: the read is submitted UP FRONT and the completion says it already
+// happened. So this pump has no readiness step at all — the loop body handles a
+// result, never a hint.
+const URING_ENTRIES: u16 = 256;
+const URING_ACCEPT: u64 = pump_std.math.maxInt(u64);
+
+// One read is not one request.
+//
+// A browser opening a page fires its asset requests back to back, and TCP is
+// free to hand all of them over in a single read. Answering only the first —
+// which is what all three pumps did until 2026-08-10 — does not drop those
+// requests visibly. The connection stays open and the client keeps waiting, so
+// when a later response finally arrives the client matches it to the OLDEST
+// request it has outstanding. The bytes are then read as the wrong resource:
+// Firefox reports a JavaScript module "blocked because of a disallowed MIME
+// type (text/html)", because it is being handed the HTML document's response.
+//
+// curl cannot see this. It waits for each response before sending the next, so
+// every request is alone in its packet and the bug never fires. Only a client
+// that pipelines reaches it — which is every browser.
+//
+// This function answers the one question the three pumps share: where does the
+// first request in this buffer end? The loops that use it are mechanical; this
+// is the part that must not be written three times.
+fn requestLen(buf: []const u8) ?usize {
+    const head_end = pump_std.mem.indexOf(u8, buf, "\r\n\r\n") orelse return null;
+    var total = head_end + 4;
+    if (contentLength(buf[0..total])) |body_len| total += body_len;
+    if (total > buf.len) return null; // body still in flight
+    return total;
+}
+
+// A request can arrive in pieces, so a connection needs somewhere to keep the
+// part that has not finished yet.
+//
+// Without this the pump had only the bytes of one read. A burst bigger than the
+// read buffer therefore split a request down the middle, and the tail was then
+// parsed as if it were the start of a new one — which produced EXTRA responses,
+// not fewer: measured 43 responses to 40 pipelined requests. A client counting
+// replies against its own outstanding requests is desynchronised from then on,
+// and what it renders depends on where the split happened to land. That is the
+// "sometimes it works" shape.
+const REQUEST_BUFFER = 16 * 1024;
+const MAX_TRACKED_FD = 4096;
+
+// One connection, and everything reading it needs: the socket, the bytes held
+// so far, and how many of them there are.
+//
+// `fd` lives here because `fill` takes a connection and nothing else. A read
+// step that has to be told which descriptor to read is not a seam — the caller
+// would still be the one holding the platform's idea of a socket.
+//
+// It is `c_int` for the same reason Exchange's is: this type is now reachable
+// from the unikernel pump too, and `x86_64-freestanding` has no `pump_std.posix`
+// syscall layer to name a descriptor type with. On Linux and macOS `pump_posix.fd_t`
+// already IS `c_int`, so the hosted pumps hand theirs over unchanged.
+pub const ConnState = struct {
+    fd: c_int = -1,
+    buf: [REQUEST_BUFFER]u8 = undefined,
+    len: usize = 0,
+};
+
+var conn_states: [MAX_TRACKED_FD]?*ConnState = .{null} ** MAX_TRACKED_FD;
+
+fn connState(fd: pump_posix.fd_t) ?*ConnState {
+    const idx: usize = @intCast(fd);
+    if (idx >= MAX_TRACKED_FD) return null;
+    if (conn_states[idx]) |s| return s;
+    const s = pump_std.heap.c_allocator.create(ConnState) catch return null;
+    s.* = .{ .fd = fd };
+    conn_states[idx] = s;
+    return s;
+}
+
+fn releaseConn(fd: pump_posix.fd_t) void {
+    const idx: usize = @intCast(fd);
+    if (idx >= MAX_TRACKED_FD) return;
+    if (conn_states[idx]) |s| {
+        pump_std.heap.c_allocator.destroy(s);
+        conn_states[idx] = null;
+    }
+}
+
+// Drop the requests already answered and slide the unfinished tail to the
+// front, so the next read continues it instead of mistaking it for a new one.
+fn retainTail(buf: []u8, len: usize, consumed: usize) usize {
+    if (consumed == 0) return len;
+    const remaining = len - consumed;
+    if (remaining > 0) pump_std.mem.copyForwards(u8, buf[0..remaining], buf[consumed..len]);
+    return remaining;
+}
+
+fn contentLength(head: []const u8) ?usize {
+    var line_start: usize = 0;
+    while (line_start < head.len) {
+        const line_end = pump_std.mem.indexOfPos(u8, head, line_start, "\r\n") orelse break;
+        const line = head[line_start..line_end];
+        if (pump_std.mem.indexOfScalar(u8, line, ':')) |colon| {
+            // Header names are case-insensitive — RFC 9110.
+            if (pump_std.ascii.eqlIgnoreCase(pump_std.mem.trim(u8, line[0..colon], " \t"), "content-length")) {
+                return pump_std.fmt.parseInt(usize, pump_std.mem.trim(u8, line[colon + 1 ..], " \t"), 10) catch null;
+            }
+        }
+        line_start = line_end + 2;
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// The unikernel's sockets, as plain C.
+// ---------------------------------------------------------------------------
+// Unikraft's posix-socket + lwip put these in the image as ordinary symbols in
+// the same address space — the same way std/io reaches nolibc's fputs. They are
+// declared here rather than reached through `pump_std.net` because STD.NET CANNOT
+// EXIST on this target: `pump_std.posix` has no `sockaddr` there, and it is a hard
+// compile error rather than a missing feature. That is the whole reason this
+// file is split by platform. Measured in koru/examples/unikraft-net.
+extern fn socket(domain: c_int, stype: c_int, protocol: c_int) c_int;
+extern fn bind(fd: c_int, addr: *const anyopaque, len: u32) c_int;
+extern fn listen(fd: c_int, backlog: c_int) c_int;
+extern fn accept(fd: c_int, addr: ?*anyopaque, len: ?*u32) c_int;
+extern fn recv(fd: c_int, buf: [*]u8, len: usize, flags: c_int) isize;
+extern fn send(fd: c_int, buf: [*]const u8, len: usize, flags: c_int) isize;
+extern fn close(fd: c_int) c_int;
+
+// Wall-clock seconds. The idle timeout below has to be measured in TIME, and
+// the pump's own loop is not a clock — see KEEPALIVE_IDLE_SECONDS.
+//
+// Bound through `@extern` rather than declared as `extern fn time`, because the
+// companion contract already declares that symbol for the Date header and the
+// two modules are emitted into ONE file: two declarations of the same name are
+// an ambiguous reference, not a duplicate the compiler can silently accept.
+const wallClockSeconds = @extern(*const fn (?*i64) callconv(.c) i64, .{ .name = "time" });
+
+// Unikraft's nolibc imports musl's `netinet/in.h`, where there is NO `sin_len`
+// byte: the family is a u16 at offset 0. Writing the BSD layout instead puts
+// 0x0210 where the family belongs, and then `socket` and `listen` both succeed
+// while `bind` fails — so the error points at the wrong call.
+const SockaddrIn = extern struct {
+    family: u16 = 2,
+    port: u16,
+    addr: u32,
+    zero: [8]u8 = [_]u8{0} ** 8,
+};
+
+// `poll`, from the same place the socket calls come from — Unikraft's
+// posix-socket layer, as an ordinary symbol in the same address space.
+//
+// The unikernel pump needs it for the reason the hosted pumps need kqueue and
+// epoll: a browser opens SEVERAL connections and holds them all open. A loop
+// that accepts one connection and serves it to completion answers the first
+// browser connection and never accepts the second, so the page never finishes
+// loading. Measured 2026-08-10 against korulang.org in this very image: curl
+// worked perfectly (it closes between requests) and Firefox timed out on every
+// page, because the difference is not the requests, it is how many sockets are
+// open at once.
+const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
+const POLLIN: c_short = 0x001;
+// A hangup is not readability. `poll` reports a peer that went away through
+// these, and it may report them WITHOUT POLLIN — so a loop that waits only for
+// readable data never learns the connection is dead and never frees its slot.
+// The table then fills with sockets nobody is on the other end of, and the next
+// real connection is the one that suffers.
+const POLLERR: c_short = 0x008;
+const POLLHUP: c_short = 0x010;
+const POLLNVAL: c_short = 0x020;
+extern fn poll(fds: [*]PollFd, nfds: c_ulong, timeout: c_int) c_int;
+
+// One in-flight connection per slot, each owning the request it has not
+// finished reading.
+//
+// A browser does not close a connection when it is finished with it — it keeps
+// it open in case there is more to fetch. One page of korulang.org issues 68
+// requests, spread over however many sockets Firefox feels like holding, and
+// those sockets stay open across page loads. So slots do not free themselves on
+// any timescale the server controls.
+// Keep this comfortably BELOW lwip's own pool (CONFIG_LWIP_NUM_TCPCON in the
+// Kraftfile), so the pump is what runs out first and does so gracefully —
+// hanging up on its idlest connection — rather than the network stack refusing
+// a connection the pump never hears about.
+//
+// Measured 2026-08-10: with both set to 64 they collided exactly there. Load at
+// 48 concurrent connections was clean; 64 produced dropped reads, because two
+// independent limits with the same value have no headroom between them.
+const MAX_UK_CONNS = 128;
+
+// A unikernel connection is a connection plus the bookkeeping only this pump
+// does. The socket and the held bytes are `ConnState`, the same type the hosted
+// pumps use, so `fill` takes one thing on every platform rather than two shapes
+// that happen to have the same fields.
+const UkConn = struct {
+    st: ConnState = .{},
+    /// When this connection was last heard from. Only the ORDER matters.
+    seq: u64 = 0,
+    /// Wall-clock second this connection was last heard from.
+    last_seen: i64 = 0,
+};
+
+var uk_conns: [MAX_UK_CONNS]UkConn = [_]UkConn{.{}} ** MAX_UK_CONNS;
+var uk_seq: u64 = 0;
+
+// Hang up on a connection nobody is using.
+//
+// A slot is not the scarce thing — lwip's own connection pool is, and it is
+// sized in the image config (CONFIG_LWIP_NUM_TCPCON). A browser holds keep-alive
+// sockets open indefinitely, so if the server never hangs up, that pool fills
+// with connections nobody is on and the NEXT visitor gets a reset. Waiting for
+// the client to close is waiting for something that does not happen.
+//
+// Every other HTTP server has this timeout; this one did not until 2026-08-10,
+// and the symptom was a browser that loaded eighteen pages and then could not
+// load any.
+const POLL_TICK_MS: c_int = 1000;
+
+// Idle time is measured with a CLOCK, not by counting loop iterations.
+//
+// This counted iterations until 2026-08-10, and an event loop is not a clock:
+// when there is work to do `poll` returns immediately, so the loop spins
+// thousands of times a second and "5 ticks" becomes a few milliseconds. Any
+// connection that simply had no data ready for five consecutive iterations —
+// which under load is most of them, most of the time — was hung up on mid-use.
+//
+// The measurement hid it: an IDLE browser lets `poll` block its full second, so
+// ticks and seconds coincide exactly when nothing is happening. It only bit
+// under load, as a slow drip of dropped reads — 19 in 30 seconds at just 32
+// connections, scaling with both concurrency and duration.
+const KEEPALIVE_IDLE_SECONDS: i64 = 5;
+
+// Give a newly accepted connection a slot, evicting the longest-idle one if
+// every slot is taken.
+//
+// Refusing the NEW connection instead — which is what this did first — drops
+// the request somebody is actually waiting for in favour of sockets a browser
+// has finished with but not closed. Firefox reports that as NS_ERROR_NET_RESET
+// and the page fails to load, after three page loads had filled the table.
+fn ukAdmit(incoming: c_int) void {
+    uk_seq += 1;
+    for (&uk_conns) |*s| {
+        if (s.st.fd >= 0) continue;
+        s.st.fd = incoming;
+        s.st.len = 0;
+        s.seq = uk_seq;
+        s.last_seen = wallClockSeconds(null);
+            return;
+    }
+
+    var oldest: *UkConn = &uk_conns[0];
+    for (&uk_conns) |*s| {
+        if (s.seq < oldest.seq) oldest = s;
+    }
+    _ = close(oldest.st.fd);
+    oldest.st.fd = incoming;
+    oldest.st.len = 0;
+    oldest.seq = uk_seq;
+    oldest.last_seen = wallClockSeconds(null);
+}
+
+// ============================================================================
+// RUN — the loop. One variant per platform.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Shared helpers — identical on every POSIX platform, written once.
+// ---------------------------------------------------------------------------
+
+// Ask the TARGET what non-blocking means; do not assert it.
+//
+// This was `0x0004` — the macOS value — hardcoded, and the Linux pump used it
+// too. On Linux the bit is `0x800`, so the flag never took: the socket stayed
+// blocking, and an accept loop whose only exit is "would block" never exits.
+// The Linux build therefore accepted connections forever and read none of them.
+// It printed "Orisha listening", accepted the first connection, and went silent
+// — a server that looks up and answers nothing.
+//
+// A number copied from one platform's headers is a fact about THAT platform. The
+// pump seam exists precisely so each platform states its own; this one line went
+// around it, which is why the bug survived until the program was first run on
+// Linux (2026-08-10, in a container).
+const O_NONBLOCK: u32 = @as(u32, @bitCast(pump_posix.O{ .NONBLOCK = true }));
+
+fn openListener(port: u16) ?pump_std.net.Server {
+    const address = pump_std.net.Address.parseIp("0.0.0.0", port) catch return null;
+    return address.listen(.{
+        .reuse_address = true,
+        .kernel_backlog = 512,
+    }) catch null;
+}
+
+fn markNonBlocking(fd: pump_posix.fd_t) void {
+    const flags = pump_posix.fcntl(fd, pump_posix.F.GETFL, 0) catch 0;
+    _ = pump_posix.fcntl(fd, pump_posix.F.SETFL, flags | O_NONBLOCK) catch {};
+}
+
+fn disableNagle(fd: pump_posix.fd_t) void {
+    const enable: i32 = 1;
+    pump_posix.setsockopt(fd, pump_posix.IPPROTO.TCP, pump_posix.TCP.NODELAY, pump_std.mem.asBytes(&enable)) catch {};
+}
+
+// Write the whole thing, and treat "would block" as what it is — a request to
+// wait, not a failure.
+//
+// Every accepted connection is non-blocking (markNonBlocking, below). So once a
+// response is bigger than the kernel's send buffer, `write` stops accepting and
+// says WouldBlock. Catching that alongside real errors and returning false — as
+// this did until 2026-08-10 — abandons the response part-written and closes the
+// connection, while the headers have already promised the full Content-Length.
+//
+// Nothing about that looks like a failure from the outside. Small responses fit
+// in one buffer and always arrived, so the bug was invisible until something
+// large went through: measured against korulang.org, one 1.5 MB image returned
+// 327093, 1561984, 1348077, 768057 and 498501 bytes on five consecutive
+// requests. A browser renders half an image, and a truncated JavaScript module
+// simply fails to import.
+fn writeAll(fd: pump_posix.fd_t, data: []const u8) bool {
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const n = pump_posix.write(fd, data[offset..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                // Wait for the socket to drain, then carry on from the same
+                // offset. A peer that never drains hits the timeout and the
+                // connection is genuinely broken.
+                var pfd = [_]pump_posix.pollfd{.{ .fd = fd, .events = pump_posix.POLL.OUT, .revents = 0 }};
+                const ready = pump_posix.poll(&pfd, WRITE_WAIT_MS) catch return false;
+                if (ready == 0) return false;
+                if (pfd[0].revents & (pump_posix.POLL.ERR | pump_posix.POLL.HUP | pump_posix.POLL.NVAL) != 0) return false;
+                continue;
+            },
+            else => return false,
+        };
+        if (n == 0) return false;
+        offset += @intCast(n);
+    }
+    return true;
+}
+
+// How long to wait for a stalled peer to drain before calling the connection
+// broken. Long enough that a slow link finishes a large asset, short enough
+// that a dead peer cannot pin the worker.
+const WRITE_WAIT_MS: i32 = 10_000;
+
+// ---------------------------------------------------------------------------
+// How many loops a hosted pump runs.
+// ---------------------------------------------------------------------------
+// One readiness loop saturates one core and no more, so a single-threaded pump
+// on a twelve-core machine is measured against eleven idle ones. This is the
+// same choice nginx spells `worker_processes auto`, and comparing against nginx
+// with that set while running one loop is not a comparison — it is a handicap
+// nobody wrote down.
+//
+// Each worker owns a private readiness instance and the connections handed to
+// it. Nothing is shared: a descriptor belongs to exactly one worker for its
+// whole life, so the connection table is only ever touched at an index one
+// thread owns. The one genuinely shared thing in a request's path — the buffer
+// the response header is built into — is `threadlocal` in the companion, and
+// was the ONLY thing that had to change above this file.
+const MAX_WORKERS = 16;
+
+fn workerCount() usize {
+    const n = pump_std.Thread.getCpuCount() catch return 1;
+    return @min(@max(n, 1), MAX_WORKERS);
+}
+
+// ---------------------------------------------------------------------------
+// FILL — the read seam. One variant per platform, mirroring `reply`.
+// ---------------------------------------------------------------------------
+
+// The hosted read: everything with a `pump_std.posix`.
+//
+// `read` says "nothing available right now" by returning error.WouldBlock, and
+// a peer that has finished says it by returning zero bytes. The loops used to
+// spell this `catch 0` and then treat zero as the end of the connection, which
+// gives those two answers the same meaning. They are not the same: one is a
+// connection with more to come, the other is a connection with nothing more
+// ever. Separating them is what `idle` is for.
+~proc fill|zig {
+    const n = $mod.pump_posix.read(@intCast(st.fd), st.buf[st.len..]) catch |err| switch (err) {
+        error.WouldBlock => return .idle,
+        else => return .gone,
+    };
+    if (n == 0) return .gone;
+    st.len += n;
+    return .more;
+}
+
+// The unikernel's read. `pump_posix.read` has no implementation on a freestanding
+// target; `recv` is the socket symbol this pump already uses for everything
+// else.
+//
+// A negative result is an error and zero is a closed peer — but this pump only
+// calls `fill` after `poll` said the socket was readable, so "nothing to read"
+// is not a case it reaches. Both fold to `gone`.
+~proc fill|unikraft {
+    const got = $mod.recv(st.fd, @ptrCast(&st.buf[st.len]), st.buf.len - st.len, 0);
+    if (got <= 0) return .gone;
+    st.len += @intCast(got);
+    return .more;
+}
+
+// ---------------------------------------------------------------------------
+// kqueue — macOS and the BSDs. The default variant.
+// ---------------------------------------------------------------------------
+
+~proc run|zig {
+    var server = $mod.openListener(port) orelse return .{ .failed = "Failed to listen" };
+
+    const n_workers = $mod.workerCount();
+
+    // The listener is NOT in anybody's readiness set. This thread does nothing
+    // but accept, and blocks while it waits — which is why the listener stays
+    // blocking where the connections do not. Arming it inside a worker's kqueue
+    // would make that one worker answer every new connection as well as its own
+    // traffic.
+    var kqs: [$mod.MAX_WORKERS]i32 = undefined;
+
+    // The per-connection half of the loop, which is the whole loop now that
+    // accepting has moved out. One runs per worker, each on its own kqueue,
+    // each seeing only the descriptors handed to it.
+    const Worker = struct {
+        fn loop(kq: i32) void {
+            var changes: [1]$mod.pump_c.Kevent = undefined;
+            var no_changes: [0]$mod.pump_c.Kevent = undefined;
+            var events: [$mod.MAX_EVENTS]$mod.pump_c.Kevent = undefined;
+
+            while (true) {
+                const n = $mod.pump_c.kevent(kq, &no_changes, 0, &events, $mod.MAX_EVENTS, null);
+                if (n <= 0) continue;
+
+                for (events[0..@intCast(n)]) |event| {
+                    const fd: $mod.pump_posix.fd_t = @intCast(event.ident);
+
+                    const st = $mod.connState(fd) orelse {
+                        $mod.pump_posix.close(fd);
+                        continue;
+                    };
+
+                    switch ($mod.fill_event.handler(.{ .st = st })) {
+                        .more => {},
+                        // Nothing new to frame, but the connection is alive.
+                        // Re-arm and wait rather than closing it.
+                        .idle => {
+                            changes[0] = .{
+                                .ident = @intCast(fd),
+                                .filter = $mod.pump_c.EVFILT.READ,
+                                .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+                                .fflags = 0,
+                                .data = 0,
+                                .udata = undefined,
+                            };
+                            _ = $mod.pump_c.kevent(kq, &changes, 1, &no_changes, 0, null);
+                            continue;
+                        },
+                        .gone => {
+                            $mod.releaseConn(fd);
+                            $mod.pump_posix.close(fd);
+                            continue;
+                        },
+                    }
+
+                    // Answer every COMPLETE request; keep any unfinished tail
+                    // for the next read rather than parsing it as a fresh one.
+                    var consumed: usize = 0;
+                    var alive = true;
+                    while (consumed < st.len) {
+                        const take = $mod.requestLen(st.buf[consumed..st.len]) orelse break;
+                        var exchange = $mod.Exchange{ .fd = fd, .raw = st.buf[consumed .. consumed + take] };
+                        arrived(&exchange);
+                        consumed += take;
+                        if (!exchange.keep_alive) {
+                            alive = false;
+                            break;
+                        }
+                    }
+                    st.len = $mod.retainTail(&st.buf, st.len, consumed);
+
+                    // Headers that never end are not a request this server can answer.
+                    if (alive and st.len == st.buf.len) alive = false;
+
+                    if (!alive) {
+                        $mod.releaseConn(fd);
+                        $mod.pump_posix.close(fd);
+                        continue;
+                    }
+
+                    // ONESHOT disarms on delivery — re-arm for the next request.
+                    changes[0] = .{
+                        .ident = @intCast(fd),
+                        .filter = $mod.pump_c.EVFILT.READ,
+                        .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+                        .fflags = 0,
+                        .data = 0,
+                        .udata = undefined,
+                    };
+                    _ = $mod.pump_c.kevent(kq, &changes, 1, &no_changes, 0, null);
+                }
+            }
+        }
+    };
+
+    for (0..n_workers) |i| {
+        kqs[i] = $mod.pump_posix.kqueue() catch return .{ .failed = "Failed to create kqueue" };
+        _ = $mod.pump_std.Thread.spawn(.{}, Worker.loop, .{kqs[i]}) catch
+            return .{ .failed = "Failed to spawn worker" };
+    }
+
+    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    $mod.pump_std.debug.print("Pump: kqueue, {} workers, keep-alive, TCP_NODELAY\n", .{n_workers});
+
+    // Hand each new connection to the next worker in turn. A descriptor belongs
+    // to that worker for the rest of its life, which is what makes the shared
+    // connection table safe without a lock: no index is ever touched twice.
+    var next: usize = 0;
+    var arm: [1]$mod.pump_c.Kevent = undefined;
+    var none: [0]$mod.pump_c.Kevent = undefined;
+    while (true) {
+        const conn = server.accept() catch continue;
+        const client_fd = conn.stream.handle;
+        $mod.disableNagle(client_fd);
+        $mod.markNonBlocking(client_fd);
+
+        arm[0] = .{
+            .ident = @intCast(client_fd),
+            .filter = $mod.pump_c.EVFILT.READ,
+            .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+            .fflags = 0,
+            .data = 0,
+            .udata = undefined,
+        };
+        _ = $mod.pump_c.kevent(kqs[next], &arm, 1, &none, 0, null);
+        next = (next + 1) % n_workers;
+    }
+
+    return .{ .stopped = "Server stopped" };
+}
+
+// ---------------------------------------------------------------------------
+// epoll — Linux. Selected by `--build=linux`.
+// ---------------------------------------------------------------------------
+
+~proc run|epoll {
+    const linux = $mod.pump_std.os.linux;
+
+    var server = $mod.openListener(port) orelse return .{ .failed = "Failed to listen" };
+
+    const n_workers = $mod.workerCount();
+
+    // The listener is NOT in anybody's readiness set. This thread does nothing
+    // but accept, and it blocks while it waits — which is why the listener is
+    // left blocking where the connections are not. Multiplexing the listener
+    // into a worker's epoll would make one worker answer every new connection
+    // as well as its own traffic.
+    // ONE readiness instance, shared by every worker.
+    //
+    // This was one epoll per worker, with each connection assigned at accept
+    // time and owned by that worker for life. Round-robin hands out connections
+    // without any idea how much work each will turn out to be, and a request
+    // could then only ever be served by the worker it was given to, however
+    // idle the others were.
+    //
+    // ONESHOT keeps the property that made the old design lock-free — exactly
+    // one worker holds a descriptor at a time, so the connection table still
+    // needs no lock. What changes is only WHICH worker, and that it is decided
+    // when the work appears rather than when the connection arrived.
+    //
+    // Measured: 197,065 against 189,447 req/s, winning all three rounds.
+    // It did NOT change the tail (6.99ms against 6.68ms at p99), which was the
+    // reason it was written — see benchmarks/twobox/CONDITIONS.md.
+    var shared_epfd: i32 = -1;
+
+    // The per-connection half of the loop, which is the whole loop now that
+    // accepting has moved out. One of these runs per worker, each on its own
+    // epoll instance, each seeing only the descriptors handed to it.
+    const Worker = struct {
+        fn loop(epfd: i32) void {
+            var events: [$mod.MAX_EVENTS]linux.epoll_event = undefined;
+            while (true) {
+                const n_rc = linux.epoll_wait(epfd, &events, $mod.MAX_EVENTS, -1);
+                const n: i32 = @bitCast(@as(u32, @truncate(n_rc)));
+                if (n <= 0) continue;
+
+                for (events[0..@intCast(n)]) |event| {
+                    const fd: $mod.pump_posix.fd_t = event.data.fd;
+
+                    const st = $mod.connState(fd) orelse {
+                        $mod.pump_posix.close(fd);
+                        continue;
+                    };
+
+                    switch ($mod.fill_event.handler(.{ .st = st })) {
+                        .more => {},
+                        .idle => {
+                            var wait = linux.epoll_event{
+                                .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT,
+                                .data = .{ .fd = fd },
+                            };
+                            _ = linux.epoll_ctl(epfd, linux.EPOLL.CTL_MOD, fd, &wait);
+                            continue;
+                        },
+                        .gone => {
+                            $mod.releaseConn(fd);
+                            $mod.pump_posix.close(fd);
+                            continue;
+                        },
+                    }
+
+                    // Same shape as the kqueue pump — see requestLen and retainTail.
+                    var consumed: usize = 0;
+                    var alive = true;
+                    while (consumed < st.len) {
+                        const take = $mod.requestLen(st.buf[consumed..st.len]) orelse break;
+                        var exchange = $mod.Exchange{ .fd = fd, .raw = st.buf[consumed .. consumed + take] };
+                        arrived(&exchange);
+                        consumed += take;
+                        if (!exchange.keep_alive) {
+                            alive = false;
+                            break;
+                        }
+                    }
+                    st.len = $mod.retainTail(&st.buf, st.len, consumed);
+                    if (alive and st.len == st.buf.len) alive = false;
+
+                    if (!alive) {
+                        $mod.releaseConn(fd);
+                        $mod.pump_posix.close(fd);
+                        continue;
+                    }
+
+                    var rearm = linux.epoll_event{
+                        .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT,
+                        .data = .{ .fd = fd },
+                    };
+                    _ = linux.epoll_ctl(epfd, linux.EPOLL.CTL_MOD, fd, &rearm);
+                }
+            }
+        }
+    };
+
+    const rc = linux.epoll_create1(0);
+    shared_epfd = @bitCast(@as(u32, @truncate(rc)));
+    if (shared_epfd < 0) return .{ .failed = "Failed to create epoll" };
+    for (0..n_workers) |_| {
+        _ = $mod.pump_std.Thread.spawn(.{}, Worker.loop, .{shared_epfd}) catch
+            return .{ .failed = "Failed to spawn worker" };
+    }
+
+    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    $mod.pump_std.debug.print("Pump: epoll, {} workers on one shared queue, keep-alive, TCP_NODELAY\n", .{n_workers});
+
+    // Hand each new connection to the next worker in turn. A descriptor belongs
+    // to that worker for the rest of its life, which is what makes the shared
+    // connection table safe without a lock: no index is ever touched twice.
+    while (true) {
+        const conn = server.accept() catch continue;
+        const client_fd = conn.stream.handle;
+        $mod.disableNagle(client_fd);
+        $mod.markNonBlocking(client_fd);
+
+        var client_event = linux.epoll_event{
+            .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT,
+            .data = .{ .fd = client_fd },
+        };
+        _ = linux.epoll_ctl(shared_epfd, linux.EPOLL.CTL_ADD, client_fd, &client_event);
+    }
+
+    return .{ .stopped = "Server stopped" };
+}
+
+// ---------------------------------------------------------------------------
+// io_uring — Linux 5.x and later. Selected by `--build=io-uring`.
+// ---------------------------------------------------------------------------
+// The other three pumps ask the kernel WHICH descriptor is ready and then do the
+// read themselves. This one submits the read up front and is told it has already
+// happened — so there is no readiness step, and the loop body handles a result
+// rather than a hint.
+//
+// That is a different shape, not a faster spelling of the same one, and it is
+// the reason the seam is worth having: everything above `run` is untouched by
+// the inversion. Framing, buffering and the idle timeout are the shared helpers
+// the other pumps use; only the way bytes arrive is new.
+//
+// A blocking write is used for the reply (the `reply|zig` body, unchanged): the
+// connections here are never marked non-blocking, so `write` completes or waits,
+// and there is no readiness to wait for anyway.
+//
+// This is also the one pump that does NOT go through `fill`, and the inversion
+// is why: `fill` is a call that fetches bytes, and here nobody calls anything —
+// the bytes are already in the buffer by the time the loop hears about them, and
+// the count arrives in the completion. The three answers `fill` gives are all
+// still here, just read off `cqe.res` instead of returned. Anything that wants
+// to sit between the wire and the parser attaches at that harvest below, not at
+// a call site.
+
+~proc run|io-uring {
+    // `pump_std.os.linux.IoUring` cannot be NAMED on a non-Linux target — it reaches
+    // for `linux.E` and a macOS build has `darwin.E` instead, so this is a type
+    // error, not a missing feature. The guard is comptime-known, so the body
+    // below is never analysed when the host is not Linux, and `koruc` can still
+    // produce its host executable on a laptop.
+    if (@import("builtin").os.tag != .linux) {
+        return .{ .failed = "io_uring is a Linux mechanism — build with --build=linux for this host" };
+    }
+
+    const linux = $mod.pump_std.os.linux;
+
+    const server = $mod.openListener(port) orelse return .{ .failed = "Failed to listen" };
+    const listen_fd = server.stream.handle;
+
+    // Say which io_uring is missing, because there are two very different
+    // reasons and they need opposite responses. A kernel older than 5.1 has no
+    // io_uring at all. A modern kernel inside a container usually HAS it and is
+    // being refused by the sandbox: Docker's default seccomp profile blocks
+    // io_uring_setup, so `uname -r` says 6.12 while the call still fails.
+    //
+    // Measured 2026-08-11: this reported "needs Linux 5.1 or later" on a 6.12
+    // kernel, which is a diagnostic pointing at the wrong cause — the fix was
+    // `--security-opt seccomp=unconfined`, not an upgrade.
+    var ring = linux.IoUring.init($mod.URING_ENTRIES, 0) catch |err| {
+        const why = switch (err) {
+            error.PermissionDenied, error.SystemOutdated => "io_uring refused: the kernel has it but something is blocking io_uring_setup — a container seccomp profile is the usual cause (try --security-opt seccomp=unconfined), or the kernel predates 5.1",
+            error.SystemResources => "io_uring unavailable: not enough locked memory for the ring — raise RLIMIT_MEMLOCK",
+            else => "io_uring unavailable — io_uring_setup failed",
+        };
+        return .{ .failed = why };
+    };
+
+    _ = ring.accept($mod.URING_ACCEPT, listen_fd, null, null, 0) catch
+        return .{ .failed = "io_uring accept" };
+
+    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    $mod.pump_std.debug.print("Pump: io_uring, keep-alive, TCP_NODELAY\n", .{});
+
+    var cqes: [$mod.MAX_EVENTS]linux.io_uring_cqe = undefined;
+
+    while (true) {
+        _ = ring.submit_and_wait(1) catch continue;
+        const ready = ring.copy_cqes(&cqes, 1) catch continue;
+
+        for (cqes[0..ready]) |cqe| {
+            if (cqe.user_data == $mod.URING_ACCEPT) {
+                // Re-arm FIRST. A burst of connections is otherwise serialised
+                // behind whatever this one turns into.
+                _ = ring.accept($mod.URING_ACCEPT, listen_fd, null, null, 0) catch {};
+                if (cqe.res < 0) continue;
+
+                const client_fd: $mod.pump_posix.fd_t = @intCast(cqe.res);
+                $mod.disableNagle(client_fd);
+
+                const fresh = $mod.connState(client_fd) orelse {
+                    $mod.pump_posix.close(client_fd);
+                    continue;
+                };
+                fresh.len = 0;
+                // The buffer lives in the connection's own state, which is
+                // heap-stable — the kernel writes into it before we are told.
+                _ = ring.recv(@intCast(client_fd), client_fd, .{ .buffer = fresh.buf[0..] }, 0) catch {
+                    $mod.releaseConn(client_fd);
+                    $mod.pump_posix.close(client_fd);
+                };
+                continue;
+            }
+
+            const fd: $mod.pump_posix.fd_t = @intCast(cqe.user_data);
+            const st = $mod.connState(fd) orelse continue;
+
+            if (cqe.res <= 0) {
+                $mod.releaseConn(fd);
+                $mod.pump_posix.close(fd);
+                continue;
+            }
+            st.len += @intCast(cqe.res);
+
+            // Answer every COMPLETE request — the same helpers the other pumps
+            // use, so a browser is handled identically here.
+            var consumed: usize = 0;
+            var alive = true;
+            while (consumed < st.len) {
+                const take = $mod.requestLen(st.buf[consumed..st.len]) orelse break;
+                var exchange = $mod.Exchange{ .fd = fd, .raw = st.buf[consumed .. consumed + take] };
+                arrived(&exchange);
+                consumed += take;
+                if (!exchange.keep_alive) {
+                    alive = false;
+                    break;
+                }
+            }
+            st.len = $mod.retainTail(&st.buf, st.len, consumed);
+            if (alive and st.len == st.buf.len) alive = false;
+
+            if (!alive) {
+                $mod.releaseConn(fd);
+                $mod.pump_posix.close(fd);
+                continue;
+            }
+
+            // Ask for the next bytes, appending to whatever is unfinished.
+            _ = ring.recv(@intCast(fd), fd, .{ .buffer = st.buf[st.len..] }, 0) catch {
+                $mod.releaseConn(fd);
+                $mod.pump_posix.close(fd);
+            };
+        }
+    }
+
+    return .{ .stopped = "Server stopped" };
+}
+
+// ---------------------------------------------------------------------------
+// unikraft — a unikernel. Selected by `--build=unikraft`.
+// ---------------------------------------------------------------------------
+// No kqueue, no epoll, and nothing to multiplex onto: one vCPU, one loop, one
+// exchange in flight. A readiness mechanism would buy nothing here, which is
+// why this variant is SHORTER than the two above rather than a port of them.
+//
+// Blocking accept is deliberate. lwip runs its own stack thread, so blocking in
+// the application does not stall the network.
+
+~proc run|unikraft {
+    const fd = $mod.socket(2, 1, 0);
+    if (fd < 0) return .{ .failed = "socket" };
+
+    var addr = $mod.SockaddrIn{ .port = @byteSwap(port), .addr = 0 };
+    if ($mod.bind(fd, &addr, @sizeOf($mod.SockaddrIn)) < 0) return .{ .failed = "bind" };
+    if ($mod.listen(fd, 512) < 0) return .{ .failed = "listen" };
+
+    // Wait on the listener AND every live connection at once. Serving one
+    // connection to completion before accepting the next is what made a browser
+    // hang here while curl was perfectly happy.
+    while (true) {
+        var pfds: [$mod.MAX_UK_CONNS + 1]$mod.PollFd = undefined;
+        var slot: [$mod.MAX_UK_CONNS + 1]i32 = undefined;
+        var n: usize = 0;
+
+        pfds[n] = .{ .fd = fd, .events = $mod.POLLIN, .revents = 0 };
+        slot[n] = -1; // the listener
+        n += 1;
+
+        for (&$mod.uk_conns, 0..) |*conn, i| {
+            if (conn.st.fd < 0) continue;
+            pfds[n] = .{ .fd = conn.st.fd, .events = $mod.POLLIN, .revents = 0 };
+            slot[n] = @intCast(i);
+            n += 1;
+        }
+
+        const ready = $mod.poll(&pfds, @intCast(n), $mod.POLL_TICK_MS);
+
+        // Time passes whether or not anything arrived, so the sweep runs here.
+        const now = $mod.wallClockSeconds(null);
+        for (&$mod.uk_conns) |*idle| {
+            if (idle.st.fd < 0) continue;
+            if (idle.st.len != 0) continue; // mid-request; it is still talking
+            if (now - idle.last_seen <= $mod.KEEPALIVE_IDLE_SECONDS) continue;
+            _ = $mod.close(idle.st.fd);
+            idle.st.fd = -1;
+        }
+
+        if (ready <= 0) continue;
+
+        for (pfds[0..n], slot[0..n]) |p, which| {
+            const gone = p.revents & ($mod.POLLERR | $mod.POLLHUP | $mod.POLLNVAL) != 0;
+
+            // A dead connection frees its slot even when there is nothing to read.
+            if (which >= 0 and gone) {
+                const dead = &$mod.uk_conns[@intCast(which)];
+                _ = $mod.close(dead.st.fd);
+                dead.st.fd = -1;
+                dead.st.len = 0;
+                continue;
+            }
+
+            if (p.revents & $mod.POLLIN == 0) continue;
+
+            if (which < 0) {
+                const accepted = $mod.accept(fd, null, null);
+                if (accepted < 0) continue;
+                $mod.ukAdmit(accepted);
+                continue;
+            }
+
+            const live = &$mod.uk_conns[@intCast(which)];
+
+            // Read onto the END of what is already held, so a request split
+            // across two reads is finished rather than restarted.
+            // `handler__unikraft`, named outright, because a variants block does
+            // NOT reach a call site written in raw Zig — it rewrites the ones the
+            // flow makes. `run` and `reply` are chosen for us that way; `fill` is
+            // called from inside a loop body, so this body says which reader it
+            // wants. Getting this wrong is invisible on a laptop: the default
+            // body is `pump_posix.read`, which macOS has and a unikernel does not.
+            switch ($mod.fill_event.handler__unikraft(.{ .st = &live.st })) {
+                .more => {},
+                // `poll` said readable, so this pump has no idle case — but the
+                // seam has one, and waiting is always the safe answer to it.
+                .idle => continue,
+                .gone => {
+                    _ = $mod.close(live.st.fd);
+                    live.st.fd = -1;
+                    live.st.len = 0;
+                    continue;
+                },
+            }
+
+            // Heard from — so it is no longer the idlest.
+            $mod.uk_seq += 1;
+            live.seq = $mod.uk_seq;
+            live.last_seen = now;
+
+            // Answer every COMPLETE request — see requestLen and retainTail.
+            var consumed: usize = 0;
+            var alive = true;
+            while (consumed < live.st.len) {
+                const take = $mod.requestLen(live.st.buf[consumed..live.st.len]) orelse break;
+                var x = $mod.Exchange{ .fd = live.st.fd, .raw = live.st.buf[consumed .. consumed + take] };
+                arrived(&x);
+                consumed += take;
+                if (!x.keep_alive) {
+                    alive = false;
+                    break;
+                }
+            }
+            live.st.len = $mod.retainTail(&live.st.buf, live.st.len, consumed);
+            if (alive and live.st.len == live.st.buf.len) alive = false;
+
+            if (!alive) {
+                _ = $mod.close(live.st.fd);
+                live.st.fd = -1;
+                live.st.len = 0;
+            }
+        }
+    }
+
+    return .{ .stopped = "Server stopped" };
+}
+
+// ============================================================================
+// REPLY / HANG-UP — how the flow answers an exchange
+// ============================================================================
+
+// Write an answer back. `head` and `body` go out in that order; a caller that
+// already holds a whole rendered response passes it as `head` with an empty
+// `body`, which is what a pre-rendered static route does.
+~proc reply|zig {
+    if (!writeAll(x.fd, head)) {
+        x.keep_alive = false;
+        return .{ .broken = "write failed" };
+    }
+    if (body.len > 0 and !writeAll(x.fd, body)) {
+        x.keep_alive = false;
+        return .{ .broken = "write failed" };
+    }
+    return .sent;
+}
+
+// The unikernel's writer. `writeAll` above is built on `pump_posix.write`, which has
+// no implementation on a freestanding target; `send` is the same loop over the
+// socket symbol the pump already uses.
+~proc reply|unikraft {
+    var offset: usize = 0;
+    while (offset < head.len) {
+        const n = $mod.send(x.fd, head.ptr + offset, head.len - offset, 0);
+        if (n <= 0) {
+            x.keep_alive = false;
+            return .{ .broken = "write failed" };
+        }
+        offset += @intCast(n);
+    }
+
+    offset = 0;
+    while (offset < body.len) {
+        const n = $mod.send(x.fd, body.ptr + offset, body.len - offset, 0);
+        if (n <= 0) {
+            x.keep_alive = false;
+            return .{ .broken = "write failed" };
+        }
+        offset += @intCast(n);
+    }
+
+    return .sent;
+}
+
+// Refuse to keep the connection. The pump closes it when the arm returns.
+~proc hang-up|zig {
+    x.keep_alive = false;
+}
+
+// The raw request bytes, for the parsing layer.

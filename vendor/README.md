@@ -8,13 +8,12 @@ Upstream Orisha (`W:\src\orisha\lib`) ships pump as the main development line (`
 
 | File | Role |
 |------|------|
-| `vendor/upstream/orisha-pump/pump.k` / `pump.kz` | Platform readiness loops (full upstream) |
+| `vendor/orisha/pump.k` / `pump.kz` | Upstream loops; host aliases `pump_std` / `pump_posix` / `pump_c` (like `router_std`) so the unused sibling does not `ambiguous std` |
+| `vendor/upstream/orisha-pump/` | Unmodified upstream copy of the same files |
 | `vendor/orisha/index.k` | This app's `run-accept-loop` (not `orisha:serve`) |
 | `vendor/orisha/index.kz` | Request parse / STREAM `send` / idle (vendor extras) |
 
-The files cannot sit next to `index.k` in `vendor/orisha/`. `import orisha` maps at the directory; a sibling `pump.kz` is then merged into the same emitted struct as `index.kz` (`ambiguous reference` on `std` — `routing.kz` avoids this by naming `router_std`). `import orisha/pump` makes a nested module, and then koruc double-emits that companion into `koru_pump`. Original `W:\src\orisha\lib` + canonical `orisha:serve` hits that second failure on koruc 0.1.7 (`duplicate struct member` inside `koru_pump`); this media binary also hits the unused-sibling `ambiguous std` shape. See [docs/upstream-pump-emit.md](../docs/upstream-pump-emit.md).
-
-Omitting pump from git was the wrong answer. Compiling it into this binary is still unsafe.
+Pump sits next to `index.k`. `import orisha` maps at the directory, so the stem is enumerated; `pump_std` is the same dodge `routing.kz` already uses. Do **not** `import orisha/pump` — that still double-emits `koru_pump`. Canonical `orisha:serve` against original lib hits that second failure on koruc 0.1.7. See [docs/upstream-pump-emit.md](../docs/upstream-pump-emit.md).
 
 **This app still calls `orisha:run-accept-loop`**, not `serve`. Keep that until these ride `answer` / `pump:reply` *and* the emit is gone:
 
@@ -71,14 +70,15 @@ Hot reload asks `koru_orisha.streamsBusy()` (the STREAM/idle lease) rather than 
 
 ### Stems in this vendor
 
-Koru: `|zig` for a `pub tor` stays on the same stem as the contract (`index.k` + `index.kz`). Extra `.kz` beside index is a **different module** — or, if not imported, gets merged into this stem and collides. Helpers therefore stay in `index.kz`. Upstream pump lives in [`vendor/upstream/orisha-pump/`](upstream/orisha-pump/), not beside `index.k`.
+Koru: `|zig` for a `pub tor` stays on the same stem as the contract (`index.k` + `index.kz`). Extra `.kz` beside index is a **different module** — or, if not imported, gets merged into this stem and collides. Helpers therefore stay in `index.kz`. Pump is a sibling stem with `pump_std` aliases; do not `import orisha/pump`.
 
 | Stem | Role |
 |------|------|
 | `index` | `handler`, `listen`, `accept`, `send`, `answer`, `router`, `static`, `run-accept-loop`; `Request` / `header()` / `parseHttpRequest` / STREAM:v1 `sendSpecial` / `streamsBusy()` |
-| `routing` | Pattern match (unchanged vs upstream; not on the request path) |
+| `pump` | Readiness loops (`pump_std` / `pump_posix` / `pump_c`); not imported; unmodified copy in [`vendor/upstream/orisha-pump/`](upstream/orisha-pump/) |
+| `routing` | Pattern match (`router_std`; unchanged vs upstream; not on the request path) |
 
-This app stays on `run-accept-loop` until STREAM/Request ride `pump:reply`. Upstream pump is at [`vendor/upstream/orisha-pump/`](upstream/orisha-pump/), not beside `index.k`.
+This app stays on `run-accept-loop` until STREAM/Request ride `pump:reply` *and* `import orisha/pump` no longer double-emits `koru_pump`.
 
 ## Actionable upstream patches (Orisha only)
 

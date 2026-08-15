@@ -98,10 +98,12 @@ handler -> { status: 404, body: "Not Found", content_type: null }
 // Adding a platform is a `~proc run|<name>` in orisha/pump plus a line in the
 // variants block. Nothing in this file changes.
 //
-// pump.k / pump.kz are not beside this file. A sibling pump.kz is merged into
-// this stem (`ambiguous std`); `import orisha/pump` double-emits `koru_pump`.
-// Full upstream copy: vendor/upstream/orisha-pump/. This app uses
-// run-accept-loop until STREAM/Request ride `reply` *and* that emit is gone.
+// pump.k / pump.kz sit beside this file (upstream serve path). Host aliases
+// in pump.kz are pump_std / pump_posix / pump_c like routing.kz's router_std,
+// so an unused sibling does not poison this stem's `const std`. Do not
+// `import orisha/pump` here: that still double-emits `koru_pump`. This app
+// stays on run-accept-loop until STREAM/Request ride `reply` *and* that
+// emit is gone. Unmodified copy: vendor/upstream/orisha-pump/.
 
 pub tor run-accept-loop { port: u16 }
 
@@ -129,8 +131,8 @@ pub tor answer { raw: string } -> { head: string, body: string }
 // ============================================================================
 // PLATFORM SELECTION
 // ============================================================================
-// Upstream: [build(linux)] selects orisha/pump:run = epoll, etc. Unused here
-// until this module can import orisha/pump without the companion double-emit.
+// Upstream: [build(linux)] selects orisha/pump:run = epoll. Unused here
+// until `import orisha/pump` no longer double-emits `koru_pump`.
 
 // ============================================================================
 // ROUTER - Pattern-branch router transform

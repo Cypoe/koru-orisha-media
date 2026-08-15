@@ -16,8 +16,9 @@
 // streamsBusy() rather than touching this counter.
 //
 // Request is RFC HTTP + header() — no hx_* fields. parseHttpRequest and
-// STREAM:v1 send live in this stem: `import orisha` does not load extra
-// vendor stems (unlike media/graph under src/). routing.k remains the
+// STREAM:v1 send live in this stem. Directory import still enumerates
+// sibling `pump` / `routing`; pump.kz uses `pump_std` so that does not
+// collide with `const std` here. Do not `import orisha/pump`.
 // upstream match module.
 
 ~std/compiler:requires {

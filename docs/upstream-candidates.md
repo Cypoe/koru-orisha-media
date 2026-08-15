@@ -60,7 +60,7 @@ One patch per bullet. Not a dump of the media app. Details: [vendor/README.md](.
 4. **Keep `answer|zig` on the same parse** — already unified here; pump `reply` port is later.
 5. **Pump sibling emit (koruc)** — original `lib/` + `orisha:serve` fails (`duplicate koru_pump`); this vendor’s `index.kz` + unused sibling `pump.kz` fails (`ambiguous std`). Tiny 110_030-shaped packages still link. Writeup + repro: [upstream-pump-emit.md](upstream-pump-emit.md). Filed: [korulang/koru#2](https://github.com/korulang/koru/issues/2), defensive [korulang/orisha#1](https://github.com/korulang/orisha/issues/1) (`pump_std` like `router_std`; does not fix the serve double-emit).
 
-**Post-rebuild probe (Orisha `661fa9c`, koru `5c64de27`, koruc 0.1.7):** full pump is at `vendor/upstream/orisha-pump/` (not beside `index.k`). Minimal `orisha:serve` against upstream `lib/` does **not** link (`duplicate koru_pump`). This media binary still cannot compile pump into `import orisha`. Details and repro: [upstream-pump-emit.md](upstream-pump-emit.md). STREAM/Request remain on `send`.
+**Post-rebuild probe (Orisha `661fa9c`, koru `5c64de27`, koruc 0.1.7):** pump sits beside `vendor/orisha/index.k` with `pump_std` aliases (unused sibling). Do not `import orisha/pump` (`duplicate koru_pump`). Canonical `orisha:serve` against upstream `lib/` still does **not** link. STREAM/Request remain on `send`. Details: [upstream-pump-emit.md](upstream-pump-emit.md).
 
 Media HTML, graph scrape, and JSON-LD *routing* stay out of Orisha.
 
