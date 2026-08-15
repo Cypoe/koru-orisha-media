@@ -7,8 +7,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="${HOME}/tools/zig-0.15.1:${HOME}/src/koru-build/zig-out/bin:${PATH}"
-KORUC="$(command -v koruc)"
-STD="${HOME}/src/koru-build/koru_std"
+KORUC="${KORUC:-$(command -v koruc)}"
+STD="${KORU_STD:-${HOME}/src/koru-build/koru_std}"
 if [[ ! -d "$STD" ]]; then
   STD="/usr/local/koru_std"
 fi

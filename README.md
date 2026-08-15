@@ -59,7 +59,7 @@ python3 scripts/index_media.py --root media --out data/manifest.json
 docker compose up
 ```
 
-Open `http://127.0.0.1:3090/library`. Env defaults inside the image: `KORU_MEDIA_ROOT=/media`, `KORU_MANIFEST=/data/manifest.json` (no idle exit). See [docs/packaging.md](docs/packaging.md) for Synology Container Manager, GHCR publish-later, and SPK prep.
+Open `http://127.0.0.1:3090/library`. Env defaults inside the image: `KORU_MEDIA_ROOT=/media`, `KORU_MANIFEST=/data/manifest.json` (no idle exit). See [docs/packaging.md](docs/packaging.md) for NAS tarball (`scripts/save-image.sh` + `compose.nas.yaml`), Synology Container Manager, GHCR, and SPK prep.
 
 ### Dev bind-mount (fixtures)
 

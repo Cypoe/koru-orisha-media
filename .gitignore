@@ -1,6 +1,7 @@
 # Build / runtime artifacts
 a.out
 bin/
+dist/
 *.o
 *.pyc
 __pycache__/

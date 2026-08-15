@@ -52,5 +52,7 @@ EOF
     mkdir -p /work/bin
     cp -f a.out /work/bin/media-server
     cp -f a.out /work/a.out
+    echo emitting frontend JS…
+    KORUC=/usr/local/bin/koruc KORU_STD=/usr/local/koru_std bash /work/scripts/build-frontend.sh
     echo OK
   '

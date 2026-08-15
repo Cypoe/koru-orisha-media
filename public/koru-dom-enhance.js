@@ -43,10 +43,10 @@ function __koru_dom_track(key, node) {
 function koruDomNode(key) {
     return __koru_dom_reg.get(key);
 }
-// Host |js facet for the Step 9 keyed list (src/frontend, like koru-libs/dom/app).
-// make-title is deterministic so the demo/harness can assert row text.
-// swap-rows moves DOM nodes by store handle (koruDomNode) — reorder without
-// destroying identity.
+// Host |js facet for the Step 9 keyed list usage (src/frontend).
+// Library: vendor/koru-libs/dom (import koru/dom). make-title is deterministic
+// so the demo/harness can assert row text. swap-rows moves DOM nodes by store
+// handle (koruDomNode) — reorder without destroying identity.
 const titles = ["demo", "empty", "onebyte", "extra", "clip"];
 const __koru_dom_tpl_LibRow_0 = (() => { const t = document.createElement("template"); t.innerHTML = "<li data-row-id=\"{{ id:d }}\"><span class=\"title\"></span><button type=\"button\" data-action=\"7\" aria-label=\"remove\">remove</button></li>"; return t.content.firstChild; })();
 let __koru_store_rows = {

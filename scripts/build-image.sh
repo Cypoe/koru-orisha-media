@@ -14,10 +14,10 @@ for arg in "$@"; do
 Usage: bash scripts/build-image.sh [--skip-compile]
 
   Compiles the Linux media-server binary via scripts/build-docker.sh (requires
-  local koruc mounts — see that script), then builds Docker image
-  koru-orisha-media:local from the runtime Dockerfile.
+  local koruc mounts — see that script), emits public/*.js from Koru, then
+  builds Docker image koru-orisha-media:local from the runtime Dockerfile.
 
-  --skip-compile   Use an existing bin/media-server (must be a Linux binary).
+  --skip-compile   Use existing bin/media-server and public/*.js (Linux binary).
 EOF
       exit 0
       ;;

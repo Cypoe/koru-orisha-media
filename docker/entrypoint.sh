@@ -28,7 +28,11 @@ fi
 if [[ "$do_reindex" -eq 1 ]]; then
   echo "indexing $MEDIA_ROOT → $MANIFEST"
   mkdir -p "$(dirname "$MANIFEST")"
-  python3 /app/scripts/index_media.py --root "$MEDIA_ROOT" --out "$MANIFEST"
+  probe_args=()
+  if [[ -n "${KORU_INDEX_PROBE:-}" ]]; then
+    probe_args+=(--probe "$KORU_INDEX_PROBE")
+  fi
+  python3 /app/scripts/index_media.py --root "$MEDIA_ROOT" --out "$MANIFEST" "${probe_args[@]}"
 fi
 
 if [[ ! -f "$MANIFEST" ]]; then
