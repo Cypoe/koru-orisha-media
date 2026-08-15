@@ -16,8 +16,11 @@ ROOT = Path(__file__).absolute().parent.parent
 BASE = os.environ.get("KORU_TEST_BASE", "http://127.0.0.1:3091")
 
 
-def http(method: str, path: str, headers: dict | None = None) -> tuple[int, dict[str, str], bytes]:
-    req = urllib.request.Request(BASE + path, method=method, headers=headers or {})
+def http(method: str, path: str, headers: dict | None = None, data: bytes | None = None) -> tuple[int, dict[str, str], bytes]:
+    hdrs = dict(headers or {})
+    if data is not None and not any(k.lower() == "content-type" for k in hdrs):
+        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             hdrs = {k.lower(): v for k, v in resp.headers.items()}
@@ -45,34 +48,58 @@ def main() -> int:
         demo_id = demo["id"]
         empty = next(e for e in manifest["entries"] if e["title"] == "empty")
         one = next(e for e in manifest["entries"] if e["title"] == "onebyte")
-        beep = next((e for e in manifest["entries"] if e.get("kind") == "audio"), None)
+        beep = next((e for e in manifest["entries"] if e["title"] == "beep"), None)
+        andor_ep = next(e for e in manifest["entries"] if e["id"] == "m_and1e1")
+        ost = next(e for e in manifest["entries"] if e["id"] == "m_andost")
 
         st, hdrs, body = http("GET", "/library")
         check(st == 200, f"GET /library -> {st}")
         check(f"/item/{demo_id}".encode() in body, "library links to item")
-        check(b"sort title" in body and b"fragment" in body, "sort/filter/fragment affordances")
-        check(b'hx-get=' in body and b'hx-target="#library-region"' in body, "library hx-* attrs")
-        check(b'id="library-region"' in body and b'id="library-list"' in body, "library-region wraps list")
-        check(f"/watch/{demo_id}".encode() in body, "library row watch affordance")
         check(b"<form" in body and b'name="q"' in body, "library search form")
+        check(b'hx-get=' in body and b'hx-target="#library-region"' in body, "library hx-* attrs")
+        check(b"sidebar-nav" in body and b'href="/library/movie"' in body, "kind nav present")
+        check(b'href="/settings"' in body and b">Settings<" in body, "sidebar includes Settings")
+        check(b'<span class="kinds">' not in body, "topbar has no duplicate kind row")
+        check(b"Discover" in body, "sidebar includes Discover")
+        check(b"sort title" not in body and b"filter demo" not in body and b"page size 2" not in body, "demo sort/filter affordances absent")
+        check(b'id="library-region"' in body and b'id="library-list"' in body, "library-region wraps list")
+        check(f"/watch/{demo_id}".encode() not in body, "library cards have no under-card watch link")
+        check(b'placeholder="Search library"' in body, "all-library search placeholder")
         check("link" in hdrs and "self" in hdrs["link"], f"Link header on library: {hdrs.get('link')}")
         check(b"class=\"archive-note\"" in body and b"projection index" in body, "library names catalogue overlay when index exists")
 
         st, hdrs, body = http("GET", "/library/movie")
-        check(st == 200 and "Library — movie".encode() in body, "kind collection title")
+        check(st == 200 and b"<h1>Movies</h1>" in body, "kind collection title")
         check("link" in hdrs and "/library/movie" in hdrs["link"] and "self" in hdrs["link"], f"kind Link self: {hdrs.get('link')}")
-        check(b"<strong>movies</strong>" in body and b'href="/library/audio"' in body, "kind nav marks movies + audio")
-        check(b'href="/library"' in body and b"class=\"kinds\"" in body, "kind up/all affordances")
+        check(b"<strong>Movies</strong>" in body and b'href="/library/audio"' in body, "kind nav marks movies + audio")
+        check(b"sidebar-nav" in body and b">Discover<" in body, "sidebar Discover + kinds")
+        check(b'placeholder="Search movies"' in body, "movie search placeholder")
+        check(b'class="badge kind-movie"' in body and b">watch</a>" not in body, "movie cards are poster+badge only")
 
         st, _, body = http("GET", "/library/audio")
-        check(st == 200 and b"<strong>audio</strong>" in body, "audio kind marked active")
+        check(st == 200 and b"<strong>Music</strong>" in body, "audio kind marked active")
+        check(b'placeholder="Search music"' in body, "music search placeholder")
         if beep:
             check(beep["id"].encode() in body and b'id="library-list"' in body, "audio collection lists fixture")
             check(b'class="empty"' not in body, "audio collection not empty-only")
+            check(b">Discovery<" in body, "music groups album-level work")
+            check(body.count(b'class="poster-card"') == 2, "music shows beep + one album card")
+            check(b">One More Time<" not in body and b">Aerodynamic<" not in body, "music does not list tracks as works")
         else:
             check(False, "audio fixture present in manifest")
 
         st, _, body = http("GET", "/library/tv")
+        check(st == 200 and b"<h1>Series</h1>" in body, "series collection title")
+        check(b'placeholder="Search series"' in body, "series search placeholder")
+        check(b'class="empty"' not in body, "series collection is not empty")
+        check(body.count(b'class="poster-card"') == 1, "series shows one poster per work")
+        check(b">Andor<" in body and b'class="badge kind-tv"' in body, "series card is Andor with SERIES badge")
+        check(andor_ep["id"].encode() in body, "series card links a work file")
+        check(ost["id"].encode() not in body, "soundtrack extra is not a series card")
+        check(b">Kassa<" not in body and b">One Way Out<" not in body, "series does not list episodes as works")
+        check(b"(tv)" not in body and b">watch</a>" not in body, "series cards drop raw kind and watch link")
+
+        st, _, body = http("GET", "/library/book")
         check(st == 200 and b'class="empty"' in body and b"No items in this collection" in body, "empty kind collection state")
 
         st, _, body = http("GET", "/library?q=zzznomatch")
@@ -88,6 +115,51 @@ def main() -> int:
         check(b"/art/" + demo_id.encode() in body, "item links poster art")
         check(b"/library/movie" in body, "item related kind collection")
         check(f"/subtitles/{demo_id}".encode() in body and b">subtitles</a>" in body, "item links subtitles")
+
+        st, _, body = http("GET", f"/item/{andor_ep['id']}")
+        check(st == 200 and b"<h1>Andor</h1>" in body, "series item uses work title")
+        check(b"<h2>Season 1</h2>" in body and b"<h2>Season 2</h2>" in body, "series item lists seasons")
+        check(b'class="episode-list"' in body, "series item has episode list")
+        check(f"/watch/{andor_ep['id']}".encode() in body, "episode click goes to watch")
+        check(b"/watch/m_and1e2" in body and b"/watch/m_and2e1" in body, "all parsed episodes link to watch")
+        check("E01 · Kassa".encode() in body and "E02 · That Would Be Me".encode() in body, "episode labels from SxxEyy")
+        check(b"<h2>Extras</h2>" in body and ost["id"].encode() in body, "soundtrack lives under extras")
+        check(b"Andor (Main Title Theme)" in body, "extras section names the soundtrack")
+        check(b'<script type="application/ld+json">' in body, "series item embeds JSON-LD")
+        check(b'"@type":"TVSeries"' in body and b'"name":"Andor"' in body, "series item JSON-LD is TVSeries")
+        check(b"work.movie" not in body and b"/item/work." not in body, "series item does not leak work ids")
+        check(b"A spy thriller set in the Star Wars universe." in body, "series item shows nfo work plot")
+        check(b'class="overview"' in body, "series item plot uses overview")
+        check(b"nfo-aired" in body and b"2022-09-21" in body, "series item shows nfo aired")
+        check(b"nfo-rating" in body and b"8.4" in body, "series item shows nfo rating")
+        check(b'class="chip trailer"' in body and b"/watch/m_andtrl" in body, "series item trailer chip direct-plays")
+        check(b"Cassian Andor's journey begins" not in body, "series item uses work plot not episode plot")
+
+        st, jhdrs, jseries = http("GET", f"/item/{andor_ep['id']}?format=jsonld")
+        check(st == 200 and "ld+json" in jhdrs.get("content-type", ""), "andor series jsonld content-type")
+        check(b'"@type":"TVSeries"' in jseries and b'"name":"Andor"' in jseries, "andor series jsonld type+name")
+        check(f'/media/{andor_ep["id"]}'.encode() in jseries, "andor series contentUrl is /media/{id}")
+        check(b"tt9253284" in jseries, "andor series local imdb assertion")
+        check(b"work.movie" not in jseries and b"work.tv" not in jseries and b"/item/work." not in jseries, "series jsonld keeps opaque m_* ids")
+        check(b"themoviedb.org" not in jseries, "series jsonld does not invent TMDB")
+        check(b'"description":"A spy thriller set in the Star Wars universe."' in jseries, "series jsonld description from nfo")
+        check(b'"trailer"' in jseries and b"/media/m_andtrl" in jseries, "series jsonld trailer is local media")
+
+        st, _, jep = http("GET", "/item/m_and1e2?format=jsonld")
+        check(st == 200 and b'"@type":"TVEpisode"' in jep, "episode jsonld type")
+        check(b'"name":"That Would Be Me"' in jep, "episode jsonld name")
+        check(b'"episodeNumber":2' in jep and b'"seasonNumber":1' in jep, "episode season/episode numbers")
+        check(b'"@type":"TVSeries"' in jep and b'"name":"Andor"' in jep, "episode partOfSeries")
+        check(b"/media/m_and1e2" in jep, "episode contentUrl is the file")
+        check(b"/item/m_and1e1" in jep, "episode partOfSeries url is the work item")
+        check(b"work.movie" not in jep and b"/item/work." not in jep, "episode jsonld keeps opaque m_* ids")
+
+        st, _, jacc = http("GET", f"/item/{andor_ep['id']}", headers={"Accept": "application/ld+json"})
+        check(st == 200 and b'"@type":"TVSeries"' in jacc, "Accept ld+json expands to series work")
+
+        st, _, jmusic = http("GET", "/item/m_dpot?format=jsonld")
+        check(st == 200 and b'"@type":"MusicRecording"' in jmusic, "music track jsonld")
+        check(b"/media/m_dpot" in jmusic, "music contentUrl is /media/{id}")
 
         st, hdrs, art = http("GET", f"/art/{demo_id}")
         check(st == 200 and art.startswith(b"\xff\xd8"), "art jpeg body")
@@ -123,7 +195,6 @@ def main() -> int:
         check(b'class="capability"' not in body, "mp4 watch has no capability warning")
         check(b'class="probe"' in body and b"brand <code>isom</code>" in body, "mp4 watch shows probe brand")
         check(b'id="library-region"' in body and b"More in collection" in body, "watch related shelf")
-        check(b'hx-target="#library-region"' in body, "watch shelf hx target")
         player_at = body.find(b'id="player"')
         region_at = body.find(b'id="library-region"')
         check(player_at != -1 and region_at != -1 and player_at < region_at, "player precedes library-region")
@@ -208,6 +279,7 @@ def main() -> int:
             link = hdrs.get("link", "")
             check("themoviedb.org" in link and "imdb.com" in link, "item Link related providers")
             check("format=jsonld" in link and "application/ld+json" in link, "item JSON-LD alternate Link")
+            check(b'<script type="application/ld+json">' in body and b'"@type":"Movie"' in body, "item HTML embeds Movie JSON-LD")
             st, jhdrs, jbody = http("GET", f"/item/{arrival['id']}?format=jsonld")
             check(st == 200 and "ld+json" in jhdrs.get("content-type", ""), "jsonld content-type")
             check(b'"@type":"Movie"' in jbody and b"imdb.com" in jbody and b"themoviedb.org" in jbody, "jsonld movie sameAs")
@@ -225,17 +297,22 @@ def main() -> int:
         st, hdrs, body = http("GET", "/enhance.js")
         check(st == 200 and b"localStorage" in body, "enhance.js served")
         check(b"isSafeSwapTarget" in body and b"playerIdentityOk" in body, "enhance player identity guards")
+        check(b"appBase" in body and b"withAppBase" in body, "enhance reads html data-base")
         check(b"#library-region" in body and b"performance.mark" in body, "enhance region + measure marks")
         check(b"application/javascript" in hdrs.get("content-type", "").encode() or "javascript" in hdrs.get("content-type", ""), "enhance content-type")
 
         st, hdrs, body = http("GET", "/app.css")
         check(st == 200 and b"--ink" in body, "app.css served")
         check("text/css" in hdrs.get("content-type", ""), "app.css content-type")
+        check(b"white-space: nowrap" in body and b"play-overlay" in body, "app.css tightens meta wrap + hover play")
+        check(b"settings-page" in body and b"mount-card" in body, "app.css has settings chrome")
 
         st, _, body = http("GET", "/")
         check(st == 200 and b"Koru Media" in body and b"/app.css" in body and b"Open library" in body, "home brand surface")
-        check(b"Local movies" in body and b"Arrival (2016)" in body and demo_id.encode() in body, "home lists local movies")
-        check(f"/watch/{demo_id}".encode() in body, "home local movies are playable")
+        check(b"Recently added" in body and b"Arrival (2016)" in body and demo_id.encode() in body, "home lists local movies")
+        check(f"/item/{demo_id}".encode() in body, "home local movies link to item")
+        check(f"/watch/{demo_id}".encode() not in body, "home cards have no under-card watch link")
+        check(b">Andor<" in body, "home series shelf groups Andor")
         check(b"class=\"archive-note\"" in body and b"projection index" in body, "home names catalogue overlay when index exists")
         check(b">TMDB<" not in body, "home is not a TMDB grid")
 
@@ -244,6 +321,40 @@ def main() -> int:
 
         st, _, body = http("GET", "/enhance-demo.html")
         check(st == 200 and b'id="koru-list"' in body and b"/koru-dom-enhance.js" in body, "enhance-demo.html served")
+
+        st, hdrs, body = http("GET", "/settings")
+        check(st == 200 and b'id="settings-page"' in body, "GET /settings -> 200")
+        check(b"<form" in body and b'method="post"' in body, "settings has POST form")
+        check(b'name="path_0"' in body and b'value="movies"' in body, "settings default movies mount")
+        check(b'value="shows"' in body and b'value="music"' in body, "settings default shows+music")
+        check(b'value="books"' in body and b'value="musicVideos"' in body, "settings default books+musicVideos")
+        check(b">Reindex<" in body, "settings has Reindex control")
+        check(b"index_media.py" not in body and b"hydrate_catalog.py" not in body, "settings does not name Python as indexer")
+        check(b"KORU_BASE_PATH" in body, "settings shows web alias")
+        check(b"strong>Settings</strong>" in body, "settings nav is active")
+        check("link" in hdrs and "/settings" in hdrs.get("link", "") and "self" in hdrs.get("link", ""), f"Link header on settings: {hdrs.get('link')}")
+
+        mounts = (
+            b"action=save&on_0=1&name_0=Films&path_0=movies"
+            b"&on_1=1&name_1=Series&path_1=shows"
+            b"&on_2=1&name_2=Music&path_2=music"
+            b"&on_3=1&name_3=Books&path_3=books"
+            b"&on_4=1&name_4=Music+videos&path_4=musicVideos"
+        )
+        st, _, body = http("POST", "/settings", data=mounts)
+        check(st == 200 and b'id="settings-page"' in body, "POST /settings save -> 200")
+        if b"Saved library mounts" in body:
+            check(b'value="Films"' in body, "POST save persists display name")
+        check(b"index_media.py" not in body, "POST save does not name Python indexer")
+
+        st, _, body = http("POST", "/settings", data=b"action=save&on_0=1&name_0=Hack&path_0=../etc")
+        check(st == 200, "POST traversal -> 200")
+        check(b'value="../etc"' not in body, "POST traversal path is not stored")
+        check(b"Not saved" in body and b"must stay under" in body, "POST traversal rejected")
+
+        st, _, body = http("POST", "/settings", data=b"action=save&on_0=1&name_0=Hack&path_0=%2Fetc%2Fpasswd")
+        check(st == 200 and b'value="/etc/passwd"' not in body, "POST absolute escape is not stored")
+        check(b"Not saved" in body, "POST absolute escape rejected")
 
         st, _, body = http("GET", "/library")
         check(b"/enhance.js" in body and b"/app.css" in body and b"hx-get=" in body, "library progressive enhance hooks")
@@ -254,7 +365,10 @@ def main() -> int:
         check(b'class="catalogue"' not in body and b'class="archive"' not in body, "demo item has no catalogue/archive split")
         check(b">Local archive<" not in body, "demo item has no archive heading")
         st, _, jdemo = http("GET", f"/item/{demo_id}?format=jsonld")
-        check(st == 404, "demo jsonld absent")
+        check(st == 200 and b'"@type":"Movie"' in jdemo, "demo catalog jsonld movie")
+        check(b"imdb.com" not in jdemo and b"themoviedb.org" not in jdemo, "demo jsonld has no provider sameAs")
+        check(f"/media/{demo_id}".encode() in jdemo, "demo contentUrl is /media/{id}")
+        check(b"work.movie" not in jdemo and b"/item/work." not in jdemo, "demo jsonld keeps opaque m_* ids")
 
         st, _, body = http("GET", f"/watch/{demo_id}")
         check(b'data-media-id="' + demo_id.encode() in body and b"/enhance.js" in body and b"/app.css" in body, "watch resume hooks")
@@ -270,9 +384,22 @@ def main() -> int:
         arrival = next((e for e in manifest["entries"] if e.get("year") == 2016), None)
         if arrival:
             st, _, body = http("GET", "/library")
-            check(" · 2016".encode() in body, "library row shows year")
+            check(b"Arrival (2016)" in body, "library card shows movie title")
         else:
             check(False, "year fixture for library row")
+
+        reindex = (
+            b"action=reindex&on_0=1&name_0=Movies&path_0=movies"
+            b"&on_1=1&name_1=Series&path_1=shows"
+            b"&on_2=1&name_2=Music&path_2=music"
+            b"&on_3=1&name_3=Books&path_3=books"
+            b"&on_4=1&name_4=Music+videos&path_4=musicVideos"
+        )
+        st, _, body = http("POST", "/settings", data=reindex)
+        check(st == 200 and b'id="settings-page"' in body, "POST reindex -> 200")
+        check(b"index_media.py" not in body and b"hydrate_catalog.py" not in body, "POST reindex does not name Python indexer")
+        if b"Saved." in body or b"flagged" in body:
+            check(b"idle" in body, "reindex is flagged for the next idle request")
 
     elif mode == "security":
         st, _, body = http("GET", "/library")
@@ -281,6 +408,11 @@ def main() -> int:
         check(b"&lt;script&gt;" in body, "escaped script title")
         st, _, _ = http("GET", "/media/m_trav")
         check(st == 403, "traversal path forbidden")
+        st, _, body = http("GET", "/settings")
+        check(st == 200 and b'id="settings-page"' in body, "security settings page")
+        st, _, body = http("POST", "/settings", data=b"action=save&on_0=1&name_0=Hack&path_0=../etc")
+        check(st == 200 and b'value="../etc"' not in body, "security settings rejects traversal mount")
+        check(b"Not saved" in body, "security settings traversal notice")
         st, _, body = http("GET", "/item/m_xss")
         check(b">TMDB<" not in body and b"themoviedb.org" not in body, "missing semantic snapshot: no provider links")
         check(b'class="catalogue"' not in body and b'class="archive"' not in body, "missing semantic snapshot: no catalogue split")
@@ -293,12 +425,14 @@ def main() -> int:
             check(False, "Arrival fixture in manifest")
         else:
             st, _, body = http("GET", f"/item/{arrival['id']}")
-            check(st == 200 and b"Arrival (2016)" in body, "missing semantic: physical title")
+            check(st == 200 and b"<h1>Arrival</h1>" in body, "missing semantic: physical title")
             check(b">TMDB<" not in body and b">IMDb<" not in body and b"themoviedb.org" not in body, "missing semantic: no provider links")
             check(b'class="catalogue"' not in body and b'class="archive"' not in body, "missing semantic: physical HTML only")
             check(b"container" in body and b"<code>mp4</code>" in body, "missing semantic: container still shown")
             st, _, jbody = http("GET", f"/item/{arrival['id']}?format=jsonld")
-            check(st == 404, "missing semantic: jsonld absent")
+            check(st == 200 and b'"@type":"Movie"' in jbody, "missing semantic: catalog jsonld movie")
+            check(b"themoviedb.org" not in jbody and b"imdb.com" not in jbody, "missing semantic: jsonld has no provider sameAs")
+            check(f"/media/{arrival['id']}".encode() in jbody, "missing semantic: contentUrl is /media/{id}")
             st, _, wbody = http("GET", f"/watch/{arrival['id']}")
             check(st == 200 and b'id="player"' in wbody, "missing semantic: watch still plays")
             check(b">TMDB<" not in wbody, "missing semantic: watch has no providers")
@@ -306,18 +440,79 @@ def main() -> int:
         check(st == 200 and body == b"hello world\n", "missing semantic: physical playback")
         st, _, home = http("GET", "/")
         check(st == 200 and b"Open library" in home, "missing semantic: home still serves")
-        check(b"Arrival (2016)" in home and demo["id"].encode() in home, "missing semantic: home lists local movies")
-        check(f"/watch/{demo['id']}".encode() in home, "missing semantic: home movies are playable")
+        check(b"Recently added" in home and demo["id"].encode() in home, "missing semantic: home lists local movies")
+        check(f"/item/{demo['id']}".encode() in home, "missing semantic: home movies link to item")
         check(b">TMDB<" not in home and b">IMDb<" not in home and b"themoviedb.org" not in home, "missing semantic: home has no catalogue chips")
         check(b"class=\"archive-note\"" in home and b"without a catalogue fetch" in home, "missing semantic: home is local archive")
         st, _, lib = http("GET", "/library")
         check(st == 200 and b"Arrival (2016)" in lib and demo["id"].encode() in lib, "missing semantic: library lists local files")
-        check(f"/watch/{demo['id']}".encode() in lib, "missing semantic: library watch affordance")
+        check(f"/item/{demo['id']}".encode() in lib, "missing semantic: library cards link to item")
+        check(f"/watch/{demo['id']}".encode() not in lib, "missing semantic: library has no under-card watch")
         check(b">TMDB<" not in lib and b'class="catalogue"' not in lib, "missing semantic: library has no catalogue chips")
         check(b"without a catalogue fetch" in lib, "missing semantic: library is local archive")
         st, _, movies = http("GET", "/library/movie")
         check(st == 200 and b"Arrival (2016)" in movies and demo["id"].encode() in movies, "missing semantic: movie collection lists local files")
         check(b">TMDB<" not in movies, "missing semantic: movie collection has no catalogue chips")
+
+    elif mode == "prefix":
+        prefix = os.environ.get("KORU_TEST_PREFIX", "/korisha")
+        manifest = json.loads((ROOT / "fixtures" / "manifest.json").read_text(encoding="utf-8"))
+        demo = next(e for e in manifest["entries"] if e["title"] == "demo")
+        demo_id = demo["id"]
+
+        st, _, body = http("GET", prefix + "/")
+        check(st == 200, f"GET {prefix}/ -> {st}")
+        check(f'href="{prefix}/library"'.encode() in body, f"home href={prefix}/library")
+        check(f'data-base="{prefix}"'.encode() in body, f"html data-base={prefix}")
+        check(f'href="{prefix}/app.css"'.encode() in body, f"home stylesheet href={prefix}/app.css")
+
+        st, _, body = http("GET", prefix + "/library")
+        check(st == 200, f"GET {prefix}/library -> {st}")
+        check(f'href="{prefix}/library/movie"'.encode() in body, "library hrefs stay under alias")
+        check(f'href="{prefix}/item/{demo_id}"'.encode() in body, "library item href prefixed")
+        check(f'href="{prefix}/settings"'.encode() in body, "library settings href prefixed")
+
+        st, _, body = http("GET", prefix + "/settings")
+        check(st == 200 and b'id="settings-page"' in body, f"GET {prefix}/settings -> 200")
+        check(f'action="{prefix}/settings"'.encode() in body, "settings form action stays under alias")
+        check(f'href="{prefix}/settings"'.encode() in body, "settings self href prefixed")
+        check(b'value="movies"' in body and b">Reindex<" in body, "prefixed settings has mounts + Reindex")
+        check(b"index_media.py" not in body, "prefixed settings does not name Python indexer")
+        check(prefix.encode() in body and b"KORU_BASE_PATH" in body, "prefixed settings shows web alias")
+
+        st, _, body = http("GET", f"{prefix}/watch/{demo_id}")
+        check(st == 200 and b'id="player"' in body, "prefixed watch page")
+        check(f'src="{prefix}/media/{demo_id}"'.encode() in body, f"player src={prefix}/media/…")
+
+        st, _, body = http("GET", f"{prefix}/media/{demo_id}")
+        check(st == 200 and body == b"hello world\n", "prefixed /media/{id} streams")
+
+        st, _, body = http("GET", f"/media/{demo_id}")
+        check(st == 200 and body == b"hello world\n", "unprefixed /media/{id} still streams when alias is not /media")
+
+        st, hdrs, css = http("GET", prefix + "/app.css")
+        check(st == 200 and b"--ink" in css, "prefixed app.css")
+        check("text/css" in hdrs.get("content-type", ""), "prefixed app.css content-type")
+
+        st, _, js = http("GET", prefix + "/enhance.js")
+        check(st == 200 and b"appBase" in js and b"withAppBase" in js, "prefixed enhance.js reads data-base")
+        check(b"match(/^\\/watch\\/" not in js, "mediaIdFromPath is not ^/watch/ anchored")
+        check(b"match(/\\/watch\\/" in js, "mediaIdFromPath matches /watch/ anywhere")
+
+        st, _, body = http("GET", "/library", headers={"X-Forwarded-Prefix": prefix})
+        check(st == 200 and f'href="{prefix}/library/movie"'.encode() in body, "X-Forwarded-Prefix on stripped /library")
+        check(f'data-base="{prefix}"'.encode() in body, "forwarded prefix sets data-base")
+
+        st, _, body = http("GET", prefix + "/library", headers={"X-Forwarded-Prefix": prefix})
+        check(st == 200 and f'href="{prefix}/library/movie"'.encode() in body, "X-Forwarded-Prefix + full /korisha/library")
+
+        st, _, body = http("GET", f"{prefix}/watch/{demo_id}", headers={"X-Forwarded-Prefix": prefix})
+        check(f'src="{prefix}/media/{demo_id}"'.encode() in body, "forwarded prefix player src")
+
+        st, _, jbody = http("GET", f"{prefix}/item/m_and1e2?format=jsonld")
+        check(st == 200 and b'"@type":"TVEpisode"' in jbody, "prefixed episode jsonld")
+        check(f"{prefix}/media/m_and1e2".encode() in jbody, "prefixed episode contentUrl")
+        check(b"/item/work." not in jbody, "prefixed jsonld keeps opaque ids")
 
     else:
         print(f"unknown mode {mode}", file=sys.stderr)

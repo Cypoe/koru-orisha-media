@@ -15,7 +15,8 @@
 //
 // `target` is the default hx-target. `protect` is a selector that must not be
 // swapped or owned by a swap target (empty string = none). `pop_prefix` limits
-// popstate re-fetch to matching pathnames (empty = any). App-local resume and
-// post-swap identity checks stay in the consumer.
+// popstate re-fetch to matching pathnames (empty = any). When the consumer
+// defines `withAppBase`, popstate / hx-get honor `html[data-base]`. App-local
+// resume and post-swap identity checks stay in the consumer.
 
 pub tor run { target: string, protect: string, pop_prefix: string }

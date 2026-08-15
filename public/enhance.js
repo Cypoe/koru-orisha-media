@@ -37,7 +37,8 @@ function hxGetUrl(el) {
                 u.searchParams.set(k, String(v));
             });
         }
-        return u.pathname + u.search;
+        const path = u.pathname + u.search;
+        return typeof withAppBase === "function" ? withAppBase(path) : path;
     } catch (_) {
         return raw;
     }
@@ -90,9 +91,23 @@ function fetchAndSwap(url, target, pushUrl, fallbackUrl, protect, defaultTarget)
 // Player resume + post-swap identity. Generic fetch/swap is koru/htmx.
 // File-level `playerSnapshot` / `playerIdentityOk` are the hooks the library
 // swap path calls (same prepend pattern as koru/dom's koruDomNode).
-// Names `playerIdentityOk` / `localStorage` are part of the HTTP test surface.
+// Names `playerIdentityOk` / `localStorage` / `appBase` are part of the HTTP test surface.
+function appBase() {
+    const html = document.documentElement;
+    return (html && html.getAttribute("data-base")) || "";
+}
+function withAppBase(pathAndSearch) {
+    const base = appBase();
+    if (!base || !pathAndSearch) return pathAndSearch;
+    const q = pathAndSearch.indexOf("?");
+    const path = q === -1 ? pathAndSearch : pathAndSearch.slice(0, q);
+    const search = q === -1 ? "" : pathAndSearch.slice(q);
+    if (path === base || path.indexOf(base + "/") === 0) return pathAndSearch;
+    if (path.charAt(0) !== "/") return pathAndSearch;
+    return base + path + search;
+}
 function mediaIdFromPath() {
-    const m = location.pathname.match(/^\/watch\/([^/]+)/);
+    const m = location.pathname.match(/\/watch\/([^/]+)/);
     return m ? decodeURIComponent(m[1]) : null;
 }
 function resumeKey(id) {
@@ -151,6 +166,13 @@ const main_module = {
       function enhancePlayer() {
       const player = document.getElementById("player");
       if (!player) return;
+      const kind = player.getAttribute("data-player") || player.tagName.toLowerCase();
+      const plugins = window.KoruPlayers || {};
+      if (typeof plugins[kind] === "function") {
+      plugins[kind](player);
+      return;
+      }
+      if (!("currentTime" in player)) return;
       const id = player.getAttribute("data-media-id") || mediaIdFromPath();
       if (!id) return;
       try {
@@ -242,7 +264,15 @@ const main_module = {
       });
 
       window.addEventListener("popstate", function () {
-      if (popPrefix && location.pathname.indexOf(popPrefix) !== 0) return;
+      if (popPrefix) {
+      const want =
+      typeof withAppBase === "function" ? withAppBase(popPrefix) : popPrefix;
+      if (
+      location.pathname.indexOf(want) !== 0 &&
+      location.pathname.indexOf(popPrefix) !== 0
+      )
+      return;
+      }
       const region = document.querySelector(defaultTarget);
       if (!region) {
       location.reload();

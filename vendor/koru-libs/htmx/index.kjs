@@ -37,7 +37,8 @@ function hxGetUrl(el) {
                 u.searchParams.set(k, String(v));
             });
         }
-        return u.pathname + u.search;
+        const path = u.pathname + u.search;
+        return typeof withAppBase === "function" ? withAppBase(path) : path;
     } catch (_) {
         return raw;
     }
@@ -125,7 +126,15 @@ function fetchAndSwap(url, target, pushUrl, fallbackUrl, protect, defaultTarget)
         });
 
         window.addEventListener("popstate", function () {
-            if (popPrefix && location.pathname.indexOf(popPrefix) !== 0) return;
+            if (popPrefix) {
+                const want =
+                    typeof withAppBase === "function" ? withAppBase(popPrefix) : popPrefix;
+                if (
+                    location.pathname.indexOf(want) !== 0 &&
+                    location.pathname.indexOf(popPrefix) !== 0
+                )
+                    return;
+            }
             const region = document.querySelector(defaultTarget);
             if (!region) {
                 location.reload();

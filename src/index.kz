@@ -1,6 +1,6 @@
 // media — representation dispatch (not Orisha).
 // Graph load lives in graph.kz; HTML/JSON-LD/bytes in consumers.kz.
-// `dispatch` is wired from main.k as orisha:handler.
+// `dispatch` is wired from main.k as orisha:handler. Never calls TMDB, TVDB, or ffmpeg.
 
 const std = @import("std");
 
@@ -14,7 +14,8 @@ pub const ContentType = koru_orisha.ContentType;
     koru_media.koru_graph.ensureConfig();
     koru_media.koru_graph.maybeReloadManifest();
     const method = req.method;
-    const path = req.path;
+    // Strip alias (`KORU_BASE_PATH` / `X-Forwarded-Prefix`) before matching routes.
+    const path = koru_media.koru_graph.beginRequest(req.path, req.header("X-Forwarded-Prefix"));
     const pq = koru_media.koru_consumers.parseQueryString(req.query);
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/")) {
@@ -74,6 +75,14 @@ pub const ContentType = koru_orisha.ContentType;
         const id = path["/media/".len..];
         const body = koru_media.koru_consumers.mediaHttp(allocator, method, id, req.range, koru_media.koru_consumers.queryFlag(req.query, "download"), req.if_none_match);
         return .{ .status = 200, .body = body, .content_type = null };
+    }
+    if (std.mem.eql(u8, path, "/settings")) {
+        if (std.mem.eql(u8, method, "GET")) {
+            return .{ .status = 200, .body = koru_media.koru_consumers.settingsHtml(allocator, ""), .content_type = null };
+        }
+        if (std.mem.eql(u8, method, "POST")) {
+            return .{ .status = 200, .body = koru_media.koru_consumers.settingsPost(allocator, req.body), .content_type = null };
+        }
     }
 
     if (koru_media.koru_consumers.staticFallback(method, path, req.if_none_match)) |r| {

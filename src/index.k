@@ -2,8 +2,11 @@
 //
 // Sibling stems under src/ (Koru directory modules, same as orisha/lib):
 //   index.k / index.kz     this file — route table → representations
-//   graph.k / graph.kz     physical manifest + semantic core
+//   graph.k / graph.kz     physical catalog (SQLite) + semantic overlay
+//   catalog.k / catalog.kz SQLite index + filesystem walker
 //   consumers.k / consumers.kz  named constructions → HTML / JSON-LD / bytes
+// Routes include /settings (library mounts + Reindex flag). Handlers never call
+// TMDB, TVDB, or ffmpeg. Reindex is catalog.kz via reindex.requested.
 // Zig companions implement the work; main.k wires orisha:handler → media:dispatch
 // (Koru ignores orisha:handler if it lives only inside import media).
 // Do not `import media/graph` or `import media/consumers` here — directory

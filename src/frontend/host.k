@@ -26,4 +26,5 @@ import koru/htmx
 pub tor enhance-player {}
 
 enhance-player()
+// pop_prefix is the app route; html[data-base] supplies the WebStation alias.
 koru/htmx:run(target: "#library-region", protect: "#player", pop_prefix: "/library")
