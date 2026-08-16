@@ -1059,6 +1059,86 @@ pub fn workKeyIsExtraDir(name: []const u8) bool {
     return false;
 }
 
+fn asciiContainsIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or hay.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn pathBasename(rel: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, rel, '/')) |s| return rel[s + 1 ..];
+    return rel;
+}
+
+fn pathStem(rel: []const u8) []const u8 {
+    const base = pathBasename(rel);
+    if (std.mem.lastIndexOfScalar(u8, base, '.')) |d| {
+        if (d > 0) return base[0..d];
+    }
+    return base;
+}
+
+fn looksLikeEditionToken(s: []const u8) bool {
+    const tokens = [_][]const u8{
+        "3D", "HSBS", "H-SBS", "H.SBS", ".HBS", "SBS", "MVC", "FLAT",
+        "2160P", "1080P", "720P", "UHD", "4K", "HDR10", "HDR", "DV",
+        "REMUX", "THEATRICAL", "DIRECTOR",
+    };
+    for (tokens) |t| {
+        if (asciiContainsIgnoreCase(s, t)) return true;
+    }
+    return false;
+}
+
+/// Filename edition: `Avatar (2009) - 3D HSBS.mkv` → `3D HSBS`. Unknown suffix → `Original`.
+pub fn editionLabel(rel: []const u8) []const u8 {
+    const stem = pathStem(rel);
+    if (std.mem.lastIndexOf(u8, stem, " - ")) |dash| {
+        const suffix = std.mem.trim(u8, stem[dash + 3 ..], " ");
+        if (suffix.len > 0 and looksLikeEditionToken(suffix)) return suffix;
+    }
+    if (looksLikeEditionToken(stem)) return stem;
+    return "Original";
+}
+
+pub fn editionLooks3d(rel: []const u8) bool {
+    return asciiContainsIgnoreCase(rel, "3D") or asciiContainsIgnoreCase(rel, "HSBS") or
+        asciiContainsIgnoreCase(rel, "H-SBS") or asciiContainsIgnoreCase(rel, "MVC");
+}
+
+/// Extra grouping: soundtrack / featurette / document / trailer / extra.
+/// Folder wins, then MIME (audio → soundtrack, pdf → document, video → featurette).
+pub fn extraRole(rel: []const u8, mime: []const u8) []const u8 {
+    var start: usize = 0;
+    while (start < rel.len) {
+        var end = start;
+        while (end < rel.len and rel[end] != '/') : (end += 1) {}
+        const seg = rel[start..end];
+        if (std.ascii.eqlIgnoreCase(seg, "soundtrack") or std.ascii.eqlIgnoreCase(seg, "ost") or
+            std.ascii.eqlIgnoreCase(seg, "score") or std.ascii.eqlIgnoreCase(seg, "theme-music") or
+            std.ascii.eqlIgnoreCase(seg, "theme music"))
+            return "soundtrack";
+        if (std.ascii.eqlIgnoreCase(seg, "trailers") or std.ascii.eqlIgnoreCase(seg, "trailer"))
+            return "trailer";
+        if (std.ascii.eqlIgnoreCase(seg, "featurettes") or std.ascii.eqlIgnoreCase(seg, "featurette") or
+            std.ascii.eqlIgnoreCase(seg, "shorts") or std.ascii.eqlIgnoreCase(seg, "short") or
+            std.ascii.eqlIgnoreCase(seg, "interviews") or std.ascii.eqlIgnoreCase(seg, "interview") or
+            std.ascii.eqlIgnoreCase(seg, "scenes") or std.ascii.eqlIgnoreCase(seg, "deleted scenes") or
+            std.ascii.eqlIgnoreCase(seg, "behind the scenes") or std.ascii.eqlIgnoreCase(seg, "behind-the-scenes") or
+            std.ascii.eqlIgnoreCase(seg, "clips"))
+            return "featurette";
+        if (end >= rel.len) break;
+        start = end + 1;
+    }
+    if (std.mem.startsWith(u8, mime, "audio/")) return "soundtrack";
+    if (std.mem.eql(u8, mime, "application/pdf") or asciiContainsIgnoreCase(rel, ".pdf")) return "document";
+    if (std.mem.startsWith(u8, mime, "video/")) return "featurette";
+    return "extra";
+}
+
 fn pathSegment(path: []const u8, ends: []const usize, i: usize) []const u8 {
     const start: usize = if (i == 0) 0 else ends[i - 1] + 1;
     return path[start..ends[i]];
@@ -1407,11 +1487,9 @@ pub fn hasKind(kind: []const u8) bool {
 pub fn playerTag(e: Entry) []const u8 {
     if (std.mem.startsWith(u8, e.mime, "audio/")) return "audio";
     if (std.mem.startsWith(u8, e.mime, "video/")) return "video";
+    if (std.mem.eql(u8, e.mime, "application/pdf") or std.mem.eql(u8, e.container, "pdf")) return "pdf";
     if (std.mem.eql(u8, e.kind, "audio")) return "audio";
-    if (std.mem.eql(u8, e.kind, "book")) {
-        if (std.mem.eql(u8, e.mime, "application/pdf") or std.mem.eql(u8, e.container, "pdf")) return "pdf";
-        return "none";
-    }
+    if (std.mem.eql(u8, e.kind, "book")) return "none";
     if (std.mem.eql(u8, e.kind, "musicVideo")) return "video";
     return "video";
 }

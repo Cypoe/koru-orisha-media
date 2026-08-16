@@ -8,8 +8,14 @@ __pycache__/
 scripts/__pycache__/
 scripts/.pw/
 
-# Local compose library mount (see compose.yaml)
-media/
+# Local compose library mount (see compose.yaml). Keep fixtures/media tracked.
+/media/
+
+# Accidental DSM / sidecar identity files next to fixtures
+*.mp4.id
+*.mkv.id
+*.wav.id
+*.mp3.id
 
 # Local runtime volumes (compose ./data). CI uses fixtures/.
 data/*

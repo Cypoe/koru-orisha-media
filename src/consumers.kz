@@ -237,6 +237,20 @@ fn entryIsExtra(e: koru_media.koru_graph.Entry) bool {
     return std.mem.eql(u8, koru_media.koru_graph.fileKind(e.path), "extra");
 }
 
+fn extraHeading(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "soundtrack")) return "Soundtracks";
+    if (std.mem.eql(u8, role, "featurette")) return "Featurettes";
+    if (std.mem.eql(u8, role, "document")) return "Documents";
+    if (std.mem.eql(u8, role, "trailer")) return "Trailers";
+    return "Extras";
+}
+
+fn editionCaption(rel: []const u8, any_3d: bool) []const u8 {
+    const label = koru_media.koru_graph.editionLabel(rel);
+    if (any_3d and std.mem.eql(u8, label, "Original")) return "Flat";
+    return label;
+}
+
 fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
     const shown = cardTitle(e);
     const title = htmlEscaped(allocator, shown);
@@ -1541,30 +1555,81 @@ fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: 
     html.appendSlice(allocator, "</section>") catch {};
 }
 
-fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
-    var any_extra = false;
+fn appendEditions(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry, current_id: []const u8) void {
+    var n: usize = 0;
+    var any_3d = false;
     for (files) |f| {
-        if (entryIsExtra(f)) {
-            any_extra = true;
-            break;
+        if (entryIsExtra(f)) continue;
+        n += 1;
+        if (koru_media.koru_graph.editionLooks3d(f.path)) any_3d = true;
+    }
+    if (n < 2) return;
+    html.appendSlice(allocator, "<section class=\"editions\"><h2>Editions</h2><ul class=\"edition-list\">") catch {};
+    for (files) |f| {
+        if (entryIsExtra(f)) continue;
+        const cap = editionCaption(f.path, any_3d);
+        const cap_esc = htmlEscaped(allocator, cap);
+        defer if (cap_esc.ptr != cap.ptr) allocator.free(cap_esc);
+        const fid = htmlEscaped(allocator, f.id);
+        defer if (fid.ptr != f.id.ptr) allocator.free(fid);
+        html.appendSlice(allocator, "<li>") catch {};
+        if (std.mem.eql(u8, f.id, current_id)) {
+            html.appendSlice(allocator, "<strong>") catch {};
+            html.appendSlice(allocator, cap_esc) catch {};
+            html.appendSlice(allocator, "</strong>") catch {};
+        } else {
+            html.appendSlice(allocator, "<a href=\"") catch {};
+            appendAppPath(allocator, html, "/watch/");
+            html.appendSlice(allocator, fid) catch {};
+            html.appendSlice(allocator, "\">") catch {};
+            html.appendSlice(allocator, cap_esc) catch {};
+            html.appendSlice(allocator, "</a>") catch {};
         }
+        html.appendSlice(allocator, " · <a href=\"") catch {};
+        appendAppPath(allocator, html, "/media/");
+        html.appendSlice(allocator, fid) catch {};
+        html.appendSlice(allocator, "?download=1\">download</a></li>") catch {};
     }
-    if (!any_extra) return;
-    html.appendSlice(allocator, "<section class=\"extras\"><h2>Extras</h2><ol class=\"episode-list extra-list\">") catch {};
-    for (files) |f| {
-        if (!entryIsExtra(f)) continue;
-        const ep_title = htmlEscaped(allocator, f.title);
-        defer if (ep_title.ptr != f.title.ptr) allocator.free(ep_title);
-        const ep_id = htmlEscaped(allocator, f.id);
-        defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
-        html.appendSlice(allocator, "<li><a href=\"") catch {};
-        appendAppPath(allocator, html, "/watch/");
-        html.appendSlice(allocator, ep_id) catch {};
-        html.appendSlice(allocator, "\">") catch {};
-        html.appendSlice(allocator, ep_title) catch {};
-        html.appendSlice(allocator, "</a></li>") catch {};
+    html.appendSlice(allocator, "</ul></section>") catch {};
+}
+
+fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
+    const roles = [_][]const u8{ "soundtrack", "featurette", "document", "trailer", "extra" };
+    var opened = false;
+    for (roles) |role| {
+        var any = false;
+        for (files) |f| {
+            if (!entryIsExtra(f)) continue;
+            if (std.mem.eql(u8, koru_media.koru_graph.extraRole(f.path, f.mime), role)) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) continue;
+        if (!opened) {
+            html.appendSlice(allocator, "<section class=\"extras\">") catch {};
+            opened = true;
+        }
+        html.appendSlice(allocator, "<h2>") catch {};
+        html.appendSlice(allocator, extraHeading(role)) catch {};
+        html.appendSlice(allocator, "</h2><ol class=\"episode-list extra-list\">") catch {};
+        for (files) |f| {
+            if (!entryIsExtra(f)) continue;
+            if (!std.mem.eql(u8, koru_media.koru_graph.extraRole(f.path, f.mime), role)) continue;
+            const ep_title = htmlEscaped(allocator, f.title);
+            defer if (ep_title.ptr != f.title.ptr) allocator.free(ep_title);
+            const ep_id = htmlEscaped(allocator, f.id);
+            defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
+            html.appendSlice(allocator, "<li><a href=\"") catch {};
+            appendAppPath(allocator, html, "/watch/");
+            html.appendSlice(allocator, ep_id) catch {};
+            html.appendSlice(allocator, "\">") catch {};
+            html.appendSlice(allocator, ep_title) catch {};
+            html.appendSlice(allocator, "</a></li>") catch {};
+        }
+        html.appendSlice(allocator, "</ol>") catch {};
     }
-    html.appendSlice(allocator, "</ol></section>") catch {};
+    if (opened) html.appendSlice(allocator, "</section>") catch {};
 }
 
 pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
@@ -1652,7 +1717,7 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         html.appendSlice(allocator, "</a> <a href=\"") catch {};
         appendAppPath(allocator, &html, "/library");
         html.appendSlice(allocator, "\">library</a></p>") catch {};
-        if (series) appendSeasons(allocator, &html, files);
+        if (series) appendSeasons(allocator, &html, files) else appendEditions(allocator, &html, files, e.id);
         appendExtrasFrom(allocator, &html, files);
         html.appendSlice(allocator, "</div></div></article>") catch {};
         appendAppChromeEnd(allocator, &html);
@@ -1747,6 +1812,7 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             const probe = formatProbeNote(allocator, e, &probe_buf);
             if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
         }
+        html.appendSlice(allocator, "<div class=\"watch-stage\">") catch {};
         // Player owns identity outside any hx-target / #library-region.
         // Native <audio>/<video> when the browser can; otherwise a plugin slot.
         if (std.mem.eql(u8, tag, "audio")) {
@@ -1770,6 +1836,7 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             const player = std.fmt.bufPrint(&player_buf, "<div id=\"player\" data-player=\"{s}\" data-media-id=\"{s}\" data-mime=\"{s}\" class=\"player-fallback\"><p>This title is not a browser-native stream. <a href=\"{s}/media/{s}?download=1\">Download</a> or attach a player plugin.</p></div>", .{ e.kind, id_esc, e.mime, bp(), id_esc }) catch "";
             html.appendSlice(allocator, player) catch {};
         }
+        html.appendSlice(allocator, "</div>") catch {};
         // Filled by enhance.js when a saved resume position exists; never replaces #player.
         html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
         var nav_buf: [640]u8 = undefined;
@@ -1781,6 +1848,7 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         {
             var work_files: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
             const files = koru_media.koru_graph.collectWorkFiles(e.path, &work_files);
+            if (!filesAreSeries(e.kind, files)) appendEditions(allocator, &html, files, e.id);
             appendExtrasFrom(allocator, &html, files);
         }
         html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
@@ -1829,7 +1897,7 @@ pub fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     if (e.poster.len == 0) {
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     }
-    var path_buf: [1024]u8 = undefined;
+    var path_buf: [4096]u8 = undefined;
     const full_path = koru_media.koru_graph.pathUnderRoot(e.poster, &path_buf) orelse {
         return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
     };
@@ -1868,7 +1936,7 @@ pub fn subtitlesHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     if (e.subtitle.len == 0) {
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     }
-    var path_buf: [1024]u8 = undefined;
+    var path_buf: [4096]u8 = undefined;
     const full_path = koru_media.koru_graph.pathUnderRoot(e.subtitle, &path_buf) orelse {
         return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
     };
@@ -1897,7 +1965,7 @@ pub fn mediaHttp(allocator: std.mem.Allocator, method: []const u8, id: []const u
     const e = koru_media.koru_graph.findEntry(id) orelse {
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     };
-    var path_buf: [1024]u8 = undefined;
+    var path_buf: [4096]u8 = undefined;
     const full_path = koru_media.koru_graph.pathUnderRoot(e.path, &path_buf) orelse {
         return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
     };
@@ -1905,10 +1973,11 @@ pub fn mediaHttp(allocator: std.mem.Allocator, method: []const u8, id: []const u
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     };
     defer file.close();
-    const st = file.stat() catch {
-        return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
+    // Zig 0.15 File.stat uses statx; DSM ACL shares reject it (500). fstat matches ingest.
+    const size: u64 = blk: {
+        const pst = std.posix.fstat(file.handle) catch break :blk e.bytes;
+        break :blk std.fs.File.Stat.fromPosix(pst).size;
     };
-    const size = st.size;
 
     var etag_buf: [96]u8 = undefined;
     const etag = std.fmt.bufPrint(&etag_buf, "{s}-{d}", .{ e.id, size }) catch "";

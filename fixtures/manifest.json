@@ -169,6 +169,48 @@
       "modified_ns": 1786505274828094100,
       "path": "music/Daft Punk/Discovery/02 - Aerodynamic.mp3",
       "title": "Aerodynamic"
+    },
+    {
+      "bytes": 4,
+      "container": "mkv",
+      "id": "m_avflat",
+      "kind": "movie",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828094200,
+      "path": "movies/Avatar (2009)/Avatar (2009).mkv",
+      "title": "Avatar (2009)",
+      "year": 2009
+    },
+    {
+      "bytes": 4,
+      "container": "mkv",
+      "id": "m_av3d",
+      "kind": "movie",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828094300,
+      "path": "movies/Avatar (2009)/Avatar (2009) - 3D HSBS.mkv",
+      "title": "Avatar (2009) - 3D HSBS",
+      "year": 2009
+    },
+    {
+      "bytes": 3,
+      "container": "mkv",
+      "id": "m_avfeat",
+      "kind": "extra",
+      "mime": "video/x-matroska",
+      "modified_ns": 1786505274828094400,
+      "path": "movies/Avatar (2009)/extras/featurettes/Making Of.mkv",
+      "title": "Making Of"
+    },
+    {
+      "bytes": 8,
+      "container": "pdf",
+      "id": "m_avpdf",
+      "kind": "extra",
+      "mime": "application/pdf",
+      "modified_ns": 1786505274828094500,
+      "path": "movies/Avatar (2009)/extras/Avatar Script.pdf",
+      "title": "Avatar Script"
     }
   ]
 }
