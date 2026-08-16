@@ -91,6 +91,44 @@ var settings_have_file = false;
 var pending_libs: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_catalog.LibraryRoot = undefined;
 var pending_lib_n: usize = 0;
 var pending_from_file = false;
+var tmdb_token_buf: [256]u8 = undefined;
+var tmdb_token_len: usize = 0;
+var tmdb_api_key_buf: [128]u8 = undefined;
+var tmdb_api_key_len: usize = 0;
+var tvdb_api_key_buf: [128]u8 = undefined;
+var tvdb_api_key_len: usize = 0;
+var tvdb_pin_buf: [64]u8 = undefined;
+var tvdb_pin_len: usize = 0;
+var login_hash_buf: [80]u8 = undefined;
+var login_hash_len: usize = 0;
+var session_secret_buf: [80]u8 = undefined;
+var session_secret_len: usize = 0;
+var proxy_user_header_buf: [64]u8 = undefined;
+var proxy_user_header_len: usize = 0;
+var trust_proxy_user: bool = true;
+var hydrate_flag_owned: []const u8 = "data/hydrate.requested";
+
+/// Host capability register — source of truth for explain + UI (not an if-ladder).
+pub const HOST_CAPABILITIES = [_][]const u8{
+    "browse",
+    "filter",
+    "play.video",
+    "play.audio",
+    "play.external",
+    "read.ebook",
+    "view.image",
+};
+
+pub fn hostHas(cap: []const u8) bool {
+    for (HOST_CAPABILITIES) |c| {
+        if (std.mem.eql(u8, c, cap)) return true;
+    }
+    return false;
+}
+
+pub fn hostRegisterText() []const u8 {
+    return "browse,filter,play.video,play.audio,play.external,read.ebook,view.image";
+}
 
 pub const SemanticJoin = struct {
     // Join key is the physical opaque id (m_*). Local work ids (work.movie.*)
@@ -184,6 +222,12 @@ fn parseLibField(key: []const u8, prefix: []const u8) ?[]const u8 {
     return rest[dot + 1 ..];
 }
 
+fn copySetting(buf: []u8, len: *usize, val: []const u8) void {
+    const take = @min(val.len, buf.len);
+    @memcpy(buf[0..take], val[0..take]);
+    len.* = take;
+}
+
 fn loadSettingsFile() void {
     settings_store_len = 0;
     pending_lib_n = 0;
@@ -192,6 +236,14 @@ fn loadSettingsFile() void {
     settings_driver_len = 0;
     settings_dsn_len = 0;
     settings_walk_on_empty = true;
+    tmdb_token_len = 0;
+    tmdb_api_key_len = 0;
+    tvdb_api_key_len = 0;
+    tvdb_pin_len = 0;
+    login_hash_len = 0;
+    session_secret_len = 0;
+    proxy_user_header_len = 0;
+    trust_proxy_user = true;
     const path = envOr("KORU_CONFIG", DEFAULT_CONFIG_PATH);
     config_path_owned = allocDup(path) orelse DEFAULT_CONFIG_PATH;
     const file = std.fs.cwd().openFile(config_path_owned, .{}) catch return;
@@ -223,6 +275,22 @@ fn loadSettingsFile() void {
             settings_dsn_len = take;
         } else if (std.mem.eql(u8, key, "walk_on_empty")) {
             settings_walk_on_empty = !(std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false") or std.ascii.eqlIgnoreCase(val, "no"));
+        } else if (std.mem.eql(u8, key, "tmdb_token")) {
+            copySetting(&tmdb_token_buf, &tmdb_token_len, val);
+        } else if (std.mem.eql(u8, key, "tmdb_api_key")) {
+            copySetting(&tmdb_api_key_buf, &tmdb_api_key_len, val);
+        } else if (std.mem.eql(u8, key, "tvdb_api_key")) {
+            copySetting(&tvdb_api_key_buf, &tvdb_api_key_len, val);
+        } else if (std.mem.eql(u8, key, "tvdb_pin")) {
+            copySetting(&tvdb_pin_buf, &tvdb_pin_len, val);
+        } else if (std.mem.eql(u8, key, "login_password_hash")) {
+            copySetting(&login_hash_buf, &login_hash_len, val);
+        } else if (std.mem.eql(u8, key, "session_secret")) {
+            copySetting(&session_secret_buf, &session_secret_len, val);
+        } else if (std.mem.eql(u8, key, "trust_proxy_user")) {
+            trust_proxy_user = !(std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false") or std.ascii.eqlIgnoreCase(val, "no"));
+        } else if (std.mem.eql(u8, key, "proxy_user_header")) {
+            copySetting(&proxy_user_header_buf, &proxy_user_header_len, val);
         } else if (parseLibIndex(key, "lib.")) |idx| {
             if (idx >= koru_media.koru_catalog.MAX_LIBRARY_ROOTS) continue;
             const field = parseLibField(key, "lib.") orelse continue;
@@ -268,6 +336,22 @@ fn writeSettingsFile(base: []const u8, driver: []const u8, dsn: []const u8, walk
     append(&buf, &w, dsn);
     append(&buf, &w, "\nwalk_on_empty=");
     append(&buf, &w, if (walk) "1" else "0");
+    append(&buf, &w, "\ntmdb_token=");
+    append(&buf, &w, tmdb_token_buf[0..tmdb_token_len]);
+    append(&buf, &w, "\ntmdb_api_key=");
+    append(&buf, &w, tmdb_api_key_buf[0..tmdb_api_key_len]);
+    append(&buf, &w, "\ntvdb_api_key=");
+    append(&buf, &w, tvdb_api_key_buf[0..tvdb_api_key_len]);
+    append(&buf, &w, "\ntvdb_pin=");
+    append(&buf, &w, tvdb_pin_buf[0..tvdb_pin_len]);
+    append(&buf, &w, "\nlogin_password_hash=");
+    append(&buf, &w, login_hash_buf[0..login_hash_len]);
+    append(&buf, &w, "\nsession_secret=");
+    append(&buf, &w, session_secret_buf[0..session_secret_len]);
+    append(&buf, &w, "\ntrust_proxy_user=");
+    append(&buf, &w, if (trust_proxy_user) "1" else "0");
+    append(&buf, &w, "\nproxy_user_header=");
+    append(&buf, &w, if (proxy_user_header_len > 0) proxy_user_header_buf[0..proxy_user_header_len] else "X-Forwarded-User");
     append(&buf, &w, "\n");
     var i: usize = 0;
     while (i < roots.len) : (i += 1) {
@@ -350,8 +434,134 @@ pub fn persistAppSettings(base: []const u8, driver: []const u8, dsn: []const u8,
     rememberDriver(driver, dsn);
     settings_walk_on_empty = walk;
     if (!koru_media.koru_catalog.saveLibraryRoots(roots)) return false;
+    ensureSessionSecret();
     _ = writeSettingsFile(base_path_owned, catalogDriver(), if (settings_dsn_len > 0) settings_dsn_buf[0..settings_dsn_len] else catalog_path_owned, walk, roots);
     return true;
+}
+
+fn hexEncode(dst: []u8, src: []const u8) []const u8 {
+    const hex = "0123456789abcdef";
+    var i: usize = 0;
+    while (i < src.len and i * 2 + 1 < dst.len) : (i += 1) {
+        dst[i * 2] = hex[src[i] >> 4];
+        dst[i * 2 + 1] = hex[src[i] & 0xf];
+    }
+    return dst[0 .. i * 2];
+}
+
+fn ensureSessionSecret() void {
+    if (session_secret_len > 0) return;
+    var rnd: [16]u8 = undefined;
+    std.crypto.random.bytes(&rnd);
+    const hexed = hexEncode(&session_secret_buf, &rnd);
+    session_secret_len = hexed.len;
+}
+
+pub fn tmdbToken() []const u8 {
+    ensureConfig();
+    return tmdb_token_buf[0..tmdb_token_len];
+}
+
+pub fn tmdbApiKey() []const u8 {
+    ensureConfig();
+    return tmdb_api_key_buf[0..tmdb_api_key_len];
+}
+
+pub fn tvdbApiKey() []const u8 {
+    ensureConfig();
+    return tvdb_api_key_buf[0..tvdb_api_key_len];
+}
+
+pub fn tvdbPin() []const u8 {
+    ensureConfig();
+    return tvdb_pin_buf[0..tvdb_pin_len];
+}
+
+pub fn loginPasswordHash() []const u8 {
+    ensureConfig();
+    return login_hash_buf[0..login_hash_len];
+}
+
+pub fn sessionSecret() []const u8 {
+    ensureConfig();
+    ensureSessionSecret();
+    return session_secret_buf[0..session_secret_len];
+}
+
+pub fn trustProxyUser() bool {
+    ensureConfig();
+    return trust_proxy_user;
+}
+
+pub fn proxyUserHeader() []const u8 {
+    ensureConfig();
+    if (proxy_user_header_len == 0) return "X-Forwarded-User";
+    return proxy_user_header_buf[0..proxy_user_header_len];
+}
+
+pub fn hasHydrateKeys() bool {
+    return tmdbToken().len > 0 or tmdbApiKey().len > 0 or tvdbApiKey().len > 0;
+}
+
+pub fn hasLoginPassword() bool {
+    return loginPasswordHash().len > 0;
+}
+
+pub fn setTmdbToken(s: []const u8) void {
+    copySetting(&tmdb_token_buf, &tmdb_token_len, std.mem.trim(u8, s, " \t\r\n"));
+}
+
+pub fn setTmdbApiKey(s: []const u8) void {
+    copySetting(&tmdb_api_key_buf, &tmdb_api_key_len, std.mem.trim(u8, s, " \t\r\n"));
+}
+
+pub fn setTvdbApiKey(s: []const u8) void {
+    copySetting(&tvdb_api_key_buf, &tvdb_api_key_len, std.mem.trim(u8, s, " \t\r\n"));
+}
+
+pub fn setTvdbPin(s: []const u8) void {
+    copySetting(&tvdb_pin_buf, &tvdb_pin_len, std.mem.trim(u8, s, " \t\r\n"));
+}
+
+pub fn setTrustProxyUser(on: bool) void {
+    trust_proxy_user = on;
+}
+
+pub fn setProxyUserHeader(s: []const u8) void {
+    const t = std.mem.trim(u8, s, " \t\r\n");
+    if (t.len == 0) {
+        copySetting(&proxy_user_header_buf, &proxy_user_header_len, "X-Forwarded-User");
+        return;
+    }
+    copySetting(&proxy_user_header_buf, &proxy_user_header_len, t);
+}
+
+/// Empty `plain` leaves the stored hash unchanged.
+pub fn setLoginPassword(plain: []const u8) void {
+    const t = std.mem.trim(u8, plain, " \t\r\n");
+    if (t.len == 0) return;
+    ensureSessionSecret();
+    var digest: [32]u8 = undefined;
+    var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(session_secret_buf[0..session_secret_len]);
+    hmac.update("login-password\n");
+    hmac.update(t);
+    hmac.final(&digest);
+    const hexed = hexEncode(&login_hash_buf, &digest);
+    login_hash_len = hexed.len;
+}
+
+pub fn passwordMatches(plain: []const u8) bool {
+    if (login_hash_len == 0) return false;
+    const t = std.mem.trim(u8, plain, " \t\r\n");
+    if (t.len == 0) return false;
+    var digest: [32]u8 = undefined;
+    var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(session_secret_buf[0..session_secret_len]);
+    hmac.update("login-password\n");
+    hmac.update(t);
+    hmac.final(&digest);
+    var hex_buf: [64]u8 = undefined;
+    const hexed = hexEncode(&hex_buf, &digest);
+    return std.mem.eql(u8, hexed, login_hash_buf[0..login_hash_len]);
 }
 
 /// Apply a new base path in-process. Null if empty-after-normalize is OK, error
@@ -442,12 +652,16 @@ pub fn ensureConfig() void {
         rememberDriver(driver, catalog_path_owned);
     }
     reindex_flag_owned = siblingName(catalog_path_owned, "reindex.requested");
+    hydrate_flag_owned = siblingName(catalog_path_owned, "hydrate.requested");
+    ensureSessionSecret();
     if (base_path_len == 0) {
         const env_base = envOr("KORU_BASE_PATH", "");
         if (!isForbiddenBase(env_base)) _ = storeBase(env_base);
     }
     config_storage_end = storage_len;
     koru_media.koru_catalog.open(catalog_path_owned);
+    koru_media.koru_catalog.migrateHydrateWorksOnce();
+    koru_media.koru_catalog.encodeFilenameGraph();
     if (pending_from_file and pending_lib_n > 0) {
         _ = koru_media.koru_catalog.saveLibraryRoots(pending_libs[0..pending_lib_n]);
     } else if (!settings_have_file) {
@@ -456,7 +670,7 @@ pub fn ensureConfig() void {
         _ = writeSettingsFile(base_path_owned, driver, catalog_path_owned, settings_walk_on_empty, roots);
     }
     if (envIs1("KORU_HYDRATE")) {
-        std.debug.print("KORU_HYDRATE=1: overlay tables ready; provider HTTP is host-side (scripts/hydrate_catalog.py --catalog {s})\n", .{catalog_path_owned});
+        std.debug.print("KORU_HYDRATE=1: graph tables ready; TMDB/TVDB client is media:hydrate on ! hydrate\n", .{});
     }
     if (envIs1("KORU_REINDEX")) {
         _ = koru_media.koru_catalog.reindex(media_root_owned);
@@ -493,12 +707,14 @@ fn semanticMtimeNs() i128 {
     return st.mtime;
 }
 
-fn maybeReindexFlag() void {
+pub fn maybeReindexFlag() void {
     ensureConfig();
+    if (koru_http.streamsBusy()) return;
     const file = std.fs.cwd().openFile(reindex_flag_owned, .{}) catch return;
     file.close();
-    _ = koru_media.koru_catalog.reindex(media_root_owned);
+    const n = koru_media.koru_catalog.reindex(media_root_owned);
     std.fs.cwd().deleteFile(reindex_flag_owned) catch {};
+    if (n > 0 and hasHydrateKeys()) requestHydrate();
 }
 
 /// Swap in a new immutable snapshot when the file changes and no media streams
@@ -506,7 +722,6 @@ fn maybeReindexFlag() void {
 pub fn maybeReloadManifest() void {
     ensureConfig();
     if (koru_http.streamsBusy()) return;
-    maybeReindexFlag();
     const mt = manifestMtimeNs();
     const smt = semanticMtimeNs();
     const manifest_changed = mt >= 0 and mt != manifest_mtime_ns;
@@ -596,6 +811,7 @@ fn loadManifest() void {
             }
         }
     }
+    koru_media.koru_catalog.encodeFilenameGraph();
 }
 
 fn jsonArraySlice(text: []const u8, key: []const u8) ?[]const u8 {
@@ -682,6 +898,60 @@ fn loadSemantic() void {
         } else if (is_jsonld) {
             slot.jsonld = extractAfterUnescaped(pobj, "\"jsonld\"") orelse "";
         }
+    }
+    ingestSemanticGraph(text);
+}
+
+fn ingestSemanticGraph(text: []const u8) void {
+    const entities = jsonArraySlice(text, "\"entities\"") orelse "";
+    var i: usize = 0;
+    while (i < entities.len) : (i += 1) {
+        if (!std.mem.startsWith(u8, entities[i..], "\"id\"")) continue;
+        const obj = entryObjectSlice(entities, i);
+        const id = extractAfterUnescaped(obj, "\"id\"") orelse continue;
+        const typ = extractAfterUnescaped(obj, "\"type\"") orelse "CreativeWork";
+        if (id.len == 0) continue;
+        koru_media.koru_catalog.upsertEntity(id, typ);
+        const name = extractAfterUnescaped(obj, "\"title\"") orelse "";
+        if (name.len > 0) koru_media.koru_catalog.upsertAssertion(id, "name", name, "snapshot");
+        const desc = extractAfterUnescaped(obj, "\"description\"") orelse "";
+        if (desc.len > 0) koru_media.koru_catalog.upsertAssertion(id, "description", desc, "snapshot");
+        const year = extractNumberAfter(obj, "\"year\"") orelse 0;
+        if (year > 0) {
+            var yb: [8]u8 = undefined;
+            const ys = std.fmt.bufPrint(&yb, "{d}", .{year}) catch "";
+            if (ys.len > 0) koru_media.koru_catalog.upsertAssertion(id, "datePublished", ys, "snapshot");
+        }
+    }
+    const assets = jsonArraySlice(text, "\"assets\"") orelse "";
+    i = 0;
+    while (i < assets.len) : (i += 1) {
+        if (!std.mem.startsWith(u8, assets[i..], "\"id\"")) continue;
+        const obj = entryObjectSlice(assets, i);
+        const aid = extractAfterUnescaped(obj, "\"id\"") orelse continue;
+        const role = extractAfterUnescaped(obj, "\"role\"") orelse "main";
+        const eids = jsonArraySlice(obj, "\"entity_ids\"") orelse continue;
+        var k: usize = 0;
+        while (k < eids.len) : (k += 1) {
+            if (eids[k] != '"') continue;
+            const eid = extractFirstJsonString(eids[k..]) orelse continue;
+            if (eid.len == 0) continue;
+            koru_media.koru_catalog.upsertAssetLink(aid, eid, role);
+            koru_media.koru_catalog.upsertRelation(eid, "has_asset", aid, 0, "snapshot");
+        }
+    }
+    const rels = jsonArraySlice(text, "\"relations\"") orelse return;
+    i = 0;
+    while (i < rels.len) : (i += 1) {
+        if (!std.mem.startsWith(u8, rels[i..], "\"subject\"")) continue;
+        const obj = entryObjectSlice(rels, i);
+        const subject = extractAfterUnescaped(obj, "\"subject\"") orelse continue;
+        const kind = extractAfterUnescaped(obj, "\"kind\"") orelse continue;
+        const object = extractAfterUnescaped(obj, "\"object\"") orelse continue;
+        const ord64 = extractNumberAfter(obj, "\"ordinal\"") orelse 0;
+        const source = extractAfterUnescaped(obj, "\"source\"") orelse "snapshot";
+        const ordinal: u32 = if (ord64 > 9999) 0 else @intCast(ord64);
+        koru_media.koru_catalog.upsertRelation(subject, kind, object, ordinal, source);
     }
 }
 
@@ -962,8 +1232,7 @@ pub fn mediaRoot() []const u8 {
     return media_root_owned;
 }
 
-/// Touch `reindex.requested`. The next idle request (not a STREAM) walks
-/// enabled library roots. Settings POST and `nas-index.sh` share this flag.
+/// Touch `reindex.requested`. The accept pump's `! walk` arm runs the walk.
 pub fn requestReindex() void {
     ensureConfig();
     const path = reindex_flag_owned;
@@ -972,6 +1241,27 @@ pub fn requestReindex() void {
     }
     const f = std.fs.cwd().createFile(path, .{}) catch return;
     f.close();
+}
+
+pub fn requestHydrate() void {
+    ensureConfig();
+    const path = hydrate_flag_owned;
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |slash| {
+        if (slash > 0) std.fs.cwd().makePath(path[0..slash]) catch {};
+    }
+    const f = std.fs.cwd().createFile(path, .{}) catch return;
+    f.close();
+}
+
+pub fn hydrateFlagPath() []const u8 {
+    ensureConfig();
+    return hydrate_flag_owned;
+}
+
+pub fn consumeHydrateFlag() bool {
+    ensureConfig();
+    std.fs.cwd().deleteFile(hydrate_flag_owned) catch return false;
+    return true;
 }
 
 pub const LibraryRoot = koru_media.koru_catalog.LibraryRoot;
@@ -1522,4 +1812,57 @@ pub fn hasProjectionIndex() bool {
     maybeReloadManifest();
     loadSemantic();
     return semantic_count > 0;
+}
+
+pub const Related = struct {
+    id: []const u8,
+    ordinal: u32 = 0,
+};
+
+pub fn relate(subject: []const u8, kind: []const u8, out: []Related) []Related {
+    maybeReloadManifest();
+    loadSemantic();
+    return koru_media.koru_catalog.relate(subject, kind, out);
+}
+
+pub fn entityForAsset(asset_id: []const u8) []const u8 {
+    maybeReloadManifest();
+    loadSemantic();
+    return koru_media.koru_catalog.entityForAsset(asset_id);
+}
+
+pub fn assertionValue(entity_id: []const u8, property: []const u8) []const u8 {
+    return koru_media.koru_catalog.assertionValue(entity_id, property);
+}
+
+pub fn trailerAssetFor(entity_id: []const u8) []const u8 {
+    return koru_media.koru_catalog.trailerAssetFor(entity_id);
+}
+
+pub fn assetForEntity(entity_id: []const u8) []const u8 {
+    return koru_media.koru_catalog.assetForEntity(entity_id);
+}
+
+pub const HeroInfo = struct {
+    asset_id: []const u8 = "",
+    title: []const u8 = "",
+    plot: []const u8 = "",
+    trailer_id: []const u8 = "",
+    youtube_key: []const u8 = "",
+};
+
+pub fn findHero() ?HeroInfo {
+    maybeReloadManifest();
+    loadSemantic();
+    return koru_media.koru_catalog.findHero();
+}
+
+pub fn listDistinctImdb(out: []Entry) []Entry {
+    ensureConfig();
+    return koru_media.koru_catalog.listDistinctImdb(out);
+}
+
+pub fn listPresentKinds(out: [][]const u8) [][]const u8 {
+    maybeReloadManifest();
+    return koru_media.koru_catalog.listPresentKinds(out);
 }

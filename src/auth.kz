@@ -1,0 +1,173 @@
+// media/auth — principal + HMAC cookie session.
+// Cookie is HttpOnly, SameSite=Lax. LAN HTTP does not require Secure.
+
+const std = @import("std");
+
+pub const Principal = struct {
+    id: []const u8 = "",
+    display: []const u8 = "",
+    issuer: []const u8 = "",
+};
+
+var prin_store: [256]u8 = undefined;
+var prin_store_len: usize = 0;
+var current: Principal = .{};
+
+fn storeDup(s: []const u8) []const u8 {
+    if (s.len == 0) return "";
+    if (prin_store_len + s.len > prin_store.len) return "";
+    const out = prin_store[prin_store_len .. prin_store_len + s.len];
+    @memcpy(out, s);
+    prin_store_len += s.len;
+    return out;
+}
+
+fn hexEncode(dst: []u8, src: []const u8) []const u8 {
+    const hex = "0123456789abcdef";
+    var i: usize = 0;
+    while (i < src.len and i * 2 + 1 < dst.len) : (i += 1) {
+        dst[i * 2] = hex[src[i] >> 4];
+        dst[i * 2 + 1] = hex[src[i] & 0xf];
+    }
+    return dst[0 .. i * 2];
+}
+
+fn hexDecode(dst: []u8, src: []const u8) ?[]const u8 {
+    if (src.len % 2 != 0) return null;
+    const n = src.len / 2;
+    if (n > dst.len) return null;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const hi = std.fmt.parseInt(u8, src[i * 2 .. i * 2 + 1], 16) catch return null;
+        const lo = std.fmt.parseInt(u8, src[i * 2 + 1 .. i * 2 + 2], 16) catch return null;
+        dst[i] = (hi << 4) | lo;
+    }
+    return dst[0..n];
+}
+
+fn cookieValue(headers: []const u8, name: []const u8) ?[]const u8 {
+    const raw = headerValue(headers, "Cookie") orelse return null;
+    var it = std.mem.splitScalar(u8, raw, ';');
+    while (it.next()) |part| {
+        const pair = std.mem.trim(u8, part, " \t");
+        if (pair.len <= name.len + 1) continue;
+        if (!std.mem.startsWith(u8, pair, name)) continue;
+        if (pair[name.len] != '=') continue;
+        return pair[name.len + 1 ..];
+    }
+    return null;
+}
+
+fn headerValue(block: []const u8, name: []const u8) ?[]const u8 {
+    var it = std.mem.splitSequence(u8, block, "\r\n");
+    while (it.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (std.ascii.eqlIgnoreCase(line[0..colon], name)) {
+            return std.mem.trim(u8, line[colon + 1 ..], " \t");
+        }
+    }
+    return null;
+}
+
+fn macHex(out: []u8, msg: []const u8) []const u8 {
+    const secret = koru_media.koru_graph.sessionSecret();
+    var digest: [32]u8 = undefined;
+    var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(secret);
+    hmac.update(msg);
+    hmac.final(&digest);
+    return hexEncode(out, &digest);
+}
+
+fn mintToken(buf: []u8, id: []const u8, issuer: []const u8) []const u8 {
+    const exp: u64 = @as(u64, @intCast(std.time.timestamp())) + 60 * 60 * 24 * 14;
+    var exp_buf: [20]u8 = undefined;
+    const exp_s = std.fmt.bufPrint(&exp_buf, "{x}", .{exp}) catch "0";
+    var msg_buf: [192]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "v1|{s}|{s}|{s}", .{ id, issuer, exp_s }) catch return "";
+    var mac_buf: [64]u8 = undefined;
+    const mac = macHex(&mac_buf, msg);
+    return std.fmt.bufPrint(buf, "v1.{s}.{s}.{s}.{s}", .{ id, issuer, exp_s, mac }) catch "";
+}
+
+fn parseToken(token: []const u8) ?Principal {
+    var it = std.mem.splitScalar(u8, token, '.');
+    const ver = it.next() orelse return null;
+    const id = it.next() orelse return null;
+    const issuer = it.next() orelse return null;
+    const exp_s = it.next() orelse return null;
+    const mac = it.next() orelse return null;
+    if (!std.mem.eql(u8, ver, "v1")) return null;
+    if (id.len == 0 or issuer.len == 0 or mac.len != 64) return null;
+    const exp = std.fmt.parseInt(u64, exp_s, 16) catch return null;
+    if (exp < @as(u64, @intCast(std.time.timestamp()))) return null;
+    var msg_buf: [192]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "v1|{s}|{s}|{s}", .{ id, issuer, exp_s }) catch return null;
+    var mac_buf: [64]u8 = undefined;
+    const expect = macHex(&mac_buf, msg);
+    if (!std.mem.eql(u8, expect, mac)) return null;
+    prin_store_len = 0;
+    return .{
+        .id = storeDup(id),
+        .display = storeDup(id),
+        .issuer = storeDup(issuer),
+    };
+}
+
+pub fn currentPrincipal() Principal {
+    return current;
+}
+
+pub fn isAuthenticated() bool {
+    return current.id.len > 0;
+}
+
+/// Gate library/play/settings/media when a password is configured.
+/// `/login` and static public/ assets stay open. Empty password hash = open LAN.
+pub fn needsLogin(path: []const u8) bool {
+    if (!koru_media.koru_graph.hasLoginPassword()) return false;
+    if (std.mem.eql(u8, path, "/login")) return false;
+    if (std.mem.eql(u8, path, "/app.css")) return false;
+    if (std.mem.eql(u8, path, "/enhance.js")) return false;
+    if (std.mem.eql(u8, path, "/koru-dom-enhance.js")) return false;
+    if (std.mem.endsWith(u8, path, ".css") or std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".html")) {
+        return false;
+    }
+    return true;
+}
+
+pub fn authorize(req: *const koru_http.Request, path: []const u8) bool {
+    current = .{};
+    prin_store_len = 0;
+    if (koru_media.koru_graph.trustProxyUser()) {
+        const hdr_name = koru_media.koru_graph.proxyUserHeader();
+        if (req.header(hdr_name)) |raw| {
+            const user = std.mem.trim(u8, raw, " \t");
+            if (user.len > 0) {
+                current = .{
+                    .id = storeDup(user),
+                    .display = storeDup(user),
+                    .issuer = storeDup("dsm"),
+                };
+                return true;
+            }
+        }
+    }
+    if (cookieValue(req.headers, "koru_sid")) |tok| {
+        if (parseToken(tok)) |p| {
+            current = p;
+            return true;
+        }
+    }
+    if (!needsLogin(path)) return true;
+    return false;
+}
+
+pub fn setCookieHeader(buf: []u8, id: []const u8, issuer: []const u8) []const u8 {
+    var tok_buf: [256]u8 = undefined;
+    const tok = mintToken(&tok_buf, id, issuer);
+    return std.fmt.bufPrint(buf, "Set-Cookie: koru_sid={s}; Path=/; HttpOnly; SameSite=Lax\r\n", .{tok}) catch "";
+}
+
+pub fn clearCookieHeader() []const u8 {
+    return "Set-Cookie: koru_sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0\r\n";
+}
