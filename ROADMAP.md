@@ -57,7 +57,7 @@
 
 ## Phase 7: Orisha extraction prep (in-repo)
 
-- HTTP spec extracted to [`vendor/http`](vendor/http/) (`parseHttpRequest`, `header()`, STREAM:v1 `sendSpecial`, `run-accept-loop`). [`vendor/orisha`](vendor/orisha/) is a verbatim `W:\src\orisha\lib` (`bash scripts/vendor-orisha.sh`).
+- HTTP spec extracted to [`vendor/http`](vendor/http/) (`parseHttpRequest`, `header()`, STREAM:v1 parks on WouldBlock, `run-accept-loop` polls listen + stream fds). [`vendor/orisha`](vendor/orisha/) is a verbatim snapshot after `git pull` (`bash scripts/vendor-orisha.sh`). `std/vendor:bindings` + `vendor.lock` pin those trees (`koruc vendor copy` / `vendor sync`, not a sidecar hasher).
 - Media app in [`src/`](src/) (`media:dispatch`); `main.k` implements `http:handler`
 - Vendor / current-apis docs match the real `Request` + `STREAM:v1` surface
 - Schema-specific manifest loader (`entries` + unescape) + `scripts/test_manifest_parse.py`

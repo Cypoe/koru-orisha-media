@@ -4,6 +4,14 @@ bin/
 dist/
 *.o
 *.pyc
+.zig-cache/
+backend.zig
+backend_output_emitted.zig
+output_emitted.zig
+build.zig
+build_backend.zig
+compiler_env.zig
+program.ast.json
 __pycache__/
 scripts/__pycache__/
 scripts/.pw/

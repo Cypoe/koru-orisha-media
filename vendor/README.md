@@ -4,12 +4,25 @@
 
 | Tree | Role |
 |------|------|
-| [`orisha/`](orisha/) | **Verbatim** `W:\src\orisha\lib` (`521a4d7` at last vendor). Refresh: `bash scripts/vendor-orisha.sh`. |
+| [`orisha/`](orisha/) | **Verbatim** upstream `lib/` (`git pull` then snapshot). Refresh: `bash scripts/vendor-orisha.sh`. |
 | [`http/`](http/) | **Ours.** Request extras, `STREAM:v1` send, `run-accept-loop`, idle/`streamsBusy()`. |
 | [`koru-libs/`](koru-libs/) | `koru/dom` + `koru/htmx` |
 | [`json/`](json/) | Tiny JSON parse/emit |
 
 `main.k` imports **`http`**, not `orisha`. Do not `import orisha` until `orisha:serve` / `pump:reply` understand STREAM + Range **and** koruc stops double-emitting `koru_pump`. See [http/README.md](http/README.md) and [docs/upstream-pump-emit.md](../docs/upstream-pump-emit.md).
+
+## `std/vendor` pin
+
+`main.k` declares `std/vendor:bindings` for `orisha`, `http`, `koru`, `json`. Compile refuses if `vendor.lock` disagrees with the trees. Pin with **koruc**, not a sidecar hasher:
+
+| Command | When |
+|---------|------|
+| `bash scripts/koruc.sh main.k vendor copy` | After `git pull` of upstream (Orisha). Writes **as-copied** and as-compiled. |
+| `bash scripts/koruc.sh main.k vendor copy orisha` | Same, one binding. `scripts/vendor-orisha.sh` runs this. |
+| `bash scripts/koruc.sh main.k vendor sync` | After editing **our** trees (`vendor/http`): as-compiled only, keeps as-copied. |
+| `bash scripts/koruc.sh main.k vendor diff` | Patch vs upstream (`as-copied` vs live). |
+
+`scripts/vendor-orisha.sh` does `git pull` on the Orisha checkout, snapshots `lib/` into `vendor/orisha`, then `vendor copy orisha`. Do not bind `vendor/http` as an npm package — it is this app's HTTP spec.
 
 ```text
 import http

@@ -1,9 +1,9 @@
 # Vendored Orisha lib
 
-Copied from `W:\src\orisha\lib` (`521a4d7`).
+Verbatim `lib/` from the Orisha git checkout, after `git pull`.
 
-This tree must stay a **verbatim** upstream `lib/`. App HTTP (Range, STREAM:v1,
-run-accept-loop) lives in [`vendor/http`](../http/). Refresh with:
+App HTTP (Range, STREAM:v1, run-accept-loop) lives in [`vendor/http`](../http/).
+Refresh with:
 
     bash scripts/vendor-orisha.sh
 
