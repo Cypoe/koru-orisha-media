@@ -49,7 +49,7 @@ Physical identity answers: "Which bytes are these?"
 
 | id | layer | used at |
 |----|-------|---------|
-| `m_6d5d84` | physical asset | `/item/{id}`, `/watch/{id}`, `/media/{id}` |
+| `m_6d5d84` | physical asset | `/item/{id}`, `/play/{id}`, `/media/{id}` |
 | `work.movie.arrival-2016` | local work (`Entity.id`: type `Movie`, slug `arrival-2016`) | semantic graph only |
 | `tmdb:movie:329865` / `imdb:title:tt2543164` | provider identities | assertions / `sameAs`, never the local primary key |
 
@@ -138,7 +138,7 @@ The vocabulary is **closed in shape** and **open in membership**. A valid entity
   × (optional namespaced provider_ids)
 ```
 
-New media kinds are new registry rows, not new snapshot keys or `Entity` dataclass fields. Unknown types in a snapshot are **kept** in the core graph and **skipped** by constructions that do not list them. Do not drop them. Episode/season graph is out of scope until those types are registered with constructions.
+New media kinds are new registry rows, not new snapshot keys or `Entity` dataclass fields. Unknown types in a snapshot are **kept** in the core graph and **skipped** by constructions that do not list them. Do not drop them. `TVSeason` / `TVEpisode` are registered; `part_of` / `next` relations encode the episode graph.
 
 ### EntityType registry
 
@@ -146,11 +146,14 @@ Each row has an id, the assertion properties it admits, and the constructions th
 
 | id | admitted properties | constructions |
 |---|---|---|
-| `Movie` | `name`, `description` | `orisha.item`, `orisha.links`, `schema.org.jsonld` |
-| `MusicRecording` | `name`, `description` | `orisha.item`, `orisha.links`, `schema.org.jsonld` |
-| `TVSeries` | `name`, `description` | none (stub; fixture `series.fixture-demo` is kept, not projected) |
+| `Movie` | `name`, `description`, `datePublished` | host register ∩ `orisha.item`, `orisha.links`, `schema.org.jsonld`, `orisha.hero`, `orisha.next` |
+| `MusicRecording` | `name`, `description`, `datePublished` | same intersection |
+| `TVSeries` | `name`, `description`, `datePublished` | same intersection (`series.fixture-demo` has no assets, so it is still not projected) |
+| `TVSeason` | `name`, `description`, `datePublished` | same |
+| `TVEpisode` | `name`, `description`, `datePublished` | same |
+| `MusicAlbum` | `name`, `description`, `datePublished` | same |
 
-Register further types (for example `TVEpisode`) later without changing `Entity`.
+Register further types later without changing `Entity`. Constructions listed on a type are intersected with the host capability register (`browse`, `filter`, `play.video`, `play.audio`, `play.external`, `read.ebook`, `view.image`).
 
 ### Assertion.property registry
 
@@ -162,7 +165,7 @@ Stage 7 writes a top-level `projections[]` array of **named construction rows**,
 
 | construction | consumer | fields |
 |---|---|---|
-| `orisha.item` | item/watch HTML | `display_title`, `display_description` |
+| `orisha.item` | item/play HTML | `display_title`, `display_description` |
 | `orisha.links` | Link header + HTML chips | `tmdb_url`, `imdb_url` (omit empty; no row if both empty) |
 | `schema.org.jsonld` | `?format=jsonld` / Accept json | compact JSON-LD string |
 
@@ -407,7 +410,7 @@ python3 scripts/hydrate_catalog.py --catalog /tmp/catalog.sqlite \
   --fixture fixtures/tmdb/movie_329865.json --imdb tt2543164 --kind movie
 ```
 
-`KORU_HYDRATE=1` on `media-server` only logs that overlay tables exist. `docker exec … hydrate` is a no-op (Alpine image has no Python). Do not put API keys in compose or the runtime image.
+`KORU_HYDRATE=1` on `media-server` only logs that overlay tables exist. Hydrate is host-side Python; the scratch image has no shell and no Python. Do not put API keys in compose or the runtime image.
 
 ## Integrations (follow-up only)
 
@@ -422,7 +425,7 @@ Not in product this pass: Seerr Requests, Approve/Decline, blocklist-as-Seerr, u
 5. Add one offline adapter at a time, starting with the source whose licensing and data model are clearest. **Done** for SQLite overlay — [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) writes `hydrate_works` from [`scripts/enrich_tmdb.py`](../scripts/enrich_tmdb.py) (preferred) and [`scripts/enrich_tvdb.py`](../scripts/enrich_tvdb.py) (optional). Semantic-snapshot enrichers remain for `semantic.json`. Handlers only **read** overlay tables.
 6. Add provenance-aware conflict resolution. **Done** — `resolve_name_conflict` keeps both name assertions (`accepted` / `superseded`); `join_asset` looks up by opaque asset id.
 7. Precompute collection projections for Orisha requests. **Done** — [`scripts/project_semantic.py`](../scripts/project_semantic.py) runs named constructions (`orisha.item`, `orisha.links`, `schema.org.jsonld`) into top-level `projections[]` (not fields on `Entity`). Orisha loads `KORU_SEMANTIC` (default `data/semantic.json`) with the physical manifest. Missing `projections` or missing constructions is physical HTML only. First presentable is the local archive: `/` and `/library` list playable manifest files even when the fetched index is absent.
-8. Expose provider links and capability affordances only when data and permission exist. **Done** — item/watch HTML + `Link` related/alternate when the join hits; demo/unlinked assets stay physical-only.
+8. Expose provider links and capability affordances only when data and permission exist. **Done** — item/play HTML + `Link` related/alternate when the join hits; demo/unlinked assets stay physical-only.
 
 ## Invariants
 

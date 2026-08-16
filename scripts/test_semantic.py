@@ -296,8 +296,20 @@ class SemanticSchemaTests(unittest.TestCase):
         self.assertIn(("m_31afda", CONSTRUCTION_SCHEMA_ORG_JSONLD), constructions)
         self.assertNotIn(("m_31afda", CONSTRUCTION_ORISHA_LINKS), constructions)
         self.assertIn("TVSeries", ENTITY_TYPES)
-        self.assertEqual(ENTITY_TYPES["TVSeries"].constructions, frozenset())
+        self.assertIn(CONSTRUCTION_ORISHA_ITEM, ENTITY_TYPES["TVSeries"].constructions)
         self.assertIn("name", ASSERTION_PROPERTIES)
+
+    def test_andor_relations_next_and_part_of(self) -> None:
+        from semantic_schema import relate
+
+        nxt = relate(self.snap, "episode.andor.s1e1", "next")
+        self.assertEqual(len(nxt), 1)
+        self.assertEqual(nxt[0].object, "episode.andor.s1e2")
+        s1_to_s2 = relate(self.snap, "episode.andor.s1e2", "next")
+        self.assertEqual(len(s1_to_s2), 1)
+        self.assertEqual(s1_to_s2[0].object, "episode.andor.s2e1")
+        parts = relate(self.snap, "episode.andor.s1e1", "part_of")
+        self.assertEqual(parts[0].object, "season.andor.s1")
 
     def test_project_cli_writes_projections(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -31,12 +31,46 @@ MatchStatus = Literal[
 CONSTRUCTION_ORISHA_ITEM = "orisha.item"
 CONSTRUCTION_ORISHA_LINKS = "orisha.links"
 CONSTRUCTION_SCHEMA_ORG_JSONLD = "schema.org.jsonld"
+CONSTRUCTION_ORISHA_HERO = "orisha.hero"
+CONSTRUCTION_ORISHA_NEXT = "orisha.next"
 
 ALL_CONSTRUCTIONS: tuple[str, ...] = (
     CONSTRUCTION_ORISHA_ITEM,
     CONSTRUCTION_ORISHA_LINKS,
     CONSTRUCTION_SCHEMA_ORG_JSONLD,
+    CONSTRUCTION_ORISHA_HERO,
+    CONSTRUCTION_ORISHA_NEXT,
 )
+
+HOST_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "browse",
+        "filter",
+        "play.video",
+        "play.audio",
+        "play.external",
+        "read.ebook",
+        "view.image",
+    }
+)
+
+HOST_CONSTRUCTION_CAPS: dict[str, str] = {
+    CONSTRUCTION_ORISHA_ITEM: "browse",
+    CONSTRUCTION_ORISHA_LINKS: "browse",
+    CONSTRUCTION_SCHEMA_ORG_JSONLD: "browse",
+    CONSTRUCTION_ORISHA_HERO: "browse",
+    CONSTRUCTION_ORISHA_NEXT: "play.video",
+    "play.video": "play.video",
+    "play.audio": "play.audio",
+    "play.external": "play.external",
+}
+
+
+def host_admits_construction(construction: str) -> bool:
+    cap = HOST_CONSTRUCTION_CAPS.get(construction)
+    if cap is None:
+        return construction in HOST_CAPABILITIES
+    return cap in HOST_CAPABILITIES
 
 
 # ---------------------------------------------------------------------------
@@ -94,22 +128,37 @@ def register_entity_type(
 def _bootstrap_default_registry() -> None:
     register_assertion_property("name")
     register_assertion_property("description")
+    register_assertion_property("datePublished")
     _default_constructions = ALL_CONSTRUCTIONS
     register_entity_type(
         "Movie",
-        admitted_properties=("name", "description"),
+        admitted_properties=("name", "description", "datePublished"),
         constructions=_default_constructions,
     )
     register_entity_type(
         "MusicRecording",
-        admitted_properties=("name", "description"),
+        admitted_properties=("name", "description", "datePublished"),
         constructions=_default_constructions,
     )
-    # Stub: kept in the core graph; no construction lists it yet.
+    register_entity_type(
+        "MusicAlbum",
+        admitted_properties=("name", "description", "datePublished"),
+        constructions=_default_constructions,
+    )
     register_entity_type(
         "TVSeries",
-        admitted_properties=("name", "description"),
-        constructions=(),
+        admitted_properties=("name", "description", "datePublished"),
+        constructions=_default_constructions,
+    )
+    register_entity_type(
+        "TVSeason",
+        admitted_properties=("name", "description", "datePublished"),
+        constructions=_default_constructions,
+    )
+    register_entity_type(
+        "TVEpisode",
+        admitted_properties=("name", "description", "datePublished"),
+        constructions=_default_constructions,
     )
 
 
@@ -120,7 +169,9 @@ def type_admits_construction(entity_type: str, construction: str) -> bool:
     spec = ENTITY_TYPES.get(entity_type)
     if spec is None:
         return False
-    return construction in spec.constructions
+    if construction not in spec.constructions:
+        return False
+    return host_admits_construction(construction)
 
 
 def type_admits_property(entity_type: str, property: str) -> bool:
@@ -279,11 +330,32 @@ def _projection_from_dict(raw: Mapping[str, Any]) -> Projection | None:
 
 
 @dataclass
+class Relation:
+    subject: str
+    kind: str
+    object: str
+    ordinal: int | None = None
+    source: str = "filename"
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "subject": self.subject,
+            "kind": self.kind,
+            "object": self.object,
+            "source": self.source,
+        }
+        if self.ordinal is not None:
+            d["ordinal"] = self.ordinal
+        return d
+
+
+@dataclass
 class SemanticSnapshot:
     version: int = 1
     assets: list[Asset] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
     projections: list[Projection] = field(default_factory=list)
+    relations: list[Relation] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -291,6 +363,8 @@ class SemanticSnapshot:
             "assets": [asdict(a) for a in self.assets],
             "entities": [e.to_dict() for e in self.entities],
         }
+        if self.relations:
+            d["relations"] = [r.to_dict() for r in self.relations]
         if self.projections:
             d["projections"] = [p.to_dict() for p in self.projections]
         return d
@@ -306,7 +380,7 @@ class SemanticSnapshot:
                 Entity(
                     id=raw["id"],
                     type=raw["type"],
-                    title=raw["title"],
+                    title=raw.get("title") or "",
                     year=raw.get("year"),
                     description=raw.get("description"),
                     provider_ids=pids,
@@ -321,11 +395,31 @@ class SemanticSnapshot:
             row = _projection_from_dict(raw)
             if row is not None:
                 projections.append(row)
+        relations: list[Relation] = []
+        for raw in data.get("relations", []):
+            if not isinstance(raw, dict):
+                continue
+            subject = raw.get("subject")
+            kind = raw.get("kind")
+            obj = raw.get("object")
+            if not isinstance(subject, str) or not isinstance(kind, str) or not isinstance(obj, str):
+                continue
+            ordinal = raw.get("ordinal")
+            relations.append(
+                Relation(
+                    subject=subject,
+                    kind=kind,
+                    object=obj,
+                    ordinal=ordinal if isinstance(ordinal, int) else None,
+                    source=raw.get("source") if isinstance(raw.get("source"), str) else "snapshot",
+                )
+            )
         return cls(
             version=int(data.get("version", 1)),
             assets=assets,
             entities=entities,
             projections=projections,
+            relations=relations,
         )
 
 
@@ -443,6 +537,12 @@ def resolve_asset(
     return ResolveResult(status="no_match", reason="no evidence")
 
 
+def relate(snapshot: SemanticSnapshot, subject: str, kind: str) -> list[Relation]:
+    hits = [r for r in snapshot.relations if r.subject == subject and r.kind == kind]
+    hits.sort(key=lambda r: (r.ordinal is None, r.ordinal or 0, r.object))
+    return hits
+
+
 def entity_by_id(snapshot: SemanticSnapshot, entity_id: str) -> Entity | None:
     for e in snapshot.entities:
         if e.id == entity_id:
@@ -551,7 +651,7 @@ def project_orisha_item(
     physical_title: str = "",
     base: str = "https://media.local",
 ) -> Projection | None:
-    """item/watch HTML display strings. Does not mutate Entity."""
+    """item/play HTML display strings. Does not mutate Entity."""
     del base
     if not type_admits_construction(entity.type, CONSTRUCTION_ORISHA_ITEM):
         return None

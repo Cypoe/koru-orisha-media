@@ -1,8 +1,8 @@
 // media/catalog — SQLite library index (not Orisha).
 // One-stem companion of catalog.kz. Physical files only; handlers never call
 // TMDB, TVDB, or ffmpeg. Overlay tables: nfo_works / nfo_episodes (disk nfo)
-// and hydrate_works (offline TMDB/TVDB job, keyed by [tt…] imdb_id). Indexer
-// fills nfo from sibling .nfo / tvshow.nfo; hydrate_works is host-side only.
+// and sem_* (canonical graph). hydrate_works is a one-shot migrate source.
+// The binary hydrate client (hydrate.kz) encodes provider JSON into the graph.
 // library_roots (Settings) chooses which folders under KORU_MEDIA_ROOT to walk
 // and tags each with capability/affordances. NAS indexer is this module's
 // reindex, not host Python. Catalog file lives on the /data host bind.

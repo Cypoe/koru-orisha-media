@@ -25,6 +25,34 @@
       "kind": "movie",
       "role": "main",
       "entity_ids": []
+    },
+    {
+      "id": "m_and1e1",
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E01 - Kassa.mkv",
+      "kind": "tv",
+      "role": "main",
+      "entity_ids": ["episode.andor.s1e1"]
+    },
+    {
+      "id": "m_and1e2",
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 1 [tt9253284]/Andor - S01E02 - That Would Be Me.mkv",
+      "kind": "tv",
+      "role": "main",
+      "entity_ids": ["episode.andor.s1e2"]
+    },
+    {
+      "id": "m_and2e1",
+      "path": "shows/Andor [tt9253284]/Andor (2022) Season - 2 [tt9253284]/Andor - S02E01 - One Way Out.mkv",
+      "kind": "tv",
+      "role": "main",
+      "entity_ids": ["episode.andor.s2e1"]
+    },
+    {
+      "id": "m_andtrl",
+      "path": "shows/Andor [tt9253284]/trailers/Andor - Official Trailer.mkv",
+      "kind": "extra",
+      "role": "trailer",
+      "entity_ids": ["series.andor"]
     }
   ],
   "entities": [
@@ -114,8 +142,153 @@
       ],
       "assertions": [],
       "asset_ids": []
-    }
-  ],
+    },
+    {
+      "id": "series.andor",
+      "type": "TVSeries",
+      "title": "Andor",
+      "year": 2022,
+      "description": "A spy thriller set in the Star Wars universe.",
+      "provider_ids": [
+        {
+          "provider": "imdb",
+          "namespace": "title",
+          "value": "tt9253284",
+          "url": "https://www.imdb.com/title/tt9253284/",
+          "retrieved_at": null,
+          "confidence": 1.0,
+          "source": "user"
+        }
+      ],
+      "assertions": [
+        {
+          "entity": "series.andor",
+          "property": "name",
+          "value": "Andor",
+          "source": {"kind": "user"},
+          "retrieved_at": null,
+          "confidence": 1.0,
+          "status": "accepted"
+        }
+      ],
+      "asset_ids": ["m_and1e1", "m_andtrl"]
+    },
+    {
+      "id": "season.andor.s1",
+            "type": "TVSeason",
+            "title": "Season 1",
+            "year": 2022,
+            "description": null,
+            "provider_ids": [],
+            "assertions": [
+                {
+                    "entity": "season.andor.s1",
+                    "property": "name",
+                    "value": "Season 1",
+                    "source": {"kind": "filename"},
+                    "retrieved_at": null,
+                    "confidence": 1.0,
+                    "status": "accepted"
+                }
+            ],
+            "asset_ids": []
+        },
+        {
+            "id": "season.andor.s2",
+            "type": "TVSeason",
+            "title": "Season 2",
+            "year": 2025,
+            "description": null,
+            "provider_ids": [],
+            "assertions": [
+                {
+                    "entity": "season.andor.s2",
+                    "property": "name",
+                    "value": "Season 2",
+                    "source": {"kind": "filename"},
+                    "retrieved_at": null,
+                    "confidence": 1.0,
+                    "status": "accepted"
+                }
+            ],
+            "asset_ids": []
+        },
+        {
+            "id": "episode.andor.s1e1",
+            "type": "TVEpisode",
+            "title": "Kassa",
+            "year": 2022,
+            "description": null,
+            "provider_ids": [],
+            "assertions": [
+                {
+                    "entity": "episode.andor.s1e1",
+                    "property": "name",
+                    "value": "Kassa",
+                    "source": {"kind": "filename"},
+                    "retrieved_at": null,
+                    "confidence": 1.0,
+                    "status": "accepted"
+                }
+            ],
+            "asset_ids": ["m_and1e1"]
+        },
+        {
+            "id": "episode.andor.s1e2",
+            "type": "TVEpisode",
+            "title": "That Would Be Me",
+            "year": 2022,
+            "description": null,
+            "provider_ids": [],
+            "assertions": [
+                {
+                    "entity": "episode.andor.s1e2",
+                    "property": "name",
+                    "value": "That Would Be Me",
+                    "source": {"kind": "filename"},
+                    "retrieved_at": null,
+                    "confidence": 1.0,
+                    "status": "accepted"
+                }
+            ],
+            "asset_ids": ["m_and1e2"]
+        },
+        {
+            "id": "episode.andor.s2e1",
+            "type": "TVEpisode",
+            "title": "One Way Out",
+            "year": 2025,
+            "description": null,
+            "provider_ids": [],
+            "assertions": [
+                {
+                    "entity": "episode.andor.s2e1",
+                    "property": "name",
+                    "value": "One Way Out",
+                    "source": {"kind": "filename"},
+                    "retrieved_at": null,
+                    "confidence": 1.0,
+                    "status": "accepted"
+                }
+            ],
+            "asset_ids": ["m_and2e1"]
+        }
+    ],
+    "relations": [
+        {"subject": "season.andor.s1", "kind": "part_of", "object": "series.andor", "ordinal": 1, "source": "filename"},
+        {"subject": "season.andor.s2", "kind": "part_of", "object": "series.andor", "ordinal": 2, "source": "filename"},
+        {"subject": "episode.andor.s1e1", "kind": "part_of", "object": "season.andor.s1", "ordinal": 1, "source": "filename"},
+        {"subject": "episode.andor.s1e2", "kind": "part_of", "object": "season.andor.s1", "ordinal": 2, "source": "filename"},
+        {"subject": "episode.andor.s2e1", "kind": "part_of", "object": "season.andor.s2", "ordinal": 1, "source": "filename"},
+        {"subject": "episode.andor.s1e1", "kind": "next", "object": "episode.andor.s1e2", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s1e2", "kind": "previous", "object": "episode.andor.s1e1", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s1e2", "kind": "next", "object": "episode.andor.s2e1", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s2e1", "kind": "previous", "object": "episode.andor.s1e2", "ordinal": 0, "source": "filename"},
+        {"subject": "series.andor", "kind": "has_asset", "object": "m_andtrl", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s1e1", "kind": "has_asset", "object": "m_and1e1", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s1e2", "kind": "has_asset", "object": "m_and1e2", "ordinal": 0, "source": "filename"},
+        {"subject": "episode.andor.s2e1", "kind": "has_asset", "object": "m_and2e1", "ordinal": 0, "source": "filename"}
+    ],
   "projections": [
     {
       "construction": "orisha.item",
