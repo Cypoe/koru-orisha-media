@@ -4,10 +4,11 @@
 #
 # On the NAS, after scp of dist/koru-orisha-media.tar.gz:
 #   bash nas-apply-image.sh /volume1/docker/koru-orisha-media/koru-orisha-media.tar.gz
+# Compose file on the NAS is compose.yml (copied from compose.nas.yaml).
 set -euo pipefail
 
 TAR="${1:?usage: nas-apply-image.sh <image.tar.gz>}"
-COMPOSE="${COMPOSE:-/volume1/docker/koru-orisha-media/compose.nas.yaml}"
+COMPOSE="${COMPOSE:-/volume1/docker/koru-orisha-media/compose.yml}"
 PROJECT_DIR="$(cd "$(dirname "$COMPOSE")" && pwd)"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -20,6 +21,9 @@ else
   exit 1
 fi
 
+if [[ ! -f "$COMPOSE" && -f "$PROJECT_DIR/compose.yaml" ]]; then
+  COMPOSE="$PROJECT_DIR/compose.yaml"
+fi
 if [[ ! -f "$COMPOSE" ]]; then
   echo "error: compose file not found: $COMPOSE" >&2
   exit 1

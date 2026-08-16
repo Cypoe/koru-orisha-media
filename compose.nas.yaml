@@ -2,16 +2,24 @@
 # Image lives in the NAS registry at /volume1/docker/registry (port 9500).
 # Publish from the build machine, then create/recreate this project — CM pulls.
 #
+# On the NAS this file is named compose.yml (scripts/nas-sync.sh copies it).
+# Do not leave the live project on compose.nas.yaml.
+#
 #   bash scripts/publish-registry.sh
+#   bash scripts/nas-sync.sh
 #
 # CM registry: sigmanas.local:9500
 # NAS dockerd insecure: 127.0.0.1:9500 (sigmanas.local → 127.0.0.1)
-# user: is PUID/PGID. Do not set KORU_IDLE_SECS.
+# user: is PUID/PGID. group_add 101 is DSM administrators — without it, uid 1026
+# cannot read ACL-backed shares and the indexer walks empty /media placeholders.
+# Do not set KORU_IDLE_SECS.
 # musicVidoes is the existing DSM share name (typo kept).
 # WebStation alias: KORU_BASE_PATH must match the alias (live: /korisha).
 # Any alias works except /media — that name is the byte-stream route (GET /media/{id}).
-# Settings (/korisha/settings) chooses which /media/* folders the binary indexer walks.
-# Bind mounts below are Compose/DSM; the process cannot remount shares.
+# Settings (/korisha/settings) chooses which /media/* folders the binary indexer walks
+# and tags each with capability/affordances. Bind mounts below are Compose/DSM;
+# the process cannot remount shares. Add a host bind here before enabling a new path.
+# /data and /config are host binds so catalog + settings.conf survive Watchtower.
 
 services:
   media:
@@ -19,6 +27,8 @@ services:
     pull_policy: always
     restart: unless-stopped
     user: "1026:100"
+    group_add:
+      - "101"
     ports:
       - "3090:3090"
     environment:
@@ -29,6 +39,7 @@ services:
       - KORU_CATALOG=/data/catalog.sqlite
       - KORU_MANIFEST=/data/manifest.json
       - KORU_SEMANTIC=/data/semantic.json
+      - KORU_CONFIG=/config/settings.conf
       - KORU_BASE_PATH=/korisha
     volumes:
       - /volume1/docker/koru-orisha-media/config:/config
@@ -42,7 +53,9 @@ services:
       - com.centurylinklabs.watchtower.enable=true
       - com.centurylinklabs.watchtower.scope=koru
 
-  # Leave commented until we try automatic deploy/restart.
+  # Pulls sigmanas.local:9500/koru-orisha-media:latest. Recreate this project from
+  # compose.yml so binds + group_add 101 are in HostConfig before Watchtower replaces
+  # the container; Watchtower copies HostConfig and does not re-read this file.
   watchtower:
     image: nickfedor/watchtower
     restart: unless-stopped

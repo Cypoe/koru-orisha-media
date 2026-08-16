@@ -4,8 +4,8 @@
 #
 # Library layout (one bind, Jellyfin-style roots):
 #   ./media/movies  ./media/shows  ./media/music
-# Empty /data/catalog.sqlite walks /media on boot. data/ is gitignored local
-# runtime; fixtures/ is the CI library.
+# Empty /data/catalog.sqlite walks /media on boot when binds have files.
+# data/ and config/ are gitignored local runtime; fixtures/ is the CI library.
 
 services:
   media:
@@ -19,6 +19,7 @@ services:
       KORU_CATALOG: /data/catalog.sqlite
       KORU_MANIFEST: /data/manifest.json
       KORU_SEMANTIC: /data/semantic.json
+      KORU_CONFIG: /config/settings.conf
       # Uncomment once to (re)walk /media into the catalog:
       # KORU_REINDEX: "1"
       # Overlay tables only (no provider HTTP). Hydrate is host-side Python:
@@ -28,4 +29,5 @@ services:
     volumes:
       - ./media:/media:ro
       - ./data:/data
+      - ./config:/config
     restart: unless-stopped

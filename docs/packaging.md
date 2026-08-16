@@ -35,11 +35,11 @@ Container layout:
 | `/app/media-server` | HTTP binary |
 | `/app/public/` | frontend assets |
 | `/media` | `KORU_MEDIA_ROOT` (local: one bind of a parent that contains `movies/`, `shows/`, `music/`) |
-| `/media/movies` `/media/shows` `/media/music` | NAS: three DSM share binds (see [`compose.nas.yaml`](../compose.nas.yaml)) |
-| `/data/catalog.sqlite` | `KORU_CATALOG` (volume; page-sized reads, no 4096 cap) |
+| `/media/movies` `/media/shows` `/media/music` `/media/books` `/media/musicVideos` | NAS: DSM share binds (see [`compose.nas.yaml`](../compose.nas.yaml) → live `compose.yml`) |
+| `/data/catalog.sqlite` | `KORU_CATALOG` (host bind; page-sized reads, no 4096 cap) |
 | `/data/manifest.json` | `KORU_MANIFEST` (optional JSON import if the catalog is empty) |
 | `/data/semantic.json` | `KORU_SEMANTIC` (optional; browse and play work if absent) |
-| `/config` | NAS: logs (`KORU_LOG=/config/orisha.log`); local compose may omit this |
+| `/config/settings.conf` | `KORU_CONFIG` (base path, catalog driver/DSN, library mounts). Logs may also live here. |
 
 Compose defaults are long-lived (no `KORU_IDLE_SECS`). The process listens on **3090** inside the container ([`main.k`](../main.k)); map the host port in `compose.yaml`.
 
@@ -57,11 +57,11 @@ bash scripts/publish-registry.sh
 # → docker push sigmanas:9500/koru-orisha-media:latest
 ```
 
-Then copy [`compose.nas.yaml`](../compose.nas.yaml) onto the NAS and create/recreate the Container Manager project. `image:` is `sigmanas.local:9500/koru-orisha-media:latest` with `pull_policy: always`. No CM image import, no tarball on the NAS.
+Then copy [`compose.nas.yaml`](../compose.nas.yaml) onto the NAS as **`compose.yml`** (`bash scripts/nas-sync.sh`) and create/recreate the Container Manager project. `image:` is `sigmanas.local:9500/koru-orisha-media:latest` with `pull_policy: always`. No CM image import, no tarball on the NAS. SigmaNAS needs `group_add: ["101"]` (administrators) or uid 1026 cannot read ACL-backed shares.
 
-Watchtower stays commented until automatic deploy/restart.
+Watchtower is in the same project. Recreate from `compose.yml` so binds and `group_add` are in HostConfig before Watchtower replaces the container.
 
-Reindex on the NAS: Settings → **Reindex**, or `bash nas-index.sh` (both touch `data/reindex.requested`; the next idle request walks enabled folders under `/media`). That walker is the Koru binary, not host Python. Or delete `catalog.sqlite` and restart.
+Reindex on the NAS: Settings → **Reindex**, or `bash nas-index.sh` (both touch `data/reindex.requested`; the next idle request walks enabled folders under `/media`). That walker is the Koru binary, not host Python. Empty catalog auto-walks only when media binds actually have files. A 0-file walk against a non-empty catalog rolls back.
 
 Optional TMDB/TVDB posters and actors: host-side [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) writes `hydrate_works` (keyed by `[tt…]` already in `entries.imdb_id`). Overlay only — not the indexer. The server only reads that table. Keys stay in gitignored `.env` on the machine that runs the script — never in the runtime image or compose. Absent keys → exit 0 skip. `KORU_HYDRATE=1` on the binary only logs that overlay tables exist; `docker exec … hydrate` exits 0 with the host command.
 
@@ -92,10 +92,10 @@ Do not set `KORU_IDLE_SECS` on the NAS. `semantic.json` is an optional overlay (
 
 1. Registry project already running at `/volume1/docker/registry:9500`. CM registry: `sigmanas.local:9500`. dockerd insecure: `127.0.0.1:9500`.
 2. From the build machine: `bash scripts/build-image.sh && bash scripts/publish-registry.sh`.
-3. Copy [`compose.nas.yaml`](../compose.nas.yaml) to `/volume1/docker/koru-orisha-media/` and create the project. CM pulls `sigmanas.local:9500/koru-orisha-media:latest`.
-4. Bind library shares onto `/media/movies`, `/media/shows`, `/media/music`, `/media/books`, `/media/musicVideos`.
-5. Map `…/koru-orisha-media/config` → `/config` and `…/data` → `/data`. `PUID`/`PGID` `1026`/`100` on SigmaNAS.
-6. Publish port `3090`. Empty catalog walks enabled `/media` folders on boot. WebStation alias: `KORU_BASE_PATH=/korisha` (not `/media`). Settings: `http://sigmanas/korisha/settings`.
+3. Copy [`compose.nas.yaml`](../compose.nas.yaml) to `/volume1/docker/koru-orisha-media/compose.yml` (`bash scripts/nas-sync.sh`) and create the project. CM pulls `sigmanas.local:9500/koru-orisha-media:latest`.
+4. Bind library shares onto `/media/movies`, `/media/shows`, `/media/music`, `/media/books`, `/media/musicVideos`. Settings can add more rows only after Compose binds them.
+5. Map `…/koru-orisha-media/config` → `/config` and `…/data` → `/data`. `PUID`/`PGID` `1026`/`100` plus `group_add: "101"` on SigmaNAS.
+6. Publish port `3090`. Empty catalog walks enabled `/media` folders on boot when those binds have files. WebStation alias: `KORU_BASE_PATH=/korisha` (not `/media`), also settable at Settings. Settings: `http://sigmanas:3090/korisha/settings`.
 
 Updates: `publish-registry.sh` again, then recreate the project (`pull_policy: always`). Optional Watchtower later.
 

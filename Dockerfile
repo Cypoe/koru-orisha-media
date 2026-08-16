@@ -13,13 +13,14 @@ COPY docker/entrypoint.sh /app/entrypoint.sh
 
 RUN sed -i 's/\r$//' /app/entrypoint.sh \
     && chmod +x /app/media-server /app/entrypoint.sh \
-    && mkdir -p /media/movies /media/shows /media/music /media/books /media/musicVideos /data /config \
+    && mkdir -p /media /data /config \
     && echo entrypoint-tz-optional >/dev/null
 
 ENV KORU_MEDIA_ROOT=/media \
     KORU_CATALOG=/data/catalog.sqlite \
     KORU_MANIFEST=/data/manifest.json \
     KORU_SEMANTIC=/data/semantic.json \
+    KORU_CONFIG=/config/settings.conf \
     TZ=Europe/Berlin
 
 EXPOSE 3090

@@ -15,6 +15,10 @@ media/
 data/*
 !data/.gitkeep
 
+# Local settings bind (compose ./config). NAS uses /volume1/docker/koru-orisha-media/config.
+config/*
+!config/.gitkeep
+
 # koruc pump-emit repro logs (scripts/repro_pump_emit.sh copies these to the repo root in Docker)
 pump-emit-*.log
 pump-emit-artifacts/
