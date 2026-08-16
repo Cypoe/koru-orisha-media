@@ -1,0 +1,3 @@
+// Host types named by main.k's accept loop. The HTTP pump lives in vendor/http;
+// this file only re-exports what the entry's `tor loop` needs to name.
+pub const ServerHandle = koru_http.ServerHandle;

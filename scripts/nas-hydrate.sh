@@ -19,7 +19,7 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "hydrate is host-side Python — python3 not found." >&2
   echo "From the build machine: python3 scripts/hydrate_catalog.py --catalog $CATALOG" >&2
-  echo "docker exec hydrate is a no-op (Alpine image has no Python)." >&2
+  echo "docker exec cannot hydrate: scratch image has no Python." >&2
   exit 0
 fi
 

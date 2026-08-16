@@ -1,6 +1,7 @@
 // koru-orisha-media — app entry (orisha/examples/*/main.k shape).
-// HTTP runtime is vendor/http (Range, STREAM:v1, accept-loop). Orisha is
+// HTTP runtime is vendor/http (Range, STREAM:v1, accept pump). Orisha is
 // vendored verbatim and not imported until pump:reply grows that spec.
+import std/io
 import std/vendor
 import http
 import media
@@ -15,9 +16,20 @@ std/vendor:bindings {
     json: ./vendor/json
 }
 
-// Reconstruct the record: Koru emits distinct Zig Output types for handler vs dispatch.
 http:handler =
     media:dispatch(req)
     | result r -> { status: r.status, body: r.body, content_type: r.content_type }
 
-http:run-accept-loop(port: 3090)
+tor loop { server: *ServerHandle }
+loop =
+    http:accept(server)
+    ! walk |> media:reindex()
+    ! hydrate |> media:hydrate-catalog()
+    | request r |> http:handler(r.req): res |> http:send(r.conn, res.status, res.body, res.content_type)
+        | sent |> loop(r.server)
+        | failed _ |> loop(r.server)
+    | failed f |> loop(f.server)
+
+http:listen(port: 3090)
+| listening s |> loop(server: s)
+| failed e |> std/io:print.ln(e)

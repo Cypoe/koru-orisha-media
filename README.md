@@ -3,7 +3,7 @@
 A small, direct-play media library built around Koru and Orisha.
 
 - precomputed media metadata (offline indexer)
-- server-rendered HTML library / item / watch pages + library fragments
+- server-rendered HTML library / item / play pages + library fragments
 - HTTP Range delivery of original files (`GET` / `HEAD` / `206` / `416`) with chunked send
 - no FFmpeg, HLS, database, or remote metadata
 
@@ -22,7 +22,7 @@ Requires a prebuilt `koruc` at `$HOME/src/koru-build/zig-out/bin/koruc` (see [do
 
 ## Index
 
-The NAS indexer is the Koru binary (`catalog.kz` `reindex`). Empty catalog or `KORU_REINDEX=1` walks enabled folders under `KORU_MEDIA_ROOT`. Settings → Reindex (or `bash scripts/nas-index.sh`) touches `reindex.requested`; the next idle request walks. Python is not required on the NAS.
+The NAS indexer is the Koru binary (`catalog.kz` `reindex`). Empty catalog or `KORU_REINDEX=1` walks enabled folders under `KORU_MEDIA_ROOT`. Settings → Reindex (or `bash scripts/nas-index.sh`) touches `reindex.requested`; the HTTP pump's `! walk` arm walks when no STREAM is parked. Python is not required on the NAS.
 
 ```bash
 # optional JSON fixture for CI / fallback import when the SQLite catalog is empty:
@@ -30,11 +30,10 @@ python3 scripts/index_media.py --root fixtures/media --out data/manifest.json
 python3 scripts/json_publish.py --out /tmp/json-publish-fixture.json
 ```
 
-Optional catalogue overlay (host-side TMDB/TVDB into `hydrate_works`; no-ops without API keys; never in request handlers; not the indexer):
+Optional catalogue overlay (binary TMDB/TVDB into the graph via Settings keys; Python is CI/fixture only; never in request handlers; not the indexer):
 
 ```bash
 python3 scripts/hydrate_catalog.py --catalog data/catalog.sqlite
-# docker exec … hydrate  → prints the same host-side instruction (image has no Python)
 ```
 
 ## Test
@@ -48,7 +47,7 @@ bash scripts/bench_baseline.sh   # Step 10 baselines
 
 The backend shim (`src/index.k` dispatch, `src/graph.kz`, `src/consumers.kz`) dispatches complete HTML (and JSON-LD / bytes). The frontend *receives* those representations.
 
-- Navigation host: [`vendor/koru-libs/htmx/`](vendor/koru-libs/htmx/) (`import koru/htmx`) consumed by [`src/frontend/host.k`](src/frontend/host.k) + [`host.kjs`](src/frontend/host.kjs) → `bash scripts/build-frontend.sh` → [`public/enhance.js`](public/enhance.js) (`GET /enhance.js`). Usage boots the generic `hx-*` / `HX-Request` host with `#library-region` + `protect: "#player"`, and keeps `#player` localStorage resume. Host *logic* is still a `|js` escape (Koru does not lower fetch/swap yet); entry/boot is Koru.
+- Navigation host: [`vendor/koru-libs/htmx/`](vendor/koru-libs/htmx/) (`import koru/htmx`) consumed by [`src/frontend/host.k`](src/frontend/host.k) + [`host.kjs`](src/frontend/host.kjs) → `bash scripts/build-frontend.sh` → [`public/enhance.js`](public/enhance.js) (`GET /enhance.js`). Usage boots the generic `hx-*` / `HX-Request` host with `#library-region` + `protect: "#persist"`, pops the floating persist player, and keeps `#player` localStorage resume. Host *logic* is still a `|js` escape (Koru does not lower fetch/swap yet); entry/boot is Koru.
 - Optional koru/dom keyed list: [`vendor/koru-libs/dom/`](vendor/koru-libs/dom/) (`import koru/dom`) consumed by [`src/frontend/main.k`](src/frontend/main.k) + [`main.kjs`](src/frontend/main.kjs) → [`public/koru-dom-enhance.js`](public/koru-dom-enhance.js). Demo: `/enhance-demo.html`. This emit is real Koru IR.
 
 `koruc --lang=js` emits JS correctly when Zig is on `PATH` and options precede the input (`koruc --lang=js main.k`). A bare `FileNotFound` during “Building executable…” usually means Zig was missing from `PATH`, not a failed JS emitter.
@@ -102,10 +101,10 @@ One production app (not a browser app + a media app + a json-publish app). Mappi
 | `src/json/` | usage: json-publish CLI (`import json`) |
 | `vendor/json/` | tiny JSON parse + emit (not `koru/yyjson`; not in the HTTP binary) |
 | `vendor/http/` | HTTP spec: accept-loop, Range, `STREAM:v1` consumer, `header()` |
-| `vendor/orisha/` | verbatim `W:\src\orisha\lib` (not imported until pump:reply grows STREAM) |
+| `vendor/orisha/` | verbatim upstream `lib/` snapshot (not imported until pump:reply grows STREAM) |
 | `public/` | generated frontend output (`enhance.js`, `koru-dom-enhance.js`, CSS, demo HTML) |
 | `scripts/index_media.py` | optional JSON fixture / CI fallback (not the NAS indexer) |
-| `scripts/hydrate_catalog.py` | host-side TMDB/TVDB → `hydrate_works` overlay (not in the image; not the indexer) |
+| `scripts/hydrate_catalog.py` | CI/fixture TMDB/TVDB → `sem_*` graph (not in the image; not the indexer) |
 | `Dockerfile` / `compose.yaml` | local runtime image + compose (see [docs/packaging.md](docs/packaging.md)) |
 | `fixtures/media/` | CI library: `movies/`, `music/` (`shows/` when a TV fixture exists) |
 | `fixtures/manifest.json` | CI physical snapshot |

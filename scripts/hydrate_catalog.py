@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Offline TMDB/TVDB hydrate into SQLite overlay tables (Wave 4).
+"""CI / recorded-fixture TMDB/TVDB hydrate into the same graph shape as the binary.
 
-Fills `hydrate_works` (posters/actors/plot) keyed by `[tt…]` already on disk.
-Never called from Orisha request handlers. The runtime image has no Python;
-run this on the host (or any machine that can open catalog.sqlite).
+Encodes `sem_*` (entities/assertions/relations) and still writes `hydrate_works`
+so older catalogs can migrate once. Never called from request handlers. The
+runtime image has no Python; run this in CI or against recorded fixtures.
 
   # No keys → clean no-op (exit 0):
   python3 scripts/hydrate_catalog.py --catalog data/catalog.sqlite
@@ -12,11 +12,7 @@ run this on the host (or any machine that can open catalog.sqlite).
   python3 scripts/hydrate_catalog.py --catalog /tmp/catalog.sqlite \\
       --fixture fixtures/tmdb/movie_329865.json --imdb tt2543164 --kind movie
 
-  # Live (token or key from env / .env):
-  python3 scripts/hydrate_catalog.py --catalog data/catalog.sqlite
-
-`KORU_HYDRATE=1` on the media-server binary only ensures overlay tables exist;
-it does not call providers.
+Live NAS hydrate is the musl binary (`! hydrate`, keys in settings.conf).
 """
 from __future__ import annotations
 
@@ -64,6 +60,44 @@ CREATE TABLE IF NOT EXISTS hydrate_works (
   retrieved_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_hydrate_works_key ON hydrate_works(work_key);
+"""
+
+SEM_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sem_entities (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sem_assertions (
+  entity TEXT NOT NULL,
+  property TEXT NOT NULL,
+  value TEXT NOT NULL DEFAULT '',
+  source_json TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'accepted',
+  retrieved_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (entity, property, source_json)
+);
+CREATE TABLE IF NOT EXISTS sem_provider_ids (
+  entity TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  namespace TEXT NOT NULL DEFAULT '',
+  value TEXT NOT NULL,
+  url TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (entity, provider, namespace, value)
+);
+CREATE TABLE IF NOT EXISTS sem_relations (
+  subject TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  object TEXT NOT NULL,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (subject, kind, object)
+);
+CREATE TABLE IF NOT EXISTS sem_asset_links (
+  asset_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'main',
+  PRIMARY KEY (asset_id, entity_id, role)
+);
 """
 
 UPSERT_SQL = """
@@ -142,6 +176,104 @@ def upsert_overlay(conn: sqlite3.Connection, row: dict) -> None:
             row.get("retrieved_at") or _now(),
         ),
     )
+    upsert_graph(conn, row)
+
+
+def slug_from_work(work: str) -> str:
+    slug: list[str] = []
+    for ch in (work.rsplit("/", 1)[-1] if work else ""):
+        lower = ch.lower()
+        if ("a" <= lower <= "z") or ("0" <= lower <= "9"):
+            slug.append(lower)
+        elif slug and slug[-1] != "-":
+            slug.append("-")
+    while slug and slug[-1] == "-":
+        slug.pop()
+    return "".join(slug)
+
+
+def upsert_graph(conn: sqlite3.Connection, row: dict) -> None:
+    imdb = row.get("imdb_id") or ""
+    work = row.get("work_key") or ""
+    source = row.get("source") or "tmdb"
+    is_tv = work.startswith("shows/") or (row.get("kind") == "tv")
+    slug = slug_from_work(work) or imdb
+    if not slug:
+        return
+    ent_id = f"series.{slug}" if is_tv else f"work.movie.{slug}"
+    typ = "TVSeries" if is_tv else "Movie"
+    conn.execute(
+        "INSERT INTO sem_entities(id, type) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET type=excluded.type",
+        (ent_id, typ),
+    )
+    def assertion(prop: str, value: str) -> None:
+        if not value:
+            return
+        conn.execute(
+            """INSERT INTO sem_assertions(entity, property, value, source_json, status)
+               VALUES(?,?,?,?, 'accepted')
+               ON CONFLICT(entity, property, source_json) DO UPDATE SET value=excluded.value""",
+            (ent_id, prop, value, source),
+        )
+    assertion("name", row.get("title") or "")
+    assertion("description", row.get("plot") or "")
+    year = int(row.get("year") or 0)
+    if year > 0:
+        assertion("datePublished", str(year))
+    assertion("poster_url", row.get("poster_url") or "")
+    tmdb_id = str(row.get("tmdb_id") or "")
+    tvdb_id = str(row.get("tvdb_id") or "")
+    if imdb:
+        conn.execute(
+            """INSERT INTO sem_provider_ids(entity, provider, namespace, value, url) VALUES(?,?,?,?,?)
+               ON CONFLICT(entity, provider, namespace, value) DO UPDATE SET url=excluded.url""",
+            (ent_id, "imdb", "title", imdb, f"https://www.imdb.com/title/{imdb}/"),
+        )
+        conn.execute(
+            """INSERT INTO sem_relations(subject, kind, object, ordinal, source) VALUES(?,?,?,?,?)
+               ON CONFLICT(subject, kind, object) DO UPDATE SET ordinal=excluded.ordinal""",
+            (ent_id, "same_as", imdb, 0, source),
+        )
+    if tmdb_id:
+        path = "tv" if is_tv else "movie"
+        conn.execute(
+            """INSERT INTO sem_provider_ids(entity, provider, namespace, value, url) VALUES(?,?,?,?,?)
+               ON CONFLICT(entity, provider, namespace, value) DO UPDATE SET url=excluded.url""",
+            (ent_id, "tmdb", path, tmdb_id, f"https://www.themoviedb.org/{path}/{tmdb_id}"),
+        )
+        conn.execute(
+            """INSERT INTO sem_relations(subject, kind, object, ordinal, source) VALUES(?,?,?,?,?)
+               ON CONFLICT(subject, kind, object) DO UPDATE SET ordinal=excluded.ordinal""",
+            (ent_id, "same_as", tmdb_id, 0, source),
+        )
+    if tvdb_id:
+        ns = "series" if is_tv else "movie"
+        conn.execute(
+            """INSERT INTO sem_provider_ids(entity, provider, namespace, value, url) VALUES(?,?,?,?,?)
+               ON CONFLICT(entity, provider, namespace, value) DO UPDATE SET url=excluded.url""",
+            (ent_id, "tvdb", ns, tvdb_id, ""),
+        )
+    asset_id = ""
+    try:
+        got = conn.execute(
+            "SELECT id FROM entries WHERE imdb_id=? ORDER BY id LIMIT 1",
+            (imdb,),
+        ).fetchone()
+        if got:
+            asset_id = got[0]
+    except sqlite3.OperationalError:
+        asset_id = ""
+    if asset_id:
+        conn.execute(
+            """INSERT INTO sem_asset_links(asset_id, entity_id, role) VALUES(?,?,?)
+               ON CONFLICT(asset_id, entity_id, role) DO NOTHING""",
+            (asset_id, ent_id, "main"),
+        )
+        conn.execute(
+            """INSERT INTO sem_relations(subject, kind, object, ordinal, source) VALUES(?,?,?,?,?)
+               ON CONFLICT(subject, kind, object) DO UPDATE SET ordinal=excluded.ordinal""",
+            (ent_id, "has_asset", asset_id, 0, source),
+        )
 
 
 def list_imdb_works(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
@@ -253,6 +385,7 @@ def main() -> int:
     conn = sqlite3.connect(str(catalog))
     try:
         conn.executescript(HYDRATE_SCHEMA)
+        conn.executescript(SEM_SCHEMA)
         conn.commit()
 
         if args.offline:
@@ -310,6 +443,7 @@ def main() -> int:
             row: dict = {
                 "imdb_id": imdb,
                 "work_key": work_key,
+                "kind": hint,
                 "source": "",
                 "tmdb_id": "",
                 "tvdb_id": "",
@@ -354,7 +488,7 @@ def main() -> int:
             else:
                 print(f"hydrate: {imdb} — no overlay fields")
         conn.commit()
-        print(f"hydrate: wrote {n} hydrate_works row(s) -> {catalog}")
+        print(f"hydrate: wrote {n} graph row(s) -> {catalog}")
         return 0
     finally:
         conn.close()

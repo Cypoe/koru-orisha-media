@@ -150,7 +150,6 @@ class HydrateCatalogTests(unittest.TestCase):
                 "SELECT imdb_id, source, tmdb_id, title, poster_url, actors, plot FROM hydrate_works WHERE imdb_id=?",
                 ("tt2543164",),
             ).fetchone()
-            conn.close()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], "tt2543164")
             self.assertEqual(row[1], "tmdb")
@@ -160,6 +159,18 @@ class HydrateCatalogTests(unittest.TestCase):
             self.assertIn("Amy Adams", row[5])
             self.assertIn("Jeremy Renner", row[5])
             self.assertTrue(row[6])
+            ent = conn.execute("SELECT id, type FROM sem_entities").fetchone()
+            self.assertIsNotNone(ent)
+            self.assertEqual(ent[1], "Movie")
+            name = conn.execute(
+                "SELECT value FROM sem_assertions WHERE property='name' LIMIT 1"
+            ).fetchone()
+            self.assertEqual(name[0], "Arrival")
+            same = conn.execute(
+                "SELECT object FROM sem_relations WHERE kind='same_as' AND object='tt2543164'"
+            ).fetchone()
+            self.assertIsNotNone(same)
+            conn.close()
 
     def test_tvdb_fixture_writes_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -184,12 +195,14 @@ class HydrateCatalogTests(unittest.TestCase):
                 "SELECT source, tvdb_id, poster_url, actors FROM hydrate_works WHERE imdb_id=?",
                 ("tt0944947",),
             ).fetchone()
-            conn.close()
             self.assertIsNotNone(row)
             self.assertEqual(row[0], "tvdb")
             self.assertEqual(row[1], "121361")
             self.assertIn("artworks.thetvdb.com", row[2])
             self.assertIn("Peter Dinklage", row[3])
+            ent = conn.execute("SELECT id FROM sem_entities LIMIT 1").fetchone()
+            self.assertIsNotNone(ent)
+            conn.close()
 
     def test_handlers_never_call_providers(self) -> None:
         hits: list[str] = []

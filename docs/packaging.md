@@ -1,6 +1,6 @@
 # Packaging (Docker / Synology)
 
-Local-first runtime image and compose project. The published image does **not** include `koruc`; compile the Linux binary first, then pack it.
+Local-first runtime image and compose project. The published image does **not** include `koruc`; compile the Linux musl binary first, then pack it. The runtime Dockerfile is `FROM scratch` (one binary + `public/` + a CA bundle for HTTPS). Alpine is used only as a certs build stage; the runtime image has no shell and no Python.
 
 ## Local build and run
 
@@ -61,9 +61,9 @@ Then copy [`compose.nas.yaml`](../compose.nas.yaml) onto the NAS as **`compose.y
 
 Watchtower is in the same project. Recreate from `compose.yml` so binds and `group_add` are in HostConfig before Watchtower replaces the container.
 
-Reindex on the NAS: Settings → **Reindex**, or `bash nas-index.sh` (both touch `data/reindex.requested`; the next idle request walks enabled folders under `/media`). That walker is the Koru binary, not host Python. Empty catalog auto-walks only when media binds actually have files. A 0-file walk against a non-empty catalog rolls back.
+Reindex on the NAS: Settings → **Reindex**, or `bash nas-index.sh` (both touch `data/reindex.requested`). The HTTP accept pump fires `! walk` when no STREAM is parked; that arm runs the Koru binary walker, not host Python. Empty catalog auto-walks only when media binds actually have files. A 0-file walk against a non-empty catalog rolls back.
 
-Optional TMDB/TVDB posters and actors: host-side [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) writes `hydrate_works` (keyed by `[tt…]` already in `entries.imdb_id`). Overlay only — not the indexer. The server only reads that table. Keys stay in gitignored `.env` on the machine that runs the script — never in the runtime image or compose. Absent keys → exit 0 skip. `KORU_HYDRATE=1` on the binary only logs that overlay tables exist; `docker exec … hydrate` exits 0 with the host command.
+Optional TMDB/TVDB posters and plot: Settings stores keys in `settings.conf` on the config bind (never compose `.env` in the image). The musl binary's `! hydrate` arm encodes provider JSON into the graph. Python [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) is CI / recorded-fixture only and writes the same `sem_*` shape. Absent keys → no-op. Scratch TLS uses the copied CA file (`SSL_CERT_FILE`).
 
 WebStation: set `KORU_BASE_PATH=/korisha` (or any alias **except** `/media`) so HTML `href`/`src` stay under the alias. Player `src` is `/korisha/media/{id}`, not DSM `/media/...`.
 
@@ -101,7 +101,7 @@ Updates: `publish-registry.sh` again, then recreate the project (`pull_policy: a
 
 Reindex: Settings → Reindex, or `bash /volume1/docker/koru-orisha-media/nas-index.sh` (binary walk; not Python).
 
-Optional overlay hydrate (host Python, not the Alpine image): `bash scripts/nas-hydrate.sh` or `python3 scripts/hydrate_catalog.py --catalog /volume1/docker/koru-orisha-media/data/catalog.sqlite`. No-ops when TMDB/TVDB keys are absent. Do not put keys in compose. `docker exec … hydrate` is a documented no-op.
+Optional overlay hydrate (host Python, not the image): `bash scripts/nas-hydrate.sh` or `python3 scripts/hydrate_catalog.py --catalog /volume1/docker/koru-orisha-media/data/catalog.sqlite`. No-ops when TMDB/TVDB keys are absent. Do not put keys in compose. There is no `hydrate` command in the image.
 
 GHCR remains an optional later remote; the NAS path above does not need it.
 

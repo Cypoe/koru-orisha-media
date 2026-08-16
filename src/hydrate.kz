@@ -1,0 +1,254 @@
+// media/hydrate — encode TMDB/TVDB JSON into the graph. Not on GET /library.
+// Fixture path uses recorded JSON (same files Python tests use). Live HTTPS
+// uses Settings keys. One hydrate at a time; no keys → no-op.
+
+const std = @import("std");
+
+var busy = std.atomic.Value(bool).init(false);
+var http_body: [256 * 1024]u8 = undefined;
+var json_file_buf: [256 * 1024]u8 = undefined;
+
+fn envOr(name: []const u8, fallback: []const u8) []const u8 {
+    return std.posix.getenv(name) orelse fallback;
+}
+
+fn extractAfter(obj: []const u8, key: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, obj, key) orelse return null;
+    var p = at + key.len;
+    while (p < obj.len and (obj[p] == ' ' or obj[p] == '\t' or obj[p] == ':' or obj[p] == '\n' or obj[p] == '\r')) : (p += 1) {}
+    if (p >= obj.len or obj[p] != '"') return null;
+    p += 1;
+    const start = p;
+    var escape = false;
+    while (p < obj.len) : (p += 1) {
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (obj[p] == '\\') {
+            escape = true;
+            continue;
+        }
+        if (obj[p] == '"') return obj[start..p];
+    }
+    return null;
+}
+
+fn extractNumber(obj: []const u8, key: []const u8) ?u64 {
+    const at = std.mem.indexOf(u8, obj, key) orelse return null;
+    var p = at + key.len;
+    while (p < obj.len and (obj[p] == ' ' or obj[p] == '\t' or obj[p] == ':' or obj[p] == '\n' or obj[p] == '\r')) : (p += 1) {}
+    if (p >= obj.len) return null;
+    if (obj[p] == 'n') return null;
+    const start = p;
+    while (p < obj.len and obj[p] >= '0' and obj[p] <= '9') : (p += 1) {}
+    if (p == start) return null;
+    return std.fmt.parseInt(u64, obj[start..p], 10) catch null;
+}
+
+fn yearFromDate(obj: []const u8) u32 {
+    const d = extractAfter(obj, "\"release_date\"") orelse extractAfter(obj, "\"first_air_date\"") orelse return 0;
+    if (d.len < 4) return 0;
+    return std.fmt.parseInt(u32, d[0..4], 10) catch 0;
+}
+
+fn posterUrl(obj: []const u8, buf: []u8) []const u8 {
+    const path = extractAfter(obj, "\"poster_path\"") orelse return "";
+    if (path.len == 0 or path[0] != '/') return "";
+    return std.fmt.bufPrint(buf, "https://image.tmdb.org/t/p/w500{s}", .{path}) catch "";
+}
+
+fn youtubeKey(obj: []const u8) []const u8 {
+    const videos = std.mem.indexOf(u8, obj, "\"videos\"") orelse return "";
+    const slice = obj[videos..];
+    const trailer = std.mem.indexOf(u8, slice, "\"Trailer\"") orelse std.mem.indexOf(u8, slice, "\"Teaser\"") orelse return "";
+    const around = slice[@max(trailer, 80) - 80 .. @min(slice.len, trailer + 200)];
+    return extractAfter(around, "\"key\"") orelse "";
+}
+
+fn slugFromWork(work: []const u8, buf: []u8) []const u8 {
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < work.len and w + 1 < buf.len) : (i += 1) {
+        const ch = work[i];
+        if (ch == '/') {
+            w = 0;
+            continue;
+        }
+        const lower = std.ascii.toLower(ch);
+        if ((lower >= 'a' and lower <= 'z') or (lower >= '0' and lower <= '9')) {
+            buf[w] = lower;
+            w += 1;
+        } else if (w > 0 and buf[w - 1] != '-') {
+            buf[w] = '-';
+            w += 1;
+        }
+    }
+    while (w > 0 and buf[w - 1] == '-') w -= 1;
+    return buf[0..w];
+}
+
+fn readFile(path: []const u8) ?[]const u8 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const n = file.readAll(&json_file_buf) catch return null;
+    return json_file_buf[0..n];
+}
+
+fn httpsGet(allocator: std.mem.Allocator, url: []const u8, token: []const u8) ?[]const u8 {
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+    var auth_buf: [320]u8 = undefined;
+    const auth = if (token.len > 0)
+        (std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch "")
+    else
+        "";
+    var extra: [2]std.http.Header = undefined;
+    var nhead: usize = 0;
+    extra[nhead] = .{ .name = "accept", .value = "application/json" };
+    nhead += 1;
+    if (auth.len > 0) {
+        extra[nhead] = .{ .name = "authorization", .value = auth };
+        nhead += 1;
+    }
+    var w = std.Io.Writer.fixed(&http_body);
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .extra_headers = extra[0..nhead],
+        .response_writer = &w,
+    }) catch return null;
+    if (@intFromEnum(result.status) < 200 or @intFromEnum(result.status) >= 300) return null;
+    if (w.end == 0) return null;
+    return http_body[0..w.end];
+}
+
+fn fixturePayload(imdb: []const u8, tmdb_id: []const u8) ?[]const u8 {
+    const dir = envOr("KORU_TMDB_FIXTURE", "");
+    if (dir.len > 0) {
+        var path_buf: [512]u8 = undefined;
+        if (tmdb_id.len > 0) {
+            const p = std.fmt.bufPrint(&path_buf, "{s}/movie_{s}.json", .{ dir, tmdb_id }) catch null;
+            if (p) |path| if (readFile(path)) |body| return body;
+            const p2 = std.fmt.bufPrint(&path_buf, "{s}/tv_{s}.json", .{ dir, tmdb_id }) catch null;
+            if (p2) |path| if (readFile(path)) |body| return body;
+        }
+        if (imdb.len > 0) {
+            const p = std.fmt.bufPrint(&path_buf, "{s}/find_{s}.json", .{ dir, imdb }) catch null;
+            if (p) |path| if (readFile(path)) |body| return body;
+        }
+        if (readFile(dir)) |body| return body;
+    }
+    if (tmdb_id.len > 0) {
+        var path_buf: [128]u8 = undefined;
+        const p = std.fmt.bufPrint(&path_buf, "fixtures/tmdb/movie_{s}.json", .{tmdb_id}) catch null;
+        if (p) |path| if (readFile(path)) |body| return body;
+    }
+    if (imdb.len > 0) {
+        var path_buf: [128]u8 = undefined;
+        const p = std.fmt.bufPrint(&path_buf, "fixtures/tmdb/find_{s}.json", .{imdb}) catch null;
+        if (p) |path| if (readFile(path)) |body| return body;
+    }
+    return null;
+}
+
+fn encodePayload(e: koru_media.koru_graph.Entry, payload: []const u8) void {
+    const title = extractAfter(payload, "\"title\"") orelse extractAfter(payload, "\"name\"") orelse e.work_title;
+    const plot = extractAfter(payload, "\"overview\"") orelse "";
+    var id_buf: [32]u8 = undefined;
+    const tmdb_num = extractNumber(payload, "\"id\"") orelse 0;
+    const tmdb_id = if (tmdb_num > 0) (std.fmt.bufPrint(&id_buf, "{d}", .{tmdb_num}) catch "") else "";
+    const imdb = extractAfter(payload, "\"imdb_id\"") orelse e.imdb_id;
+    const year = yearFromDate(payload);
+    var poster_buf: [160]u8 = undefined;
+    const poster = posterUrl(payload, &poster_buf);
+    const yt = youtubeKey(payload);
+    const is_tv = std.mem.eql(u8, e.kind, "tv") or e.season > 0;
+    const work = koru_media.koru_graph.workKey(e.path);
+    var slug_buf: [128]u8 = undefined;
+    const slug = slugFromWork(work, &slug_buf);
+    var ent_buf: [192]u8 = undefined;
+    const name = if (slug.len > 0) slug else imdb;
+    const ent_id = if (is_tv)
+        (std.fmt.bufPrint(&ent_buf, "series.{s}", .{name}) catch return)
+    else
+        (std.fmt.bufPrint(&ent_buf, "work.movie.{s}", .{name}) catch return);
+    const typ: []const u8 = if (is_tv) "TVSeries" else "Movie";
+    koru_media.koru_catalog.upsertEntity(ent_id, typ);
+    if (title.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "name", title, "tmdb");
+    if (plot.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "description", plot, "tmdb");
+    if (year > 0) {
+        var yb: [8]u8 = undefined;
+        const ys = std.fmt.bufPrint(&yb, "{d}", .{year}) catch "";
+        if (ys.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "datePublished", ys, "tmdb");
+    }
+    if (poster.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "poster_url", poster, "tmdb");
+    if (yt.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "trailer_youtube", yt, "tmdb");
+    if (imdb.len > 0) {
+        var url_buf: [80]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://www.imdb.com/title/{s}/", .{imdb}) catch "";
+        koru_media.koru_catalog.upsertProviderId(ent_id, "imdb", "title", imdb, url);
+        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", imdb, 0, "tmdb");
+    }
+    if (tmdb_id.len > 0) {
+        var url_buf: [96]u8 = undefined;
+        const path: []const u8 = if (is_tv) "tv" else "movie";
+        const url = std.fmt.bufPrint(&url_buf, "https://www.themoviedb.org/{s}/{s}", .{ path, tmdb_id }) catch "";
+        koru_media.koru_catalog.upsertProviderId(ent_id, "tmdb", path, tmdb_id, url);
+        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", tmdb_id, 0, "tmdb");
+    }
+    koru_media.koru_catalog.upsertAssetLink(e.id, ent_id, "main");
+    koru_media.koru_catalog.upsertRelation(ent_id, "has_asset", e.id, 0, "tmdb");
+}
+
+fn fetchLive(allocator: std.mem.Allocator, imdb: []const u8, hint: []const u8) ?[]const u8 {
+    const token = koru_media.koru_graph.tmdbToken();
+    const key = koru_media.koru_graph.tmdbApiKey();
+    if (token.len == 0 and key.len == 0) return null;
+    var url_buf: [384]u8 = undefined;
+    const find_url = if (token.len > 0)
+        std.fmt.bufPrint(&url_buf, "https://api.themoviedb.org/3/find/{s}?external_source=imdb_id", .{imdb}) catch return null
+    else
+        std.fmt.bufPrint(&url_buf, "https://api.themoviedb.org/3/find/{s}?external_source=imdb_id&api_key={s}", .{ imdb, key }) catch return null;
+    const found = httpsGet(allocator, find_url, token) orelse return null;
+    const movie_results = std.mem.indexOf(u8, found, "\"movie_results\"") != null;
+    const tv_results = std.mem.indexOf(u8, found, "\"tv_results\"") != null;
+    const prefer_tv = std.mem.eql(u8, hint, "tv") or (tv_results and !movie_results);
+    const tmdb_id_n = extractNumber(found, "\"id\"") orelse return null;
+    var id_buf: [16]u8 = undefined;
+    const tmdb_id = std.fmt.bufPrint(&id_buf, "{d}", .{tmdb_id_n}) catch return null;
+    const kind: []const u8 = if (prefer_tv) "tv" else "movie";
+    const detail_url = if (token.len > 0)
+        std.fmt.bufPrint(&url_buf, "https://api.themoviedb.org/3/{s}/{s}?append_to_response=credits,videos,external_ids", .{ kind, tmdb_id }) catch return null
+    else
+        std.fmt.bufPrint(&url_buf, "https://api.themoviedb.org/3/{s}/{s}?append_to_response=credits,videos,external_ids&api_key={s}", .{ kind, tmdb_id, key }) catch return null;
+    return httpsGet(allocator, detail_url, token);
+}
+
+fn hydrateOne(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry) void {
+    if (e.imdb_id.len < 3) return;
+    const tmdb_id = "";
+    if (fixturePayload(e.imdb_id, tmdb_id)) |body| {
+        encodePayload(e, body);
+        return;
+    }
+    if (fetchLive(allocator, e.imdb_id, e.kind)) |body| {
+        encodePayload(e, body);
+    }
+}
+
+pub fn run() void {
+    if (koru_http.streamsBusy()) return;
+    const flagged = koru_media.koru_graph.consumeHydrateFlag();
+    if (!flagged) return;
+    if (!koru_media.koru_graph.hasHydrateKeys() and envOr("KORU_TMDB_FIXTURE", "").len == 0) return;
+    if (busy.swap(true, .seq_cst)) return;
+    defer _ = busy.store(false, .seq_cst);
+    const allocator = std.heap.c_allocator;
+    var buf: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+    const works = koru_media.koru_graph.listDistinctImdb(&buf);
+    std.debug.print("hydrate: {d} imdb work(s)\n", .{works.len});
+    for (works) |e| {
+        hydrateOne(allocator, e);
+    }
+    koru_media.koru_catalog.encodeFilenameGraph();
+}
