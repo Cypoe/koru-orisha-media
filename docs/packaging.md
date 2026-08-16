@@ -45,7 +45,7 @@ Compose defaults are long-lived (no `KORU_IDLE_SECS`). The process listens on **
 
 Empty catalog (or `KORU_REINDEX=1`) walks enabled library mounts under `/media` inside the binary. Configure mounts and Reindex at `/settings` (prefix-aware: `/korisha/settings`). `semantic.json` is not required for browse or play. `KORU_BASE_PATH` (live alias `/korisha`) prefixes every app URL so a Synology WebStation alias does not collide with `GET /media/{id}`. Any alias works **except** `/media` (same name as the byte route).
 
-The runtime still uses `orisha:run-accept-loop` (not `orisha:serve`). One `STREAM` (a movie) occupies the accept loop until it finishes — other tabs wait. That is independent of packaging; do not switch to pump/`serve` until koruc stops double-emitting `koru_pump`.
+The runtime still uses `http:run-accept-loop` (not `orisha:serve`). One `STREAM` (a movie) occupies the accept loop until it finishes — other tabs wait. That is independent of packaging; do not switch to pump/`serve` until koruc stops double-emitting `koru_pump`.
 
 ## NAS registry (`/volume1/docker/registry`, port 9500)
 

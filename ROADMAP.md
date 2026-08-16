@@ -57,11 +57,11 @@
 
 ## Phase 7: Orisha extraction prep (in-repo)
 
-- Unified `parseHttpRequest` for `accept` and `answer` in [`vendor/orisha/index.kz`](vendor/orisha/index.kz) (`header()`, no `hx_*`); STREAM:v1 via `sendSpecial` on the same stem. `import orisha` does not nest extra vendor stems.
-- Media app moved out of the Orisha companion into [`src/`](src/) (`media:dispatch` representation dispatch); `main.k` implements `orisha:handler`
+- HTTP spec extracted to [`vendor/http`](vendor/http/) (`parseHttpRequest`, `header()`, STREAM:v1 `sendSpecial`, `run-accept-loop`). [`vendor/orisha`](vendor/orisha/) is a verbatim `W:\src\orisha\lib` (`bash scripts/vendor-orisha.sh`).
+- Media app in [`src/`](src/) (`media:dispatch`); `main.k` implements `http:handler`
 - Vendor / current-apis docs match the real `Request` + `STREAM:v1` surface
 - Schema-specific manifest loader (`entries` + unescape) + `scripts/test_manifest_parse.py`
-- Next **out-of-repo**: patch `W:\src\orisha` with Request parse + raw send + STREAM + `run-accept-loop` docs — media HTML stays in `src/`
+- Next **out-of-repo**: when pump:reply grows Request extras + STREAM *and* koruc stops double-emitting `koru_pump`, switch `main.k` to `orisha:serve` and drop `vendor/http`'s loop. Media HTML stays in `src/`.
 
 ## Phase 8: semantic projection
 

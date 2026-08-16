@@ -1,0 +1,490 @@
+// http — this app's HTTP / HATEOAS runtime (not Orisha).
+//
+// Complete request parse, Range, STREAM:v1 send, idle accept-loop.
+// Orisha (vendor/orisha) stays a verbatim copy of W:\\src\\orisha\\lib
+// so it can be re-vendored without losing playback. Switch main.k to
+// orisha:serve only when pump:reply understands STREAM:v1 + Request extras.
+
+~std/compiler:requires {
+    exe.linkLibC();
+}
+
+const std = @import("std");
+// The ONE clock symbol Orisha needs, declared rather than @cImport-ed.
+//
+// `@cImport(@cInclude("time.h"))` needs libc HEADERS at compile time, and a
+// freestanding target has none — it was one of the two things stopping Orisha
+// from linking into a unikernel at all (`error: 'time.h' file not found`). An
+// `extern fn` needs no header: it resolves at link time against whatever libc
+// the image actually has, which on Unikraft is nolibc, in the same address
+// space. Same trick koru/examples/unikraft-net uses for socket/bind/listen.
+//
+// `gmtime_r` and `strftime` are gone with it — see formatHttpDate, which now
+// does the calendar arithmetic itself. Fewer symbols to find on a platform
+// that may not have them, and the HTTP date format is fixed by RFC 9110
+// anyway, so there was never anything for strftime to decide.
+extern fn time(t: ?*i64) i64;
+
+// ============================================================================
+// PUBLIC TYPES
+// ============================================================================
+
+pub const Request = struct {
+    method: []const u8,
+    path: []const u8,
+    body: ?[]const u8,
+    if_none_match: ?[]const u8 = null,
+    range: ?[]const u8 = null,
+    query: ?[]const u8 = null,
+    prefer: ?[]const u8 = null,
+    accept: ?[]const u8 = null,
+    /// Raw header block (after the request line, no body). Dialects use header().
+    headers: []const u8 = "",
+
+    // For param extraction by router
+    allocator: std.mem.Allocator,
+
+    pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
+        return headerValue(self.headers, name);
+    }
+};
+
+pub const ServerHandle = struct {
+    inner: std.net.Server,
+    allocator: std.mem.Allocator,
+};
+
+pub const ConnHandle = struct {
+    stream: std.net.Stream,
+    allocator: std.mem.Allocator,
+};
+
+var active_streams: std.atomic.Value(u32) = .init(0); // idle exit + STREAM:v1 lease
+
+pub fn streamsBusy() bool {
+    return active_streams.load(.seq_cst) != 0;
+}
+
+
+fn idleSecs() ?u32 {
+    const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
+    return std.fmt.parseInt(u32, v, 10) catch null;
+}
+
+// ============================================================================
+// LISTEN — open the socket
+// ============================================================================
+
+~proc listen|zig {
+    const allocator = std.heap.c_allocator;
+
+    const address = std.net.Address.parseIp("0.0.0.0", port) catch {
+        return .{ .failed = "Invalid address" };
+    };
+
+    const server = address.listen(.{
+        .reuse_address = true,
+        .kernel_backlog = 128,
+    }) catch {
+        return .{ .failed = "Failed to listen" };
+    };
+
+    const handle = allocator.create(ServerHandle) catch {
+        return .{ .failed = "Failed to allocate server handle" };
+    };
+    handle.* = .{ .inner = server, .allocator = allocator };
+
+    std.debug.print("http listening on http://0.0.0.0:{}\n", .{port});
+    if (idleSecs()) |s| {
+        std.debug.print("Idle exit after {}s with no connections (KORU_IDLE_SECS)\n", .{s});
+    }
+    return .{ .listening = handle };
+}
+~proc accept|zig {
+    const allocator = server.allocator;
+
+    // Optional idle exit: poll listen socket; if quiet and no streams, exit process.
+    if (idleSecs()) |secs| {
+        const fd = server.inner.stream.handle;
+        var pfd = [_]std.posix.pollfd{.{
+            .fd = fd,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const n = std.posix.poll(&pfd, @as(i32, @intCast(secs * 1000))) catch 0;
+        if (n == 0 and active_streams.load(.seq_cst) == 0) {
+            std.debug.print("Idle timeout — exiting\n", .{});
+            std.process.exit(0);
+        }
+    }
+
+    // Accept connection
+    const conn = server.inner.accept() catch {
+        return .{ .failed = .{ .msg = "Accept failed", .server = server } };
+    };
+
+    // Read HTTP request
+    var buffer: [4096]u8 = undefined;
+    const bytes_read = conn.stream.read(&buffer) catch {
+        conn.stream.close();
+        return .{ .failed = .{ .msg = "Read failed", .server = server } };
+    };
+
+    if (bytes_read == 0) {
+        conn.stream.close();
+        return .{ .failed = .{ .msg = "Empty request", .server = server } };
+    }
+
+    const request_data = buffer[0..bytes_read];
+    const parts = parseHttpRequest(allocator, request_data);
+
+    // Allocate request
+    const req = allocator.create(Request) catch {
+        conn.stream.close();
+        return .{ .failed = .{ .msg = "Failed to allocate request", .server = server } };
+    };
+    const duped_body: ?[]const u8 = if (parts.body) |b| allocator.dupe(u8, b) catch b else null;
+    req.* = .{
+        .method = allocator.dupe(u8, parts.method) catch parts.method,
+        .path = allocator.dupe(u8, parts.path) catch parts.path,
+        .body = duped_body,
+        .if_none_match = if (parts.if_none_match) |e| allocator.dupe(u8, e) catch e else null,
+        .range = if (parts.range) |r| allocator.dupe(u8, r) catch r else null,
+        .query = if (parts.query) |q| allocator.dupe(u8, q) catch q else null,
+        .prefer = if (parts.prefer) |p| allocator.dupe(u8, p) catch p else null,
+        .accept = if (parts.accept) |a| allocator.dupe(u8, a) catch a else null,
+        .headers = allocator.dupe(u8, parts.headers) catch parts.headers,
+        .allocator = allocator,
+    };
+
+    // Allocate connection handle
+    const conn_handle = allocator.create(ConnHandle) catch {
+        conn.stream.close();
+        return .{ .failed = .{ .msg = "Failed to allocate connection", .server = server } };
+    };
+    conn_handle.* = .{ .stream = conn.stream, .allocator = allocator };
+
+    return .{ .request = .{ .req = req, .conn = conn_handle, .server = server } };
+}
+
+~proc send|zig {
+    const allocator = conn.allocator;
+
+    const special = sendSpecial(conn.stream, body, &active_streams);
+    switch (special) {
+        .sent => return .sent,
+        .failed => |msg| return .{ .failed = msg },
+        .unhandled => {},
+    }
+
+    const ct = if (content_type) |ct_str| ct_str else "text/plain";
+
+    // Build HTTP response
+    var response_buf: std.ArrayList(u8) = .empty;
+    defer response_buf.deinit(allocator);
+
+    var len_buf: [20]u8 = undefined;
+    const len_str = std.fmt.bufPrint(&len_buf, "{}", .{body.len}) catch "0";
+    var date_buf: [29]u8 = undefined;
+    formatHttpDate(&date_buf);
+    if (headerPrefixClose(status)) |prefix| {
+        response_buf.appendSlice(allocator, prefix) catch {};
+        response_buf.appendSlice(allocator, len_str) catch {};
+        response_buf.appendSlice(allocator, "\r\nContent-Type: ") catch {};
+        response_buf.appendSlice(allocator, ct) catch {};
+        response_buf.appendSlice(allocator, "\r\nDate: ") catch {};
+        response_buf.appendSlice(allocator, &date_buf) catch {};
+        response_buf.appendSlice(allocator, "\r\nConnection: close\r\n\r\n") catch {};
+    } else {
+        response_buf.appendSlice(allocator, "HTTP/1.1 ") catch {};
+        var status_buf: [3]u8 = undefined;
+        _ = std.fmt.bufPrint(&status_buf, "{}", .{status}) catch {};
+        response_buf.appendSlice(allocator, &status_buf) catch {};
+        response_buf.appendSlice(allocator, " ") catch {};
+        response_buf.appendSlice(allocator, statusText(status)) catch {};
+        response_buf.appendSlice(allocator, "\r\n") catch {};
+        response_buf.appendSlice(allocator, "Content-Type: ") catch {};
+        response_buf.appendSlice(allocator, ct) catch {};
+        response_buf.appendSlice(allocator, "\r\n") catch {};
+        response_buf.appendSlice(allocator, "Content-Length: ") catch {};
+        response_buf.appendSlice(allocator, len_str) catch {};
+        response_buf.appendSlice(allocator, "\r\nDate: ") catch {};
+        response_buf.appendSlice(allocator, &date_buf) catch {};
+        response_buf.appendSlice(allocator, "\r\nConnection: close\r\n\r\n") catch {};
+    }
+
+    // Body
+    response_buf.appendSlice(allocator, body) catch {};
+
+    // Send (avoid `_ = expr catch` — koruc currently emits `_ = &expr catch` in
+    // effect-branch proc bodies and breaks Zig typechecking).
+    conn.stream.writeAll(response_buf.items) catch {
+        conn.stream.close();
+        return .{ .failed = "Write failed" };
+    };
+
+    conn.stream.close();
+    return .sent;
+}
+
+
+// The response's content type. `?string` in a RETURN RECORD does not lower to
+// Zig yet (params lower via emitter_helpers.zig:907 / regression 400_181; the
+// bare-return record path writeBareReturnType only lowers exact `string`), so
+// the optional field names this module-local alias instead — the same
+// mechanism `*Request` uses.
+pub const ContentType = []const u8;
+
+const ParsedHttpRequest = struct {
+    method: []const u8,
+    path: []const u8,
+    query: ?[]const u8 = null,
+    body: ?[]const u8 = null,
+    range: ?[]const u8 = null,
+    prefer: ?[]const u8 = null,
+    accept: ?[]const u8 = null,
+    if_none_match: ?[]const u8 = null,
+    headers: []const u8 = "",
+};
+
+fn headerValue(headers: []const u8, name: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + 1 < headers.len) {
+        if (headers[i] != '\r' or headers[i + 1] != '\n') {
+            i += 1;
+            continue;
+        }
+        const start = i + 2;
+        if (start + name.len >= headers.len) break;
+        if (std.ascii.eqlIgnoreCase(headers[start .. start + name.len], name) and
+            headers[start + name.len] == ':')
+        {
+            var v = start + name.len + 1;
+            while (v < headers.len and (headers[v] == ' ' or headers[v] == '\t')) : (v += 1) {}
+            const rest = headers[v..];
+            const end = std.mem.indexOf(u8, rest, "\r\n") orelse rest.len;
+            return std.mem.trim(u8, rest[0..end], " \t");
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
+    const without_query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+    if (std.mem.indexOfScalar(u8, without_query, '%') == null) return without_query;
+
+    var out = allocator.alloc(u8, without_query.len) catch return without_query;
+    var w: usize = 0;
+    var r: usize = 0;
+    while (r < without_query.len) {
+        if (without_query[r] == '%' and r + 2 < without_query.len) {
+            const hi = std.fmt.charToDigit(without_query[r + 1], 16) catch {
+                out[w] = without_query[r];
+                w += 1;
+                r += 1;
+                continue;
+            };
+            const lo = std.fmt.charToDigit(without_query[r + 2], 16) catch {
+                out[w] = without_query[r];
+                w += 1;
+                r += 1;
+                continue;
+            };
+            out[w] = hi * 16 + lo;
+            w += 1;
+            r += 3;
+        } else {
+            out[w] = without_query[r];
+            w += 1;
+            r += 1;
+        }
+    }
+    return out[0..w];
+}
+
+fn stripEtagQuotes(raw: []const u8) []const u8 {
+    var etag = std.mem.trim(u8, raw, " \t");
+    if (etag.len >= 2 and etag[0] == '"' and etag[etag.len - 1] == '"') {
+        etag = etag[1 .. etag.len - 1];
+    }
+    return etag;
+}
+
+fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) ParsedHttpRequest {
+    var method: []const u8 = "GET";
+    var path: []const u8 = "/";
+    var query: ?[]const u8 = null;
+
+    if (std.mem.indexOf(u8, request_data, " ")) |method_end| {
+        method = request_data[0..method_end];
+        const after_method = request_data[method_end + 1 ..];
+        if (std.mem.indexOf(u8, after_method, " ")) |path_end| {
+            const target = after_method[0..path_end];
+            if (std.mem.indexOfScalar(u8, target, '?')) |q| {
+                query = target[q + 1 ..];
+            }
+            path = requestPathKey(allocator, target);
+        }
+    }
+
+    var body: ?[]const u8 = null;
+    var headers: []const u8 = "";
+    const line_end = std.mem.indexOf(u8, request_data, "\r\n");
+    if (line_end) |le| {
+        const from_headers = request_data[le..];
+        if (std.mem.indexOf(u8, from_headers, "\r\n\r\n")) |blank| {
+            headers = from_headers[0..blank];
+            const body_start = le + blank + 4;
+            if (body_start < request_data.len) {
+                body = request_data[body_start..];
+            }
+        } else {
+            headers = from_headers;
+        }
+    }
+
+    const if_none = if (headerValue(headers, "If-None-Match")) |v| stripEtagQuotes(v) else null;
+
+    return .{
+        .method = method,
+        .path = path,
+        .query = query,
+        .body = body,
+        .range = headerValue(headers, "Range"),
+        .prefer = headerValue(headers, "Prefer"),
+        .accept = headerValue(headers, "Accept"),
+        .if_none_match = if_none,
+        .headers = headers,
+    };
+}
+
+const SpecialSend = union(enum) {
+    sent,
+    failed: []const u8,
+    unhandled,
+};
+
+fn failClose(stream: std.net.Stream, msg: []const u8) SpecialSend {
+    stream.close();
+    return .{ .failed = msg };
+}
+
+fn sendSpecial(stream: std.net.Stream, body: []const u8, lease: *std.atomic.Value(u32)) SpecialSend {
+    if (std.mem.startsWith(u8, body, "STREAM:v1\n")) {
+        var rest = body["STREAM:v1\n".len..];
+        const nl1 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const path = rest[0..nl1];
+        rest = rest[nl1 + 1 ..];
+        const nl2 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const start = std.fmt.parseInt(u64, rest[0..nl2], 10) catch return failClose(stream, "Bad STREAM");
+        rest = rest[nl2 + 1 ..];
+        const nl3 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
+        const end = std.fmt.parseInt(u64, rest[0..nl3], 10) catch return failClose(stream, "Bad STREAM");
+        rest = rest[nl3 + 1 ..];
+        if (rest.len == 0 or rest[0] != '\n') return failClose(stream, "Bad STREAM");
+        const hdrs = rest[1..];
+        _ = lease.fetchAdd(1, .seq_cst);
+        defer _ = lease.fetchSub(1, .seq_cst);
+        stream.writeAll(hdrs) catch return failClose(stream, "Write failed");
+        const file = std.fs.cwd().openFile(path, .{}) catch return failClose(stream, "Open failed");
+        defer file.close();
+        file.seekTo(start) catch return failClose(stream, "Seek failed");
+        var remaining: u64 = if (end >= start) end - start + 1 else 0;
+        var chunk: [64 * 1024]u8 = undefined;
+        while (remaining > 0) {
+            const want: usize = @intCast(@min(remaining, chunk.len));
+            const n = file.read(chunk[0..want]) catch return failClose(stream, "Read failed");
+            if (n == 0) break;
+            stream.writeAll(chunk[0..n]) catch return failClose(stream, "Write failed");
+            remaining -= n;
+        }
+        stream.close();
+        return .sent;
+    }
+
+    if (std.mem.startsWith(u8, body, "HTTP/1.")) {
+        stream.writeAll(body) catch return failClose(stream, "Write failed");
+        stream.close();
+        return .sent;
+    }
+
+    return .unhandled;
+}
+
+fn statusText(status: u16) []const u8 {
+    return switch (status) {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        else => "Unknown",
+    };
+}
+
+fn formatHttpDate(buf: *[29]u8) void {
+    const epoch = time(null);
+    const days = @divFloor(epoch, 86400);
+    const secs = @as(u32, @intCast(epoch - days * 86400));
+    const z = days + 719468;
+    const era = @divFloor(z, 146097);
+    const doe = @as(u32, @intCast(z - era * 146097));
+    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const y0 = @as(i64, yoe) + era * 400;
+    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const mp = (5 * doy + 2) / 153;
+    const d = doy - (153 * mp + 2) / 5 + 1;
+    const m = if (mp < 10) mp + 3 else mp - 9;
+    const y = if (m <= 2) y0 + 1 else y0;
+    const wday = @as(u32, @intCast(@mod(days + 4, 7)));
+    const DAY = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    const MON = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    @memcpy(buf[0..3], DAY[wday]);
+    buf[3] = ',';
+    buf[4] = ' ';
+    two(buf[5..7], d);
+    buf[7] = ' ';
+    @memcpy(buf[8..11], MON[m - 1]);
+    buf[11] = ' ';
+    four(buf[12..16], @as(u32, @intCast(y)));
+    buf[16] = ' ';
+    two(buf[17..19], secs / 3600);
+    buf[19] = ':';
+    two(buf[20..22], (secs % 3600) / 60);
+    buf[22] = ':';
+    two(buf[23..25], secs % 60);
+    @memcpy(buf[25..29], " GMT");
+}
+
+fn two(dst: *[2]u8, v: u32) void {
+    dst[0] = '0' + @as(u8, @intCast((v / 10) % 10));
+    dst[1] = '0' + @as(u8, @intCast(v % 10));
+}
+
+fn four(dst: *[4]u8, v: u32) void {
+    dst[0] = '0' + @as(u8, @intCast((v / 1000) % 10));
+    dst[1] = '0' + @as(u8, @intCast((v / 100) % 10));
+    dst[2] = '0' + @as(u8, @intCast((v / 10) % 10));
+    dst[3] = '0' + @as(u8, @intCast(v % 10));
+}
+
+fn headerPrefixKeepAlive(status: u16) ?[]const u8 {
+    return switch (status) {
+        200 => "HTTP/1.1 200 OK\r\nContent-Length: ",
+        201 => "HTTP/1.1 201 Created\r\nContent-Length: ",
+        204 => "HTTP/1.1 204 No Content\r\nContent-Length: ",
+        400 => "HTTP/1.1 400 Bad Request\r\nContent-Length: ",
+        401 => "HTTP/1.1 401 Unauthorized\r\nContent-Length: ",
+        403 => "HTTP/1.1 403 Forbidden\r\nContent-Length: ",
+        404 => "HTTP/1.1 404 Not Found\r\nContent-Length: ",
+        500 => "HTTP/1.1 500 Internal Server Error\r\nContent-Length: ",
+        else => null,
+    };
+}
+
+const headerPrefixClose = headerPrefixKeepAlive;
+

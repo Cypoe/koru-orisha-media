@@ -38,6 +38,7 @@ docker run --rm \
   "paths": {
     "std": "/usr/local/koru_std",
     "orisha": "./vendor/orisha",
+    "http": "./vendor/http",
     "koru": "./vendor/koru-libs",
     "media": "./src"
   }

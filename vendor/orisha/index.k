@@ -36,6 +36,7 @@
 import std/compiler
 import std/io
 import std/build
+import orisha/pump
 
 // ============================================================================
 // LISTEN - Start listening on a port
@@ -74,6 +75,7 @@ pub tor send { conn: *ConnHandle, status: u16, body: string, content_type: ?stri
 
 [abstract|retain]pub tor handler { req: *Request } -> { status: u16, body: string, content_type: ?ContentType }
 
+// Default implementation - 404 for everything
 handler -> { status: 404, body: "Not Found", content_type: null }
 
 // ============================================================================
@@ -87,38 +89,17 @@ handler -> { status: 404, body: "Not Found", content_type: null }
 // Adding a platform is a `~proc run|<name>` in orisha/pump plus a line in the
 // variants block. Nothing in this file changes.
 
-// ============================================================================
-// SERVE — a Koru flow over a platform pump
-// ============================================================================
-// `serve` used to be two ~200-line Zig bodies, one per readiness mechanism,
-// that differed in about twenty lines and duplicated everything else. The loop
-// now lives in orisha/pump, one variant per platform; what remains here is the
-// part that is the same everywhere, and it is a flow.
-//
-// Adding a platform is a `~proc run|<name>` in orisha/pump plus a line in the
-// variants block. Nothing in this file changes.
-//
-// pump.k / pump.kz sit beside this file (upstream serve path). Host aliases
-// in pump.kz are pump_std / pump_posix / pump_c like routing.kz's router_std,
-// so an unused sibling does not poison this stem's `const std`. Do not
-// `import orisha/pump` here: that still double-emits `koru_pump`. This app
-// stays on run-accept-loop until STREAM/Request ride `reply` *and* that
-// emit is gone. Unmodified copy: vendor/upstream/orisha-pump/.
+pub tor serve { port: u16 }
+| shutdown string
+| failed string
 
-pub tor run-accept-loop { port: u16 }
-
-tor accept-loop { server: *ServerHandle }
-accept-loop =
-    orisha:accept(server)
-    | request r |> orisha:handler(r.req): res |> orisha:send(r.conn, res.status, res.body, res.content_type)
-        | sent |> accept-loop(r.server)
-        | failed _ |> accept-loop(r.server)
-    | failed f |> accept-loop(f.server)
-
-run-accept-loop =
-    orisha:listen(port)
-    | listening s |> accept-loop(server: s)
-    | failed e |> std/io:print.ln(e)
+serve =
+    orisha/pump:run(port)
+    ! arrived x |> orisha/pump:raw(x): raw |> orisha:answer(raw): a |> orisha/pump:reply(x, a.head, a.body)
+        | sent |> _
+        | broken _ |> _
+    | stopped s -> shutdown s
+    | failed e -> failed e
 
 // ============================================================================
 // ANSWER — parse one request, run the handler, shape the response
@@ -131,8 +112,43 @@ pub tor answer { raw: string } -> { head: string, body: string }
 // ============================================================================
 // PLATFORM SELECTION
 // ============================================================================
-// Upstream: [build(linux)] selects orisha/pump:run = epoll. Unused here
-// until `import orisha/pump` no longer double-emits `koru_pump`.
+// One line per platform. The pump is what changes; serve never does.
+
+[build(linux)]std/build:variants {
+    "orisha/pump:run": "epoll"
+}
+| configured _ |> _
+| skipped _ |> _
+| invalid-event _ |> _
+
+// Linux again, with the newer mechanism. epoll answers "which of these is
+// ready"; io_uring is told the read ALREADY HAPPENED, so the loop handles a
+// result rather than a hint. Needs Linux 5.1, which is why it is a separate
+// choice rather than the Linux default.
+[build(io-uring)]std/build:variants {
+    "orisha/pump:run": "io-uring"
+}
+| configured _ |> _
+| skipped _ |> _
+| invalid-event _ |> _
+
+// A unikernel selects BOTH: the loop, and the writer. `reply`'s default body
+// goes through `posix.write`, which has no implementation on a freestanding
+// target, and it is reached from the `arrived` arm on every request — so it is
+// not one of the bodies the target can simply leave unanalyzed.
+//
+// `fill` is deliberately NOT here, and the reason is worth stating: this block
+// rewrites the call sites the FLOW makes. The pump reads from inside its own
+// loop, in raw Zig, and a line here would have no effect on that call — it would
+// read as selection while selecting nothing. The unikernel loop names the reader
+// it wants directly instead. See `run|unikraft` in the companion.
+[build(unikraft)]std/build:variants {
+    "orisha/pump:run": "unikraft",
+    "orisha/pump:reply": "unikraft"
+}
+| configured _ |> _
+| skipped _ |> _
+| invalid-event _ |> _
 
 // ============================================================================
 // ROUTER - Pattern-branch router transform

@@ -1,0 +1,1 @@
+521a4d7 feat(static): emit Cache-Control so baked responses are actually cacheable

@@ -7,8 +7,8 @@
 //   consumers.k / consumers.kz  named constructions → HTML / JSON-LD / bytes
 // Routes include /settings (mounts, base path, catalog store, Reindex flag).
 // Handlers never call TMDB, TVDB, or ffmpeg. Reindex is catalog.kz via reindex.requested.
-// Zig companions implement the work; main.k wires orisha:handler → media:dispatch
-// (Koru ignores orisha:handler if it lives only inside import media).
+// Zig companions implement the work; main.k wires http:handler → media:dispatch
+// (Koru ignores http:handler if it lives only inside import media).
 // Do not `import media/graph` or `import media/consumers` here — directory
 // import already loads those stems; a second import duplicates koru_consumers.
 

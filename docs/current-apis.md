@@ -168,21 +168,21 @@ Avoid `examples/hello` until updated: it still imports nonexistent `orisha/eshu`
 
 ## Gaps vs GOAL.md media milestone
 
-Upstream Orisha still lacks Range/HEAD/streaming. This project vendors `vendor/orisha/` with a reviewable extension:
+Upstream Orisha still lacks Range/HEAD/streaming. This app keeps that spec in [`vendor/http`](../vendor/http/) and vendors Orisha **verbatim** (`bash scripts/vendor-orisha.sh`):
 
-| GOAL need | Vendor status |
-|-----------|----------------|
-| `/media/{id}` runtime file streaming | `STREAM:v1` body → `send\|zig` writes headers then 64 KiB file chunks |
+| GOAL need | Where |
+|-----------|--------|
+| `/media/{id}` runtime file streaming | `STREAM:v1` body → `http:send` writes headers then 64 KiB file chunks |
 | `HEAD` | Pre-rendered HTTP/1.1 response with headers only |
 | `Accept-Ranges` / `206` / `416` | Parsed `req.range` + single `bytes=` range |
-| `Last-Modified` | From manifest `modified_ns` when present |
+| `Last-Modified` | From catalog `modified_ns` when present |
 | Path traversal | Reject `..` / absolute; require path under `KORU_MEDIA_ROOT` |
-| Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST`, `KORU_SEMANTIC` env (defaults: `fixtures/media`, `data/manifest.json`, `data/semantic.json`) |
-| Upstream `orisha:serve` / pump | Full copy at `vendor/upstream/orisha-pump/` (not on the `orisha` path). Original `lib/` + `serve` already double-emits `koru_pump` on koruc 0.1.7; an unused sibling `pump.kz` next to this vendor’s `index.kz` is `ambiguous std`. This app uses `orisha:run-accept-loop`. See [upstream-pump-emit.md](upstream-pump-emit.md). |
+| Config | `KORU_MEDIA_ROOT`, `KORU_MANIFEST`, `KORU_SEMANTIC` env |
+| Upstream `orisha:serve` / pump | [`vendor/orisha`](../vendor/orisha/) is a verbatim `lib/` copy. `orisha:serve` still double-emits `koru_pump` on koruc 0.1.7. This app uses `http:run-accept-loop`. See [upstream-pump-emit.md](upstream-pump-emit.md). |
 
-Prefer contributing Range/streaming upstream; keep vendor diffs documented in [vendor/README.md](../vendor/README.md).
+Prefer contributing Range/streaming upstream; keep the split documented in [vendor/README.md](../vendor/README.md).
 
-This app's HTML/routes live in [`src/`](../src/) (Koru module `media`: `index` dispatch, `graph` snapshot, `consumers` representations). `main.k` implements `orisha:handler` as a flow into `media:dispatch` (reconstructing the response record; Koru emits distinct Zig `Output` types). Manifest/semantic env (`KORU_MANIFEST`, `KORU_SEMANTIC`) is app config; Orisha only sees `Request` + `STREAM:v1`.
+This app's HTML/routes live in [`src/`](../src/) (Koru module `media`). `main.k` implements `http:handler` as a flow into `media:dispatch`. Manifest/semantic env is app config; `vendor/http` sees `Request` + `STREAM:v1`.
 
 ## koru-libs relevance
 

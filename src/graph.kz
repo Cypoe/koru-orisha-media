@@ -505,7 +505,7 @@ fn maybeReindexFlag() void {
 /// are in flight (in-flight requests already hold paths/bytes from findEntry).
 pub fn maybeReloadManifest() void {
     ensureConfig();
-    if (koru_orisha.streamsBusy()) return;
+    if (koru_http.streamsBusy()) return;
     maybeReindexFlag();
     const mt = manifestMtimeNs();
     const smt = semanticMtimeNs();

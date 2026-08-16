@@ -1,12 +1,12 @@
 // media — representation dispatch (not Orisha).
 // Graph load lives in graph.kz; HTML/JSON-LD/bytes in consumers.kz.
-// `dispatch` is wired from main.k as orisha:handler. Never calls TMDB, TVDB, or ffmpeg.
+// `dispatch` is wired from main.k as http:handler. Never calls TMDB, TVDB, or ffmpeg.
 
 const std = @import("std");
 
-// Host aliases so the contract can name Orisha's request/response types.
-pub const Request = koru_orisha.Request;
-pub const ContentType = koru_orisha.ContentType;
+// Host aliases so the contract can name http's request/response types.
+pub const Request = koru_http.Request;
+pub const ContentType = koru_http.ContentType;
 
 // Representation dispatch: graph snapshot + named consumer → HTML / JSON-LD / bytes.
 ~proc dispatch|zig {

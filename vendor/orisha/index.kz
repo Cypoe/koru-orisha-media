@@ -9,17 +9,6 @@
 // The two files share a stem and are ONE module. A `~pub tor` may not be
 // declared here while that companion exists (KORU111): the public surface is
 // the contract's job.
-//
-// Generic HTTP server only. The media app lives in src/ (module `media`):
-// manifest/semantic load, HTML views, and orisha:handler dispatch.
-// Shared lease: `active_streams` (idle exit + STREAM:v1). App reload asks
-// streamsBusy() rather than touching this counter.
-//
-// Request is RFC HTTP + header() — no hx_* fields. parseHttpRequest and
-// STREAM:v1 send live in this stem. Directory import still enumerates
-// sibling `pump` / `routing`; pump.kz uses `pump_std` so that does not
-// collide with `const std` here. Do not `import orisha/pump`.
-// upstream match module.
 
 ~std/compiler:requires {
     exe.linkSystemLibrary("z");
@@ -55,19 +44,9 @@ pub const Request = struct {
     path: []const u8,
     body: ?[]const u8,
     if_none_match: ?[]const u8 = null,
-    range: ?[]const u8 = null,
-    query: ?[]const u8 = null,
-    prefer: ?[]const u8 = null,
-    accept: ?[]const u8 = null,
-    /// Raw header block (after the request line, no body). Dialects use header().
-    headers: []const u8 = "",
 
     // For param extraction by router
     allocator: std.mem.Allocator,
-
-    pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
-        return headerValue(self.headers, name);
-    }
 };
 
 pub const ServerHandle = struct {
@@ -79,18 +58,6 @@ pub const ConnHandle = struct {
     stream: std.net.Stream,
     allocator: std.mem.Allocator,
 };
-
-var active_streams: std.atomic.Value(u32) = .init(0); // idle exit + STREAM:v1 lease
-
-pub fn streamsBusy() bool {
-    return active_streams.load(.seq_cst) != 0;
-}
-
-
-fn idleSecs() ?u32 {
-    const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
-    return std.fmt.parseInt(u32, v, 10) catch null;
-}
 
 // ============================================================================
 // LISTEN — open the socket
@@ -116,28 +83,10 @@ fn idleSecs() ?u32 {
     handle.* = .{ .inner = server, .allocator = allocator };
 
     std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
-    if (idleSecs()) |s| {
-        std.debug.print("Idle exit after {}s with no connections (KORU_IDLE_SECS)\n", .{s});
-    }
     return .{ .listening = handle };
 }
 ~proc accept|zig {
     const allocator = server.allocator;
-
-    // Optional idle exit: poll listen socket; if quiet and no streams, exit process.
-    if (idleSecs()) |secs| {
-        const fd = server.inner.stream.handle;
-        var pfd = [_]std.posix.pollfd{.{
-            .fd = fd,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const n = std.posix.poll(&pfd, @as(i32, @intCast(secs * 1000))) catch 0;
-        if (n == 0 and active_streams.load(.seq_cst) == 0) {
-            std.debug.print("Idle timeout — exiting\n", .{});
-            std.process.exit(0);
-        }
-    }
 
     // Accept connection
     const conn = server.inner.accept() catch {
@@ -156,25 +105,41 @@ fn idleSecs() ?u32 {
         return .{ .failed = .{ .msg = "Empty request", .server = server } };
     }
 
+    // Parse HTTP request line: "GET /path HTTP/1.1"
     const request_data = buffer[0..bytes_read];
-    const parts = parseHttpRequest(allocator, request_data);
+    var method: []const u8 = "GET";
+    var path: []const u8 = "/";
+
+    if (std.mem.indexOf(u8, request_data, " ")) |method_end| {
+        method = request_data[0..method_end];
+        const after_method = request_data[method_end + 1..];
+        if (std.mem.indexOf(u8, after_method, " ")) |path_end| {
+            // Same seam as `answer` below — a query string and percent-encoding
+            // both belong to the request target, not to the resource name.
+            path = requestPathKey(allocator, after_method[0..path_end]);
+        }
+    }
+
+    // Parse body from request data
+    var body: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, request_data, "\r\n\r\n")) |header_end| {
+        const body_start = header_end + 4;
+        if (body_start < request_data.len) {
+            body = request_data[body_start..];
+        }
+    }
 
     // Allocate request
     const req = allocator.create(Request) catch {
         conn.stream.close();
         return .{ .failed = .{ .msg = "Failed to allocate request", .server = server } };
     };
-    const duped_body: ?[]const u8 = if (parts.body) |b| allocator.dupe(u8, b) catch b else null;
+    const duped_body: ?[]const u8 = if (body) |b| allocator.dupe(u8, b) catch b else null;
     req.* = .{
-        .method = allocator.dupe(u8, parts.method) catch parts.method,
-        .path = allocator.dupe(u8, parts.path) catch parts.path,
+        .method = allocator.dupe(u8, method) catch method,
+        .path = allocator.dupe(u8, path) catch path,
         .body = duped_body,
-        .if_none_match = if (parts.if_none_match) |e| allocator.dupe(u8, e) catch e else null,
-        .range = if (parts.range) |r| allocator.dupe(u8, r) catch r else null,
-        .query = if (parts.query) |q| allocator.dupe(u8, q) catch q else null,
-        .prefer = if (parts.prefer) |p| allocator.dupe(u8, p) catch p else null,
-        .accept = if (parts.accept) |a| allocator.dupe(u8, a) catch a else null,
-        .headers = allocator.dupe(u8, parts.headers) catch parts.headers,
+        .if_none_match = null,
         .allocator = allocator,
     };
 
@@ -190,14 +155,6 @@ fn idleSecs() ?u32 {
 
 ~proc send|zig {
     const allocator = conn.allocator;
-
-    const special = sendSpecial(conn.stream, body, &active_streams);
-    switch (special) {
-        .sent => return .sent,
-        .failed => |msg| return .{ .failed = msg },
-        .unhandled => {},
-    }
-
     const ct = if (content_type) |ct_str| ct_str else "text/plain";
 
     // Build HTTP response
@@ -237,15 +194,14 @@ fn idleSecs() ?u32 {
     // Body
     response_buf.appendSlice(allocator, body) catch {};
 
-    // Send (avoid `_ = expr catch` — koruc currently emits `_ = &expr catch` in
-    // effect-branch proc bodies and breaks Zig typechecking).
-    conn.stream.writeAll(response_buf.items) catch {
+    // Send
+    _ = conn.stream.writeAll(response_buf.items) catch {
         conn.stream.close();
         return .{ .failed = "Write failed" };
     };
 
     conn.stream.close();
-    return .sent;
+    return .{ .sent = {} };
 }
 
 
@@ -302,43 +258,24 @@ fn requestAllocator() std.mem.Allocator {
     return std.heap.page_allocator;
 }
 
-const ParsedHttpRequest = struct {
-    method: []const u8,
-    path: []const u8,
-    query: ?[]const u8 = null,
-    body: ?[]const u8 = null,
-    range: ?[]const u8 = null,
-    prefer: ?[]const u8 = null,
-    accept: ?[]const u8 = null,
-    if_none_match: ?[]const u8 = null,
-    headers: []const u8 = "",
-};
-
-fn headerValue(headers: []const u8, name: []const u8) ?[]const u8 {
-    var i: usize = 0;
-    while (i + 1 < headers.len) {
-        if (headers[i] != '\r' or headers[i + 1] != '\n') {
-            i += 1;
-            continue;
-        }
-        const start = i + 2;
-        if (start + name.len >= headers.len) break;
-        if (std.ascii.eqlIgnoreCase(headers[start .. start + name.len], name) and
-            headers[start + name.len] == ':')
-        {
-            var v = start + name.len + 1;
-            while (v < headers.len and (headers[v] == ' ' or headers[v] == '\t')) : (v += 1) {}
-            const rest = headers[v..];
-            const end = std.mem.indexOf(u8, rest, "\r\n") orelse rest.len;
-            return std.mem.trim(u8, rest[0..end], " \t");
-        }
-        i += 1;
-    }
-    return null;
-}
-
+// The request target is not the lookup key, and the difference is invisible
+// until a real site is behind it.
+//
+// A browser sends what the LINK says. `/blog?utm_source=x` and `/blog` want the
+// same page, and a filename with a space in it arrives percent-encoded — the
+// route table holds the decoded name, because that is what the file is called.
+// Matching the target verbatim, as this did until 2026-08-10, misses both, and
+// the miss is silent: the SPA fallback answers 200 with the shell, so the
+// browser renders something and only the missing image tells you.
+//
+// Measured against korulang.org: two screenshots referenced from studio.html and
+// a blog post never arrived, and every link carrying a query string — including
+// the site's own `?status=` lesson filter — landed on the fallback.
 fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
+    // A query string addresses the same resource.
     const without_query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+
+    // Common case allocates nothing.
     if (std.mem.indexOfScalar(u8, without_query, '%') == null) return without_query;
 
     var out = allocator.alloc(u8, without_query.len) catch return without_query;
@@ -370,129 +307,48 @@ fn requestPathKey(allocator: std.mem.Allocator, target: []const u8) []const u8 {
     return out[0..w];
 }
 
-fn stripEtagQuotes(raw: []const u8) []const u8 {
-    var etag = std.mem.trim(u8, raw, " \t");
-    if (etag.len >= 2 and etag[0] == '"' and etag[etag.len - 1] == '"') {
-        etag = etag[1 .. etag.len - 1];
-    }
-    return etag;
-}
-
-fn parseHttpRequest(allocator: std.mem.Allocator, request_data: []const u8) ParsedHttpRequest {
+~proc answer|zig {
+    const req_allocator = $mod.requestAllocator();
     var method: []const u8 = "GET";
     var path: []const u8 = "/";
-    var query: ?[]const u8 = null;
 
-    if (std.mem.indexOf(u8, request_data, " ")) |method_end| {
-        method = request_data[0..method_end];
-        const after_method = request_data[method_end + 1 ..];
-        if (std.mem.indexOf(u8, after_method, " ")) |path_end| {
-            const target = after_method[0..path_end];
-            if (std.mem.indexOfScalar(u8, target, '?')) |q| {
-                query = target[q + 1 ..];
+    var i: usize = 0;
+    while (i < raw.len and raw[i] != ' ') : (i += 1) {}
+    if (i < raw.len) {
+        method = raw[0..i];
+        i += 1;
+        var j: usize = i;
+        while (j < raw.len and raw[j] != ' ') : (j += 1) {}
+        if (j > i) {
+            path = $mod.requestPathKey(req_allocator, raw[i..j]);
+        }
+    }
+
+    var client_etag: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, raw, "If-None-Match: ")) |etag_start| {
+        const etag_val_start = etag_start + 15;
+        if (std.mem.indexOf(u8, raw[etag_val_start..], "\r\n")) |etag_end| {
+            var etag_raw = raw[etag_val_start .. etag_val_start + etag_end];
+            if (etag_raw.len >= 2 and etag_raw[0] == '"' and etag_raw[etag_raw.len - 1] == '"') {
+                etag_raw = etag_raw[1 .. etag_raw.len - 1];
             }
-            path = requestPathKey(allocator, target);
+            client_etag = etag_raw;
         }
     }
 
     var body: ?[]const u8 = null;
-    var headers: []const u8 = "";
-    const line_end = std.mem.indexOf(u8, request_data, "\r\n");
-    if (line_end) |le| {
-        const from_headers = request_data[le..];
-        if (std.mem.indexOf(u8, from_headers, "\r\n\r\n")) |blank| {
-            headers = from_headers[0..blank];
-            const body_start = le + blank + 4;
-            if (body_start < request_data.len) {
-                body = request_data[body_start..];
-            }
-        } else {
-            headers = from_headers;
+    if (std.mem.indexOf(u8, raw, "\r\n\r\n")) |header_end| {
+        const body_start = header_end + 4;
+        if (body_start < raw.len) {
+            body = raw[body_start..];
         }
     }
-
-    const if_none = if (headerValue(headers, "If-None-Match")) |v| stripEtagQuotes(v) else null;
-
-    return .{
-        .method = method,
-        .path = path,
-        .query = query,
-        .body = body,
-        .range = headerValue(headers, "Range"),
-        .prefer = headerValue(headers, "Prefer"),
-        .accept = headerValue(headers, "Accept"),
-        .if_none_match = if_none,
-        .headers = headers,
-    };
-}
-
-const SpecialSend = union(enum) {
-    sent,
-    failed: []const u8,
-    unhandled,
-};
-
-fn failClose(stream: std.net.Stream, msg: []const u8) SpecialSend {
-    stream.close();
-    return .{ .failed = msg };
-}
-
-fn sendSpecial(stream: std.net.Stream, body: []const u8, lease: *std.atomic.Value(u32)) SpecialSend {
-    if (std.mem.startsWith(u8, body, "STREAM:v1\n")) {
-        var rest = body["STREAM:v1\n".len..];
-        const nl1 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
-        const path = rest[0..nl1];
-        rest = rest[nl1 + 1 ..];
-        const nl2 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
-        const start = std.fmt.parseInt(u64, rest[0..nl2], 10) catch return failClose(stream, "Bad STREAM");
-        rest = rest[nl2 + 1 ..];
-        const nl3 = std.mem.indexOfScalar(u8, rest, '\n') orelse return failClose(stream, "Bad STREAM");
-        const end = std.fmt.parseInt(u64, rest[0..nl3], 10) catch return failClose(stream, "Bad STREAM");
-        rest = rest[nl3 + 1 ..];
-        if (rest.len == 0 or rest[0] != '\n') return failClose(stream, "Bad STREAM");
-        const hdrs = rest[1..];
-        _ = lease.fetchAdd(1, .seq_cst);
-        defer _ = lease.fetchSub(1, .seq_cst);
-        stream.writeAll(hdrs) catch return failClose(stream, "Write failed");
-        const file = std.fs.cwd().openFile(path, .{}) catch return failClose(stream, "Open failed");
-        defer file.close();
-        file.seekTo(start) catch return failClose(stream, "Seek failed");
-        var remaining: u64 = if (end >= start) end - start + 1 else 0;
-        var chunk: [64 * 1024]u8 = undefined;
-        while (remaining > 0) {
-            const want: usize = @intCast(@min(remaining, chunk.len));
-            const n = file.read(chunk[0..want]) catch return failClose(stream, "Read failed");
-            if (n == 0) break;
-            stream.writeAll(chunk[0..n]) catch return failClose(stream, "Write failed");
-            remaining -= n;
-        }
-        stream.close();
-        return .sent;
-    }
-
-    if (std.mem.startsWith(u8, body, "HTTP/1.")) {
-        stream.writeAll(body) catch return failClose(stream, "Write failed");
-        stream.close();
-        return .sent;
-    }
-
-    return .unhandled;
-}
-
-~proc answer|zig {
-    const req_allocator = $mod.requestAllocator();
-    const parts = parseHttpRequest(req_allocator, raw);
 
     var req = Request{
-        .method = parts.method,
-        .path = parts.path,
-        .body = parts.body,
-        .if_none_match = parts.if_none_match,
-        .range = parts.range,
-        .query = parts.query,
-        .prefer = parts.prefer,
-        .accept = parts.accept,
-        .headers = parts.headers,
+        .method = method,
+        .path = path,
+        .body = body,
+        .if_none_match = client_etag,
         .allocator = req_allocator,
     };
 
@@ -603,9 +459,6 @@ fn headerPrefixKeepAlive(status: u16) ?[]const u8 {
         else => null,
     };
 }
-
-// Vendor fix: send|zig calls headerPrefixClose but upstream only defines KeepAlive.
-const headerPrefixClose = headerPrefixKeepAlive;
 
 
 ~proc router|zig {
@@ -1012,7 +865,9 @@ fn processDirectory(allocator: std.mem.Allocator, routes: *std.ArrayList(Process
         else
             std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.path }) catch continue;
         const content = std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024) catch continue;
-        const http_resp = buildHttpResponse(allocator, content, mimeTypeFromPath(file_path)) catch continue;
+        // SvelteKit's hashed assets all live under /_app/ — their URLs change
+        // when the content does, so they are safe to cache as immutable.
+        const http_resp = buildHttpResponse(allocator, content, mimeTypeFromPath(file_path), std.mem.startsWith(u8, route_path, "/_app/")) catch continue;
         routes.append(allocator, .{ .method = method, .path = route_path, .response = http_resp.response, .etag = http_resp.etag }) catch continue;
         if (std.mem.eql(u8, entry.path, "index.html") and std.mem.eql(u8, base_path, "/")) {
             routes.append(allocator, .{ .method = method, .path = "/", .response = http_resp.response, .etag = http_resp.etag }) catch continue;
@@ -1045,7 +900,7 @@ fn processDirectory(allocator: std.mem.Allocator, routes: *std.ArrayList(Process
 fn processFile(allocator: std.mem.Allocator, routes: *std.ArrayList(ProcessedRoute), method: []const u8, path: []const u8, file_path: []const u8, content_type_override: ?[]const u8) void {
     const content = std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024) catch return;
     const content_type = content_type_override orelse mimeTypeFromPath(file_path);
-    const http_resp = buildHttpResponse(allocator, content, content_type) catch return;
+    const http_resp = buildHttpResponse(allocator, content, content_type, std.mem.startsWith(u8, path, "/_app/")) catch return;
     routes.append(allocator, .{ .method = method, .path = path, .response = http_resp.response, .etag = http_resp.etag }) catch return;
 }
 
@@ -1092,7 +947,7 @@ fn gzipCompress(allocator: std.mem.Allocator, content: []const u8) ?[]const u8 {
     return allocator.realloc(output, compressed_size) catch output[0..compressed_size];
 }
 
-fn buildHttpResponse(allocator: std.mem.Allocator, content: []const u8, content_type: []const u8) !HttpResponse {
+fn buildHttpResponse(allocator: std.mem.Allocator, content: []const u8, content_type: []const u8, is_immutable: bool) !HttpResponse {
     var etag_buf: [64]u8 = undefined;
     computeEtag(content, &etag_buf);
     const etag = try allocator.dupe(u8, etag_buf[0..16]);
@@ -1108,7 +963,22 @@ fn buildHttpResponse(allocator: std.mem.Allocator, content: []const u8, content_
     try response.appendSlice(allocator, std.fmt.bufPrint(&len_buf, "{}", .{body.len}) catch "0");
     try response.appendSlice(allocator, "\r\nETag: \"");
     try response.appendSlice(allocator, etag);
-    try response.appendSlice(allocator, "\"\r\nConnection: keep-alive\r\n\r\n");
+    // The baked content cannot change without a rebuild, so it is safe to
+    // cache: hashed asset URLs are immutable for a year; pages get a one-day
+    // shared-cache lifetime with stale-while-revalidate, and the client
+    // revalidates via the ETag above (max-age=0 on the client-facing header).
+    //
+    // This is what moves a Vercel deployment off the function-per-request
+    // meter: the edge caches a Function response that carries s-maxage, and
+    // without a Cache-Control of our own Vercel injects
+    // `public, max-age=0, must-revalidate` — every request, asset included,
+    // runs the serverless function.
+    try response.appendSlice(allocator, "\"\r\nConnection: keep-alive\r\nCache-Control: ");
+    try response.appendSlice(allocator, if (is_immutable)
+        "public, max-age=31536000, s-maxage=31536000, immutable"
+    else
+        "public, max-age=0, s-maxage=86400, stale-while-revalidate=86400");
+    try response.appendSlice(allocator, "\r\n\r\n");
     try response.appendSlice(allocator, body);
     return .{ .response = response.items, .etag = etag };
 }
@@ -1511,4 +1381,3 @@ fn generateNamedRoutesFile(allocator: std.mem.Allocator, routes_const: []const P
     // nested swaps the holding continuation's node.
     return .{ .replacement = new_item };
 }
-

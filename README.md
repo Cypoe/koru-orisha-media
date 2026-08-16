@@ -92,7 +92,7 @@ One production app (not a browser app + a media app + a json-publish app). Mappi
 
 | Path | Role |
 |------|------|
-| `main.k` | entry: `orisha:handler` → `media:dispatch`, then `orisha:run-accept-loop` |
+| `main.k` | entry: `http:handler` → `media:dispatch`, then `http:run-accept-loop` |
 | `src/index.k` + `index.kz` | representation dispatch (`media:dispatch`) |
 | `src/graph.kz` | graph load (SQLite catalog + semantic overlay) |
 | `src/catalog.kz` | SQLite index + filesystem walker |
@@ -101,8 +101,8 @@ One production app (not a browser app + a media app + a json-publish app). Mappi
 | `vendor/koru-libs/` | `dom/` (vendored `koru/dom` stem) + `htmx/` (our navigation host lib) |
 | `src/json/` | usage: json-publish CLI (`import json`) |
 | `vendor/json/` | tiny JSON parse + emit (not `koru/yyjson`; not in the HTTP binary) |
-| `vendor/orisha/` | HTTP: accept-loop, Range, `STREAM:v1` consumer, `header()` |
-| `vendor/upstream/orisha-pump/` | Upstream `pump.k` / `pump.kz` (not on the compile path; see vendor/README.md) |
+| `vendor/http/` | HTTP spec: accept-loop, Range, `STREAM:v1` consumer, `header()` |
+| `vendor/orisha/` | verbatim `W:\src\orisha\lib` (not imported until pump:reply grows STREAM) |
 | `public/` | generated frontend output (`enhance.js`, `koru-dom-enhance.js`, CSS, demo HTML) |
 | `scripts/index_media.py` | optional JSON fixture / CI fallback (not the NAS indexer) |
 | `scripts/hydrate_catalog.py` | host-side TMDB/TVDB → `hydrate_works` overlay (not in the image; not the indexer) |

@@ -19,20 +19,17 @@
 // carries effect branches splices into its CALLER, where this module's scope
 // does not exist. The compiler refuses the bare names and says so.
 
-// Host aliases are pump_* like routing.kz's router_std: a sibling pump.kz
-// nested under the package index must not declare const std / posix / c or
-// Zig reports ambiguous reference against the parent's same names.
-const pump_std = @import("std");
-const pump_posix = pump_std.posix;
-const pump_c = pump_std.c;
+const std = @import("std");
+const posix = std.posix;
+const c = std.c;
 
 // One request, read and waiting for its answer. `raw` borrows the pump's read
 // buffer and is valid for the duration of the `arrived` arm only.
 //
-// `fd` is `c_int`, not `pump_posix.fd_t`. Exchange is reachable from every pump
-// including the unikernel one, and on `x86_64-freestanding` `pump_std.posix` has no
+// `fd` is `c_int`, not `posix.fd_t`. Exchange is reachable from every pump
+// including the unikernel one, and on `x86_64-freestanding` `std.posix` has no
 // syscall layer to name a descriptor type with. `c_int` is what `accept`
-// returns on every target we build, and it is what `pump_posix.fd_t` already is on
+// returns on every target we build, and it is what `posix.fd_t` already is on
 // Linux and macOS, so the hosted pumps are unaffected.
 pub const Exchange = struct {
     fd: c_int,
@@ -51,7 +48,7 @@ const MAX_EVENTS = 64;
 // happened. So this pump has no readiness step at all — the loop body handles a
 // result, never a hint.
 const URING_ENTRIES: u16 = 256;
-const URING_ACCEPT: u64 = pump_std.math.maxInt(u64);
+const URING_ACCEPT: u64 = std.math.maxInt(u64);
 
 // One read is not one request.
 //
@@ -72,7 +69,7 @@ const URING_ACCEPT: u64 = pump_std.math.maxInt(u64);
 // first request in this buffer end? The loops that use it are mechanical; this
 // is the part that must not be written three times.
 fn requestLen(buf: []const u8) ?usize {
-    const head_end = pump_std.mem.indexOf(u8, buf, "\r\n\r\n") orelse return null;
+    const head_end = std.mem.indexOf(u8, buf, "\r\n\r\n") orelse return null;
     var total = head_end + 4;
     if (contentLength(buf[0..total])) |body_len| total += body_len;
     if (total > buf.len) return null; // body still in flight
@@ -100,8 +97,8 @@ const MAX_TRACKED_FD = 4096;
 // would still be the one holding the platform's idea of a socket.
 //
 // It is `c_int` for the same reason Exchange's is: this type is now reachable
-// from the unikernel pump too, and `x86_64-freestanding` has no `pump_std.posix`
-// syscall layer to name a descriptor type with. On Linux and macOS `pump_posix.fd_t`
+// from the unikernel pump too, and `x86_64-freestanding` has no `std.posix`
+// syscall layer to name a descriptor type with. On Linux and macOS `posix.fd_t`
 // already IS `c_int`, so the hosted pumps hand theirs over unchanged.
 pub const ConnState = struct {
     fd: c_int = -1,
@@ -111,21 +108,21 @@ pub const ConnState = struct {
 
 var conn_states: [MAX_TRACKED_FD]?*ConnState = .{null} ** MAX_TRACKED_FD;
 
-fn connState(fd: pump_posix.fd_t) ?*ConnState {
+fn connState(fd: posix.fd_t) ?*ConnState {
     const idx: usize = @intCast(fd);
     if (idx >= MAX_TRACKED_FD) return null;
     if (conn_states[idx]) |s| return s;
-    const s = pump_std.heap.c_allocator.create(ConnState) catch return null;
+    const s = std.heap.c_allocator.create(ConnState) catch return null;
     s.* = .{ .fd = fd };
     conn_states[idx] = s;
     return s;
 }
 
-fn releaseConn(fd: pump_posix.fd_t) void {
+fn releaseConn(fd: posix.fd_t) void {
     const idx: usize = @intCast(fd);
     if (idx >= MAX_TRACKED_FD) return;
     if (conn_states[idx]) |s| {
-        pump_std.heap.c_allocator.destroy(s);
+        std.heap.c_allocator.destroy(s);
         conn_states[idx] = null;
     }
 }
@@ -135,19 +132,19 @@ fn releaseConn(fd: pump_posix.fd_t) void {
 fn retainTail(buf: []u8, len: usize, consumed: usize) usize {
     if (consumed == 0) return len;
     const remaining = len - consumed;
-    if (remaining > 0) pump_std.mem.copyForwards(u8, buf[0..remaining], buf[consumed..len]);
+    if (remaining > 0) std.mem.copyForwards(u8, buf[0..remaining], buf[consumed..len]);
     return remaining;
 }
 
 fn contentLength(head: []const u8) ?usize {
     var line_start: usize = 0;
     while (line_start < head.len) {
-        const line_end = pump_std.mem.indexOfPos(u8, head, line_start, "\r\n") orelse break;
+        const line_end = std.mem.indexOfPos(u8, head, line_start, "\r\n") orelse break;
         const line = head[line_start..line_end];
-        if (pump_std.mem.indexOfScalar(u8, line, ':')) |colon| {
+        if (std.mem.indexOfScalar(u8, line, ':')) |colon| {
             // Header names are case-insensitive — RFC 9110.
-            if (pump_std.ascii.eqlIgnoreCase(pump_std.mem.trim(u8, line[0..colon], " \t"), "content-length")) {
-                return pump_std.fmt.parseInt(usize, pump_std.mem.trim(u8, line[colon + 1 ..], " \t"), 10) catch null;
+            if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " \t"), "content-length")) {
+                return std.fmt.parseInt(usize, std.mem.trim(u8, line[colon + 1 ..], " \t"), 10) catch null;
             }
         }
         line_start = line_end + 2;
@@ -160,8 +157,8 @@ fn contentLength(head: []const u8) ?usize {
 // ---------------------------------------------------------------------------
 // Unikraft's posix-socket + lwip put these in the image as ordinary symbols in
 // the same address space — the same way std/io reaches nolibc's fputs. They are
-// declared here rather than reached through `pump_std.net` because STD.NET CANNOT
-// EXIST on this target: `pump_std.posix` has no `sockaddr` there, and it is a hard
+// declared here rather than reached through `std.net` because STD.NET CANNOT
+// EXIST on this target: `std.posix` has no `sockaddr` there, and it is a hard
 // compile error rather than a missing feature. That is the whole reason this
 // file is split by platform. Measured in koru/examples/unikraft-net.
 extern fn socket(domain: c_int, stype: c_int, protocol: c_int) c_int;
@@ -325,24 +322,24 @@ fn ukAdmit(incoming: c_int) void {
 // pump seam exists precisely so each platform states its own; this one line went
 // around it, which is why the bug survived until the program was first run on
 // Linux (2026-08-10, in a container).
-const O_NONBLOCK: u32 = @as(u32, @bitCast(pump_posix.O{ .NONBLOCK = true }));
+const O_NONBLOCK: u32 = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
 
-fn openListener(port: u16) ?pump_std.net.Server {
-    const address = pump_std.net.Address.parseIp("0.0.0.0", port) catch return null;
+fn openListener(port: u16) ?std.net.Server {
+    const address = std.net.Address.parseIp("0.0.0.0", port) catch return null;
     return address.listen(.{
         .reuse_address = true,
         .kernel_backlog = 512,
     }) catch null;
 }
 
-fn markNonBlocking(fd: pump_posix.fd_t) void {
-    const flags = pump_posix.fcntl(fd, pump_posix.F.GETFL, 0) catch 0;
-    _ = pump_posix.fcntl(fd, pump_posix.F.SETFL, flags | O_NONBLOCK) catch {};
+fn markNonBlocking(fd: posix.fd_t) void {
+    const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch 0;
+    _ = posix.fcntl(fd, posix.F.SETFL, flags | O_NONBLOCK) catch {};
 }
 
-fn disableNagle(fd: pump_posix.fd_t) void {
+fn disableNagle(fd: posix.fd_t) void {
     const enable: i32 = 1;
-    pump_posix.setsockopt(fd, pump_posix.IPPROTO.TCP, pump_posix.TCP.NODELAY, pump_std.mem.asBytes(&enable)) catch {};
+    posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.NODELAY, std.mem.asBytes(&enable)) catch {};
 }
 
 // Write the whole thing, and treat "would block" as what it is — a request to
@@ -360,18 +357,18 @@ fn disableNagle(fd: pump_posix.fd_t) void {
 // 327093, 1561984, 1348077, 768057 and 498501 bytes on five consecutive
 // requests. A browser renders half an image, and a truncated JavaScript module
 // simply fails to import.
-fn writeAll(fd: pump_posix.fd_t, data: []const u8) bool {
+fn writeAll(fd: posix.fd_t, data: []const u8) bool {
     var offset: usize = 0;
     while (offset < data.len) {
-        const n = pump_posix.write(fd, data[offset..]) catch |err| switch (err) {
+        const n = posix.write(fd, data[offset..]) catch |err| switch (err) {
             error.WouldBlock => {
                 // Wait for the socket to drain, then carry on from the same
                 // offset. A peer that never drains hits the timeout and the
                 // connection is genuinely broken.
-                var pfd = [_]pump_posix.pollfd{.{ .fd = fd, .events = pump_posix.POLL.OUT, .revents = 0 }};
-                const ready = pump_posix.poll(&pfd, WRITE_WAIT_MS) catch return false;
+                var pfd = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.OUT, .revents = 0 }};
+                const ready = posix.poll(&pfd, WRITE_WAIT_MS) catch return false;
                 if (ready == 0) return false;
-                if (pfd[0].revents & (pump_posix.POLL.ERR | pump_posix.POLL.HUP | pump_posix.POLL.NVAL) != 0) return false;
+                if (pfd[0].revents & (posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL) != 0) return false;
                 continue;
             },
             else => return false,
@@ -405,7 +402,7 @@ const WRITE_WAIT_MS: i32 = 10_000;
 const MAX_WORKERS = 16;
 
 fn workerCount() usize {
-    const n = pump_std.Thread.getCpuCount() catch return 1;
+    const n = std.Thread.getCpuCount() catch return 1;
     return @min(@max(n, 1), MAX_WORKERS);
 }
 
@@ -413,7 +410,7 @@ fn workerCount() usize {
 // FILL — the read seam. One variant per platform, mirroring `reply`.
 // ---------------------------------------------------------------------------
 
-// The hosted read: everything with a `pump_std.posix`.
+// The hosted read: everything with a `std.posix`.
 //
 // `read` says "nothing available right now" by returning error.WouldBlock, and
 // a peer that has finished says it by returning zero bytes. The loops used to
@@ -422,7 +419,7 @@ fn workerCount() usize {
 // connection with more to come, the other is a connection with nothing more
 // ever. Separating them is what `idle` is for.
 ~proc fill|zig {
-    const n = $mod.pump_posix.read(@intCast(st.fd), st.buf[st.len..]) catch |err| switch (err) {
+    const n = $mod.posix.read(@intCast(st.fd), st.buf[st.len..]) catch |err| switch (err) {
         error.WouldBlock => return .idle,
         else => return .gone,
     };
@@ -431,7 +428,7 @@ fn workerCount() usize {
     return .more;
 }
 
-// The unikernel's read. `pump_posix.read` has no implementation on a freestanding
+// The unikernel's read. `posix.read` has no implementation on a freestanding
 // target; `recv` is the socket symbol this pump already uses for everything
 // else.
 //
@@ -466,19 +463,19 @@ fn workerCount() usize {
     // each seeing only the descriptors handed to it.
     const Worker = struct {
         fn loop(kq: i32) void {
-            var changes: [1]$mod.pump_c.Kevent = undefined;
-            var no_changes: [0]$mod.pump_c.Kevent = undefined;
-            var events: [$mod.MAX_EVENTS]$mod.pump_c.Kevent = undefined;
+            var changes: [1]$mod.c.Kevent = undefined;
+            var no_changes: [0]$mod.c.Kevent = undefined;
+            var events: [$mod.MAX_EVENTS]$mod.c.Kevent = undefined;
 
             while (true) {
-                const n = $mod.pump_c.kevent(kq, &no_changes, 0, &events, $mod.MAX_EVENTS, null);
+                const n = $mod.c.kevent(kq, &no_changes, 0, &events, $mod.MAX_EVENTS, null);
                 if (n <= 0) continue;
 
                 for (events[0..@intCast(n)]) |event| {
-                    const fd: $mod.pump_posix.fd_t = @intCast(event.ident);
+                    const fd: $mod.posix.fd_t = @intCast(event.ident);
 
                     const st = $mod.connState(fd) orelse {
-                        $mod.pump_posix.close(fd);
+                        $mod.posix.close(fd);
                         continue;
                     };
 
@@ -489,18 +486,18 @@ fn workerCount() usize {
                         .idle => {
                             changes[0] = .{
                                 .ident = @intCast(fd),
-                                .filter = $mod.pump_c.EVFILT.READ,
-                                .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+                                .filter = $mod.c.EVFILT.READ,
+                                .flags = $mod.c.EV.ADD | $mod.c.EV.ONESHOT,
                                 .fflags = 0,
                                 .data = 0,
                                 .udata = undefined,
                             };
-                            _ = $mod.pump_c.kevent(kq, &changes, 1, &no_changes, 0, null);
+                            _ = $mod.c.kevent(kq, &changes, 1, &no_changes, 0, null);
                             continue;
                         },
                         .gone => {
                             $mod.releaseConn(fd);
-                            $mod.pump_posix.close(fd);
+                            $mod.posix.close(fd);
                             continue;
                         },
                     }
@@ -526,40 +523,40 @@ fn workerCount() usize {
 
                     if (!alive) {
                         $mod.releaseConn(fd);
-                        $mod.pump_posix.close(fd);
+                        $mod.posix.close(fd);
                         continue;
                     }
 
                     // ONESHOT disarms on delivery — re-arm for the next request.
                     changes[0] = .{
                         .ident = @intCast(fd),
-                        .filter = $mod.pump_c.EVFILT.READ,
-                        .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+                        .filter = $mod.c.EVFILT.READ,
+                        .flags = $mod.c.EV.ADD | $mod.c.EV.ONESHOT,
                         .fflags = 0,
                         .data = 0,
                         .udata = undefined,
                     };
-                    _ = $mod.pump_c.kevent(kq, &changes, 1, &no_changes, 0, null);
+                    _ = $mod.c.kevent(kq, &changes, 1, &no_changes, 0, null);
                 }
             }
         }
     };
 
     for (0..n_workers) |i| {
-        kqs[i] = $mod.pump_posix.kqueue() catch return .{ .failed = "Failed to create kqueue" };
-        _ = $mod.pump_std.Thread.spawn(.{}, Worker.loop, .{kqs[i]}) catch
+        kqs[i] = $mod.posix.kqueue() catch return .{ .failed = "Failed to create kqueue" };
+        _ = std.Thread.spawn(.{}, Worker.loop, .{kqs[i]}) catch
             return .{ .failed = "Failed to spawn worker" };
     }
 
-    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
-    $mod.pump_std.debug.print("Pump: kqueue, {} workers, keep-alive, TCP_NODELAY\n", .{n_workers});
+    std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    std.debug.print("Pump: kqueue, {} workers, keep-alive, TCP_NODELAY\n", .{n_workers});
 
     // Hand each new connection to the next worker in turn. A descriptor belongs
     // to that worker for the rest of its life, which is what makes the shared
     // connection table safe without a lock: no index is ever touched twice.
     var next: usize = 0;
-    var arm: [1]$mod.pump_c.Kevent = undefined;
-    var none: [0]$mod.pump_c.Kevent = undefined;
+    var arm: [1]$mod.c.Kevent = undefined;
+    var none: [0]$mod.c.Kevent = undefined;
     while (true) {
         const conn = server.accept() catch continue;
         const client_fd = conn.stream.handle;
@@ -568,13 +565,13 @@ fn workerCount() usize {
 
         arm[0] = .{
             .ident = @intCast(client_fd),
-            .filter = $mod.pump_c.EVFILT.READ,
-            .flags = $mod.pump_c.EV.ADD | $mod.pump_c.EV.ONESHOT,
+            .filter = $mod.c.EVFILT.READ,
+            .flags = $mod.c.EV.ADD | $mod.c.EV.ONESHOT,
             .fflags = 0,
             .data = 0,
             .udata = undefined,
         };
-        _ = $mod.pump_c.kevent(kqs[next], &arm, 1, &none, 0, null);
+        _ = $mod.c.kevent(kqs[next], &arm, 1, &none, 0, null);
         next = (next + 1) % n_workers;
     }
 
@@ -586,7 +583,7 @@ fn workerCount() usize {
 // ---------------------------------------------------------------------------
 
 ~proc run|epoll {
-    const linux = $mod.pump_std.os.linux;
+    const linux = std.os.linux;
 
     var server = $mod.openListener(port) orelse return .{ .failed = "Failed to listen" };
 
@@ -627,10 +624,10 @@ fn workerCount() usize {
                 if (n <= 0) continue;
 
                 for (events[0..@intCast(n)]) |event| {
-                    const fd: $mod.pump_posix.fd_t = event.data.fd;
+                    const fd: $mod.posix.fd_t = event.data.fd;
 
                     const st = $mod.connState(fd) orelse {
-                        $mod.pump_posix.close(fd);
+                        $mod.posix.close(fd);
                         continue;
                     };
 
@@ -646,7 +643,7 @@ fn workerCount() usize {
                         },
                         .gone => {
                             $mod.releaseConn(fd);
-                            $mod.pump_posix.close(fd);
+                            $mod.posix.close(fd);
                             continue;
                         },
                     }
@@ -669,7 +666,7 @@ fn workerCount() usize {
 
                     if (!alive) {
                         $mod.releaseConn(fd);
-                        $mod.pump_posix.close(fd);
+                        $mod.posix.close(fd);
                         continue;
                     }
 
@@ -687,12 +684,12 @@ fn workerCount() usize {
     shared_epfd = @bitCast(@as(u32, @truncate(rc)));
     if (shared_epfd < 0) return .{ .failed = "Failed to create epoll" };
     for (0..n_workers) |_| {
-        _ = $mod.pump_std.Thread.spawn(.{}, Worker.loop, .{shared_epfd}) catch
+        _ = std.Thread.spawn(.{}, Worker.loop, .{shared_epfd}) catch
             return .{ .failed = "Failed to spawn worker" };
     }
 
-    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
-    $mod.pump_std.debug.print("Pump: epoll, {} workers on one shared queue, keep-alive, TCP_NODELAY\n", .{n_workers});
+    std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    std.debug.print("Pump: epoll, {} workers on one shared queue, keep-alive, TCP_NODELAY\n", .{n_workers});
 
     // Hand each new connection to the next worker in turn. A descriptor belongs
     // to that worker for the rest of its life, which is what makes the shared
@@ -739,7 +736,7 @@ fn workerCount() usize {
 // a call site.
 
 ~proc run|io-uring {
-    // `pump_std.os.linux.IoUring` cannot be NAMED on a non-Linux target — it reaches
+    // `std.os.linux.IoUring` cannot be NAMED on a non-Linux target — it reaches
     // for `linux.E` and a macOS build has `darwin.E` instead, so this is a type
     // error, not a missing feature. The guard is comptime-known, so the body
     // below is never analysed when the host is not Linux, and `koruc` can still
@@ -748,7 +745,7 @@ fn workerCount() usize {
         return .{ .failed = "io_uring is a Linux mechanism — build with --build=linux for this host" };
     }
 
-    const linux = $mod.pump_std.os.linux;
+    const linux = std.os.linux;
 
     const server = $mod.openListener(port) orelse return .{ .failed = "Failed to listen" };
     const listen_fd = server.stream.handle;
@@ -774,8 +771,8 @@ fn workerCount() usize {
     _ = ring.accept($mod.URING_ACCEPT, listen_fd, null, null, 0) catch
         return .{ .failed = "io_uring accept" };
 
-    $mod.pump_std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
-    $mod.pump_std.debug.print("Pump: io_uring, keep-alive, TCP_NODELAY\n", .{});
+    std.debug.print("Orisha listening on http://0.0.0.0:{}\n", .{port});
+    std.debug.print("Pump: io_uring, keep-alive, TCP_NODELAY\n", .{});
 
     var cqes: [$mod.MAX_EVENTS]linux.io_uring_cqe = undefined;
 
@@ -790,11 +787,11 @@ fn workerCount() usize {
                 _ = ring.accept($mod.URING_ACCEPT, listen_fd, null, null, 0) catch {};
                 if (cqe.res < 0) continue;
 
-                const client_fd: $mod.pump_posix.fd_t = @intCast(cqe.res);
+                const client_fd: $mod.posix.fd_t = @intCast(cqe.res);
                 $mod.disableNagle(client_fd);
 
                 const fresh = $mod.connState(client_fd) orelse {
-                    $mod.pump_posix.close(client_fd);
+                    $mod.posix.close(client_fd);
                     continue;
                 };
                 fresh.len = 0;
@@ -802,17 +799,17 @@ fn workerCount() usize {
                 // heap-stable — the kernel writes into it before we are told.
                 _ = ring.recv(@intCast(client_fd), client_fd, .{ .buffer = fresh.buf[0..] }, 0) catch {
                     $mod.releaseConn(client_fd);
-                    $mod.pump_posix.close(client_fd);
+                    $mod.posix.close(client_fd);
                 };
                 continue;
             }
 
-            const fd: $mod.pump_posix.fd_t = @intCast(cqe.user_data);
+            const fd: $mod.posix.fd_t = @intCast(cqe.user_data);
             const st = $mod.connState(fd) orelse continue;
 
             if (cqe.res <= 0) {
                 $mod.releaseConn(fd);
-                $mod.pump_posix.close(fd);
+                $mod.posix.close(fd);
                 continue;
             }
             st.len += @intCast(cqe.res);
@@ -836,14 +833,14 @@ fn workerCount() usize {
 
             if (!alive) {
                 $mod.releaseConn(fd);
-                $mod.pump_posix.close(fd);
+                $mod.posix.close(fd);
                 continue;
             }
 
             // Ask for the next bytes, appending to whatever is unfinished.
             _ = ring.recv(@intCast(fd), fd, .{ .buffer = st.buf[st.len..] }, 0) catch {
                 $mod.releaseConn(fd);
-                $mod.pump_posix.close(fd);
+                $mod.posix.close(fd);
             };
         }
     }
@@ -932,7 +929,7 @@ fn workerCount() usize {
             // flow makes. `run` and `reply` are chosen for us that way; `fill` is
             // called from inside a loop body, so this body says which reader it
             // wants. Getting this wrong is invisible on a laptop: the default
-            // body is `pump_posix.read`, which macOS has and a unikernel does not.
+            // body is `posix.read`, which macOS has and a unikernel does not.
             switch ($mod.fill_event.handler__unikraft(.{ .st = &live.st })) {
                 .more => {},
                 // `poll` said readable, so this pump has no idle case — but the
@@ -997,7 +994,7 @@ fn workerCount() usize {
     return .sent;
 }
 
-// The unikernel's writer. `writeAll` above is built on `pump_posix.write`, which has
+// The unikernel's writer. `writeAll` above is built on `posix.write`, which has
 // no implementation on a freestanding target; `send` is the same loop over the
 // socket symbol the pump already uses.
 ~proc reply|unikraft {

@@ -46,6 +46,7 @@ cat > "$BUILD/koru.json" <<EOF
   "paths": {
     "std": "${HOME}/src/koru-build/koru_std",
     "orisha": "./vendor/orisha",
+    "http": "./vendor/http",
     "koru": "./vendor/koru-libs",
     "media": "./src"
   }
