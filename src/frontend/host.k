@@ -16,7 +16,7 @@
 // not lower fetch/swap yet. Entry/boot is Koru. Keyed list (`main.k`) is real
 // Koru IR emit.
 //
-// APP-LOCAL: #player resume, #library-region default, protect: "#player".
+// APP-LOCAL: #persist player, #library-region default, protect: "#persist".
 //
 // Source: src/frontend/host.k + host.kjs. Emit: public/enhance.js.
 // Build: bash scripts/build-frontend.sh
@@ -27,4 +27,4 @@ pub tor enhance-player {}
 
 enhance-player()
 // pop_prefix is the app route; html[data-base] supplies the WebStation alias.
-koru/htmx:run(target: "#library-region", protect: "#player", pop_prefix: "/library")
+koru/htmx:run(target: "#library-region", protect: "#persist", pop_prefix: "/")

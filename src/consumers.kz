@@ -1,5 +1,5 @@
 // media/consumers — named constructions → representations (not Orisha).
-// HTML library/item/watch/settings, JSON-LD, Link, media/art/subtitle bytes.
+// HTML library/item/play/settings, JSON-LD, Link, media/art/subtitle bytes.
 // JSON-LD is a Schema.org projection of the local catalog graph (plus optional
 // semantic overlay and SQLite nfo/hydrate overlays). Reads the graph snapshot;
 // does not load JSON itself. Handlers never call TMDB, TVDB, or ffmpeg.
@@ -379,17 +379,19 @@ fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kin
     out.appendSlice(allocator, "</nav>") catch {};
 }
 
-const KIND_NAV = [_]struct { id: []const u8, always: bool }{
-    .{ .id = "movie", .always = true },
-    .{ .id = "tv", .always = true },
-    .{ .id = "audio", .always = true },
-    .{ .id = "musicVideo", .always = false },
-    .{ .id = "book", .always = false },
-    .{ .id = "extra", .always = false },
+const KIND_NAV = [_]struct { id: []const u8, cap: []const u8 }{
+    .{ .id = "movie", .cap = "play.video" },
+    .{ .id = "tv", .cap = "play.video" },
+    .{ .id = "audio", .cap = "play.audio" },
+    .{ .id = "musicVideo", .cap = "play.video" },
+    .{ .id = "book", .cap = "read.ebook" },
+    .{ .id = "extra", .cap = "browse" },
 };
 
 fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, on_discover: bool) void {
-    out.appendSlice(allocator, "<nav class=\"kinds sidebar-nav\">") catch {};
+    out.appendSlice(allocator, "<nav class=\"kinds sidebar-nav\" data-host-register=\"") catch {};
+    out.appendSlice(allocator, koru_media.koru_graph.hostRegisterText()) catch {};
+    out.appendSlice(allocator, "\">") catch {};
     if (on_discover) {
         out.appendSlice(allocator, "<a class=\"nav-item active\" href=\"") catch {};
         appendAppPath(allocator, out, "/");
@@ -399,8 +401,18 @@ fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_fil
         appendAppPath(allocator, out, "/");
         out.appendSlice(allocator, "\">Discover</a>") catch {};
     }
+    var present: [16][]const u8 = undefined;
+    const kinds = koru_media.koru_graph.listPresentKinds(&present);
     for (KIND_NAV) |item| {
-        if (!item.always and !koru_media.koru_graph.hasKind(item.id)) continue;
+        if (!koru_media.koru_graph.hostHas(item.cap) and !koru_media.koru_graph.hostHas("browse")) continue;
+        var found = false;
+        for (kinds) |k| {
+            if (std.mem.eql(u8, k, item.id)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) continue;
         const label = kindLabel(item.id);
         const on = if (kind_filter) |k| std.mem.eql(u8, k, item.id) else false;
         out.appendSlice(allocator, "<a class=\"nav-item") catch {};
@@ -448,7 +460,7 @@ fn appendAppChrome(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_f
 }
 
 fn appendAppChromeEnd(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    out.appendSlice(allocator, "</div></div></div>") catch {};
+    out.appendSlice(allocator, "</div></div></div><div id=\"persist\" class=\"persist-player\" hidden><div class=\"persist-inner\"></div></div>") catch {};
 }
 
 fn preferMinimal(prefer: ?[]const u8) bool {
@@ -477,6 +489,51 @@ fn renderHttpHtml(allocator: std.mem.Allocator, link: []const u8, html: []const 
     return out.toOwnedSlice(allocator) catch html;
 }
 
+fn appendHero(allocator: std.mem.Allocator, html: *std.ArrayList(u8), hero: koru_media.koru_graph.HeroInfo) void {
+    if (hero.asset_id.len == 0) return;
+    const id_esc = htmlEscaped(allocator, hero.asset_id);
+    defer if (id_esc.ptr != hero.asset_id.ptr) allocator.free(id_esc);
+    const title = htmlEscaped(allocator, hero.title);
+    defer if (title.ptr != hero.title.ptr) allocator.free(title);
+    html.appendSlice(allocator, "<section class=\"hero\" data-hero=\"orisha.hero\"><div class=\"hero-art\">") catch {};
+    html.appendSlice(allocator, "<img class=\"hero-poster\" src=\"") catch {};
+    appendAppPath(allocator, html, "/art/");
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, "\" alt=\"") catch {};
+    html.appendSlice(allocator, title) catch {};
+    html.appendSlice(allocator, "\"/>") catch {};
+    if (hero.trailer_id.len > 0) {
+        const tid = htmlEscaped(allocator, hero.trailer_id);
+        defer if (tid.ptr != hero.trailer_id.ptr) allocator.free(tid);
+        html.appendSlice(allocator, "<video class=\"hero-teaser\" muted loop playsinline preload=\"metadata\" data-src=\"") catch {};
+        appendAppPath(allocator, html, "/media/");
+        html.appendSlice(allocator, tid) catch {};
+        html.appendSlice(allocator, "\"></video>") catch {};
+    } else if (hero.youtube_key.len > 0) {
+        const yt = htmlEscaped(allocator, hero.youtube_key);
+        defer if (yt.ptr != hero.youtube_key.ptr) allocator.free(yt);
+        html.appendSlice(allocator, "<div class=\"hero-teaser\" data-youtube=\"") catch {};
+        html.appendSlice(allocator, yt) catch {};
+        html.appendSlice(allocator, "\"></div>") catch {};
+    }
+    html.appendSlice(allocator, "</div><div class=\"hero-copy\"><h1>") catch {};
+    html.appendSlice(allocator, title) catch {};
+    html.appendSlice(allocator, "</h1>") catch {};
+    if (hero.plot.len > 0) {
+        const plot = htmlEscaped(allocator, hero.plot);
+        defer if (plot.ptr != hero.plot.ptr) allocator.free(plot);
+        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
+        html.appendSlice(allocator, plot) catch {};
+        html.appendSlice(allocator, "</p>") catch {};
+    }
+    html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary play-now\" href=\"") catch {};
+    appendAppPath(allocator, html, "/play/");
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, "\" data-media-id=\"") catch {};
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, "\">Play</a></p></div></section>") catch {};
+}
+
 fn appendArchiveStatus(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
     if (koru_media.koru_graph.hasProjectionIndex()) {
         out.appendSlice(allocator, "<p class=\"archive-note\" role=\"status\">Local archive — catalogue names and links overlay matched titles when a projection index is present.</p>") catch {};
@@ -494,7 +551,10 @@ pub fn homeHtml(allocator: std.mem.Allocator) []const u8 {
     appendScriptEnhance(allocator, &html);
     html.appendSlice(allocator, "</head><body>") catch {};
     appendAppChrome(allocator, &html, null, null, "home");
-    html.appendSlice(allocator, "<p class=\"lede\">A direct-play library — browse, watch, and stream originals without a transcoder.</p>") catch {};
+    if (koru_media.koru_graph.findHero()) |hero| {
+        appendHero(allocator, &html, hero);
+    }
+    html.appendSlice(allocator, "<p class=\"lede\">A direct-play library — browse, play, and stream originals without a transcoder.</p>") catch {};
     appendArchiveStatus(allocator, &html);
     html.appendSlice(allocator, "<p class=\"cta\"><a class=\"primary\" href=\"") catch {};
     appendAppPath(allocator, &html, "/library");
@@ -722,7 +782,9 @@ fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), not
     }
     out.appendSlice(allocator, "<form method=\"post\" action=\"") catch {};
     appendAppPath(allocator, out, "/settings");
-    out.appendSlice(allocator, "\" class=\"settings-form\">") catch {};
+    out.appendSlice(allocator, "\" class=\"settings-form\" hx-post=\"") catch {};
+    appendAppPath(allocator, out, "/settings");
+    out.appendSlice(allocator, "\">") catch {};
 
     out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Libraries</h2>") catch {};
     out.appendSlice(allocator, "<p class=\"lede\">Enabled folders under the media root that the binary indexer walks. Tag each entry by capability (what the library is) and affordances (episode graph, extras, audio-as-extra). Compose still has to bind the DSM share into <code>/media/…</code> — adding a row here does not mount a volume.</p>") catch {};
@@ -780,8 +842,63 @@ fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), not
     out.appendSlice(allocator, alias_esc) catch {};
     out.appendSlice(allocator, "\" maxlength=\"80\" spellcheck=\"false\" placeholder=\"/korisha\"></label></section>") catch {};
 
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Catalogue keys</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">TMDB and TVDB credentials live in this settings file on the config bind. The binary hydrate client reads them; they are never baked into the image. Empty token fields leave the saved value unchanged.</p>") catch {};
+    out.appendSlice(allocator, "<label>TMDB access token <input type=\"password\" name=\"tmdb_token\" value=\"\" maxlength=\"240\" autocomplete=\"off\" placeholder=\"") catch {};
+    if (koru_media.koru_graph.tmdbToken().len > 0) {
+        out.appendSlice(allocator, "unchanged") catch {};
+    } else {
+        out.appendSlice(allocator, "TMDB read token") catch {};
+    }
+    out.appendSlice(allocator, "\"></label>") catch {};
+    out.appendSlice(allocator, "<label>TMDB API key <input type=\"password\" name=\"tmdb_api_key\" value=\"\" maxlength=\"80\" autocomplete=\"off\" placeholder=\"") catch {};
+    if (koru_media.koru_graph.tmdbApiKey().len > 0) {
+        out.appendSlice(allocator, "unchanged") catch {};
+    } else {
+        out.appendSlice(allocator, "optional if token is set") catch {};
+    }
+    out.appendSlice(allocator, "\"></label>") catch {};
+    out.appendSlice(allocator, "<label>TVDB API key <input type=\"password\" name=\"tvdb_api_key\" value=\"\" maxlength=\"80\" autocomplete=\"off\" placeholder=\"") catch {};
+    if (koru_media.koru_graph.tvdbApiKey().len > 0) {
+        out.appendSlice(allocator, "unchanged") catch {};
+    } else {
+        out.appendSlice(allocator, "optional") catch {};
+    }
+    out.appendSlice(allocator, "\"></label>") catch {};
+    out.appendSlice(allocator, "<label>TVDB PIN <input type=\"password\" name=\"tvdb_pin\" value=\"\" maxlength=\"40\" autocomplete=\"off\" placeholder=\"") catch {};
+    if (koru_media.koru_graph.tvdbPin().len > 0) {
+        out.appendSlice(allocator, "unchanged") catch {};
+    } else {
+        out.appendSlice(allocator, "optional") catch {};
+    }
+    out.appendSlice(allocator, "\"></label></section>") catch {};
+
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Sign-in</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">Household password becomes a session cookie. Leave the field blank to keep the current hash. DSM reverse-proxy users can pass a forwarded-user header instead.</p>") catch {};
+    out.appendSlice(allocator, "<label>Password <input type=\"password\" name=\"login_password\" value=\"\" maxlength=\"120\" autocomplete=\"new-password\" placeholder=\"") catch {};
+    if (koru_media.koru_graph.hasLoginPassword()) {
+        out.appendSlice(allocator, "unchanged") catch {};
+    } else {
+        out.appendSlice(allocator, "set a password") catch {};
+    }
+    out.appendSlice(allocator, "\"></label>") catch {};
+    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"hidden\" name=\"trust_proxy_user\" value=\"0\"><input type=\"checkbox\" name=\"trust_proxy_user\" value=\"1\"") catch {};
+    if (koru_media.koru_graph.trustProxyUser()) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Trust proxy user header</label>") catch {};
+    const hdr = koru_media.koru_graph.proxyUserHeader();
+    const hdr_esc = htmlEscaped(allocator, hdr);
+    defer if (hdr_esc.ptr != hdr.ptr) allocator.free(hdr_esc);
+    out.appendSlice(allocator, "<label>Proxy user header <input type=\"text\" name=\"proxy_user_header\" value=\"") catch {};
+    out.appendSlice(allocator, hdr_esc) catch {};
+    out.appendSlice(allocator, "\" maxlength=\"60\" spellcheck=\"false\" placeholder=\"X-Forwarded-User\"></label></section>") catch {};
+
+    out.appendSlice(allocator, "<p class=\"hint\">Host capabilities: <code>") catch {};
+    out.appendSlice(allocator, koru_media.koru_graph.hostRegisterText()) catch {};
+    out.appendSlice(allocator, "</code></p>") catch {};
+
     out.appendSlice(allocator, "<p class=\"settings-actions\"><button type=\"submit\" name=\"action\" value=\"save\" class=\"primary\">Save</button>") catch {};
-    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"reindex\" class=\"secondary\">Reindex</button></p></form></div>") catch {};
+    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"reindex\" class=\"secondary\">Reindex</button>") catch {};
+    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"hydrate\" class=\"secondary\">Hydrate now</button></p></form></div>") catch {};
 }
 
 pub fn settingsHtml(allocator: std.mem.Allocator, notice: []const u8) []const u8 {
@@ -818,6 +935,13 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     var driver: []const u8 = koru_media.koru_graph.catalogDriver();
     var dsn: []const u8 = koru_media.koru_graph.catalogDsn();
     var walk = true;
+    var tmdb_token: []const u8 = "";
+    var tmdb_key: []const u8 = "";
+    var tvdb_key: []const u8 = "";
+    var tvdb_pin: []const u8 = "";
+    var login_password: []const u8 = "";
+    var trust_proxy = koru_media.koru_graph.trustProxyUser();
+    var proxy_hdr: []const u8 = koru_media.koru_graph.proxyUserHeader();
     var it = std.mem.splitScalar(u8, raw, '&');
     while (it.next()) |pair| {
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
@@ -833,6 +957,20 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
             dsn = val;
         } else if (std.mem.eql(u8, key, "walk_on_empty")) {
             walk = formBool(val);
+        } else if (std.mem.eql(u8, key, "tmdb_token")) {
+            tmdb_token = val;
+        } else if (std.mem.eql(u8, key, "tmdb_api_key")) {
+            tmdb_key = val;
+        } else if (std.mem.eql(u8, key, "tvdb_api_key")) {
+            tvdb_key = val;
+        } else if (std.mem.eql(u8, key, "tvdb_pin")) {
+            tvdb_pin = val;
+        } else if (std.mem.eql(u8, key, "login_password")) {
+            login_password = val;
+        } else if (std.mem.eql(u8, key, "trust_proxy_user")) {
+            trust_proxy = formBool(val);
+        } else if (std.mem.eql(u8, key, "proxy_user_header")) {
+            proxy_hdr = val;
         } else if (formSlotIndex(key, "name_")) |idx| {
             if (idx < max) names[idx] = val;
         } else if (formSlotIndex(key, "path_")) |idx| {
@@ -895,10 +1033,21 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     }
     const dsn_trim = std.mem.trim(u8, dsn, " \t");
     const drv_trim = std.mem.trim(u8, driver, " \t");
+    if (std.mem.trim(u8, tmdb_token, " \t").len > 0) koru_media.koru_graph.setTmdbToken(tmdb_token);
+    if (std.mem.trim(u8, tmdb_key, " \t").len > 0) koru_media.koru_graph.setTmdbApiKey(tmdb_key);
+    if (std.mem.trim(u8, tvdb_key, " \t").len > 0) koru_media.koru_graph.setTvdbApiKey(tvdb_key);
+    if (std.mem.trim(u8, tvdb_pin, " \t").len > 0) koru_media.koru_graph.setTvdbPin(tvdb_pin);
+    koru_media.koru_graph.setLoginPassword(login_password);
+    koru_media.koru_graph.setTrustProxyUser(trust_proxy);
+    koru_media.koru_graph.setProxyUserHeader(proxy_hdr);
     if (!koru_media.koru_graph.persistAppSettings(base_trim, drv_trim, dsn_trim, walk, built[0..n])) {
         return settingsHtml(allocator, "Not saved: catalog is not writable.");
     }
     const linked = std.ascii.eqlIgnoreCase(drv_trim, "sqlite");
+    if (std.mem.eql(u8, action, "hydrate")) {
+        koru_media.koru_graph.requestHydrate();
+        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next idle request encodes catalogue JSON into the graph.");
+    }
     if (std.mem.eql(u8, action, "reindex")) {
         koru_media.koru_graph.requestReindex();
         if (!linked) {
@@ -928,12 +1077,20 @@ pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, s
     return renderHttpHtml(allocator, allocator.dupe(u8, frag_l) catch frag_l, body);
 }
 
-fn likelyBrowserPlayable(container: []const u8) bool {
+fn likelyBrowserPlayable(e: koru_media.koru_graph.Entry) bool {
+    const c = e.container;
     const ok = [_][]const u8{ "mp4", "m4v", "webm", "ogg", "ogv", "mp3", "m4a", "aac", "wav", "flac" };
+    var container_ok = false;
     for (ok) |cand| {
-        if (std.mem.eql(u8, container, cand)) return true;
+        if (std.ascii.eqlIgnoreCase(c, cand)) {
+            container_ok = true;
+            break;
+        }
     }
-    return false;
+    if (!container_ok) return false;
+    if (std.ascii.eqlIgnoreCase(e.video_codec, "hevc") or std.ascii.eqlIgnoreCase(e.video_codec, "h265") or std.ascii.eqlIgnoreCase(e.video_codec, "mpeg2") or std.ascii.eqlIgnoreCase(e.video_codec, "vc1")) return false;
+    if (std.ascii.indexOfIgnoreCase(e.video_brand, "hev1") != null or std.ascii.indexOfIgnoreCase(e.video_brand, "hvc1") != null) return false;
+    return true;
 }
 
 fn entryHasProbe(e: koru_media.koru_graph.Entry) bool {
@@ -1359,7 +1516,7 @@ fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), fi
         const id_esc = htmlEscaped(allocator, f.id);
         defer if (id_esc.ptr != f.id.ptr) allocator.free(id_esc);
         html.appendSlice(allocator, " <a class=\"chip trailer\" href=\"") catch {};
-        appendAppPath(allocator, html, "/watch/");
+        appendAppPath(allocator, html, "/play/");
         html.appendSlice(allocator, id_esc) catch {};
         html.appendSlice(allocator, "\">") catch {};
         if (n == 0) {
@@ -1538,7 +1695,7 @@ fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: 
         const ep_id = htmlEscaped(allocator, f.id);
         defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
         html.appendSlice(allocator, "<li><a href=\"") catch {};
-        appendAppPath(allocator, html, "/watch/");
+        appendAppPath(allocator, html, "/play/");
         html.appendSlice(allocator, ep_id) catch {};
         html.appendSlice(allocator, "\">") catch {};
         if (f.episode > 0) {
@@ -1579,7 +1736,7 @@ fn appendEditions(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files:
             html.appendSlice(allocator, "</strong>") catch {};
         } else {
             html.appendSlice(allocator, "<a href=\"") catch {};
-            appendAppPath(allocator, html, "/watch/");
+            appendAppPath(allocator, html, "/play/");
             html.appendSlice(allocator, fid) catch {};
             html.appendSlice(allocator, "\">") catch {};
             html.appendSlice(allocator, cap_esc) catch {};
@@ -1621,7 +1778,7 @@ fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), file
             const ep_id = htmlEscaped(allocator, f.id);
             defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
             html.appendSlice(allocator, "<li><a href=\"") catch {};
-            appendAppPath(allocator, html, "/watch/");
+            appendAppPath(allocator, html, "/play/");
             html.appendSlice(allocator, ep_id) catch {};
             html.appendSlice(allocator, "\">") catch {};
             html.appendSlice(allocator, ep_title) catch {};
@@ -1694,10 +1851,12 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             }
             if (!series) appendPhysicalPlain(allocator, &html, e, container);
         }
-        html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary\" href=\"") catch {};
-        appendAppPath(allocator, &html, "/watch/");
+        html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary play-now\" href=\"") catch {};
+        appendAppPath(allocator, &html, "/play/");
         html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "\">watch</a>") catch {};
+        html.appendSlice(allocator, "\" data-media-id=\"") catch {};
+        html.appendSlice(allocator, id_esc) catch {};
+        html.appendSlice(allocator, "\">Play</a>") catch {};
         appendTrailerChips(allocator, &html, files);
         html.appendSlice(allocator, " <a href=\"") catch {};
         appendAppPath(allocator, &html, "/media/");
@@ -1733,7 +1892,7 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         appendAppPath(allocator, &link, "/library/");
         link.appendSlice(allocator, kind_esc) catch {};
         link.appendSlice(allocator, ">; rel=\"collection\", <") catch {};
-        appendAppPath(allocator, &link, "/watch/");
+        appendAppPath(allocator, &link, "/play/");
         link.appendSlice(allocator, id_esc) catch {};
         link.appendSlice(allocator, ">; rel=\"related\", <") catch {};
         appendAppPath(allocator, &link, "/media/");
@@ -1765,7 +1924,115 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
 }
 
-pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+fn appendPlayExternal(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, id_esc: []const u8, container: []const u8, as_warning: bool) void {
+    if (as_warning) {
+        html.appendSlice(allocator, "<p class=\"capability\" role=\"status\">This <code>") catch {};
+        html.appendSlice(allocator, container) catch {};
+        html.appendSlice(allocator, "</code> file may not play in the browser.</p>") catch {};
+    }
+    html.appendSlice(allocator, "<section class=\"play-external\" data-play=\"external\"><h2 class=\"pane-label\">Play on host</h2><p>") catch {};
+    html.appendSlice(allocator, "<a href=\"") catch {};
+    appendAppPath(allocator, html, "/media/");
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, "?download=1\">download</a> · <a href=\"") catch {};
+    appendAppPath(allocator, html, "/media/");
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, "\">stream URL</a> · <a rel=\"dlna\" href=\"") catch {};
+    appendAppPath(allocator, html, "/play/");
+    html.appendSlice(allocator, id_esc) catch {};
+    html.appendSlice(allocator, ".m3u\">playlist</a></p></section>") catch {};
+    _ = e;
+}
+
+pub fn playM3u(allocator: std.mem.Allocator, id: []const u8, host: ?[]const u8) []const u8 {
+    const e = koru_media.koru_graph.findEntry(id) orelse {
+        return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    };
+    const h = host orelse "127.0.0.1";
+    var url_buf: [512]u8 = undefined;
+    const url = std.fmt.bufPrint(&url_buf, "http://{s}{s}/media/{s}", .{ h, bp(), e.id }) catch return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    var body: std.ArrayList(u8) = .empty;
+    body.appendSlice(allocator, "#EXTM3U\r\n#EXTINF:-1,") catch {};
+    body.appendSlice(allocator, e.title) catch {};
+    body.appendSlice(allocator, "\r\n") catch {};
+    body.appendSlice(allocator, url) catch {};
+    body.appendSlice(allocator, "\r\n") catch {};
+    const text = body.toOwnedSlice(allocator) catch "";
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "HTTP/1.1 200 OK\r\nContent-Type: audio/x-mpegurl\r\nContent-Length: ") catch {};
+    var lb: [16]u8 = undefined;
+    const ls = std.fmt.bufPrint(&lb, "{d}", .{text.len}) catch "0";
+    out.appendSlice(allocator, ls) catch {};
+    out.appendSlice(allocator, "\r\nContent-Disposition: attachment; filename=\"") catch {};
+    out.appendSlice(allocator, e.id) catch {};
+    out.appendSlice(allocator, ".m3u\"\r\nLink: <") catch {};
+    appendAppPath(allocator, &out, "/media/");
+    out.appendSlice(allocator, e.id) catch {};
+    out.appendSlice(allocator, ">; rel=\"alternate\"\r\nConnection: close\r\n\r\n") catch {};
+    out.appendSlice(allocator, text) catch {};
+    return out.toOwnedSlice(allocator) catch text;
+}
+
+pub fn loginHtml(allocator: std.mem.Allocator, notice: []const u8, status: u16) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    html.appendSlice(allocator, "<!doctype html>") catch {};
+    appendHtmlOpen(allocator, &html);
+    html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in · Koru Media</title>") catch {};
+    appendStylesheet(allocator, &html);
+    appendScriptEnhance(allocator, &html);
+    html.appendSlice(allocator, "</head><body class=\"login-body\"><div class=\"login-card\"><h1>Sign in</h1>") catch {};
+    if (notice.len > 0) {
+        html.appendSlice(allocator, "<p class=\"notice\" role=\"status\">") catch {};
+        const n_esc = htmlEscaped(allocator, notice);
+        defer if (n_esc.ptr != notice.ptr) allocator.free(n_esc);
+        html.appendSlice(allocator, n_esc) catch {};
+        html.appendSlice(allocator, "</p>") catch {};
+    }
+    html.appendSlice(allocator, "<form method=\"post\" action=\"") catch {};
+    appendAppPath(allocator, &html, "/login");
+    html.appendSlice(allocator, "\" class=\"settings-form\" hx-post=\"") catch {};
+    appendAppPath(allocator, &html, "/login");
+    html.appendSlice(allocator, "\"><label>Password <input type=\"password\" name=\"password\" required autocomplete=\"current-password\"></label>") catch {};
+    html.appendSlice(allocator, "<p class=\"settings-actions\"><button type=\"submit\" class=\"primary\">Sign in</button></p></form></div></body></html>") catch {};
+    const body = html.toOwnedSlice(allocator) catch "login error";
+    var out: std.ArrayList(u8) = .empty;
+    const line: []const u8 = if (status == 401) "HTTP/1.1 401 Unauthorized\r\n" else "HTTP/1.1 200 OK\r\n";
+    out.appendSlice(allocator, line) catch {};
+    out.appendSlice(allocator, "Content-Type: text/html; charset=utf-8\r\nContent-Length: ") catch {};
+    var lb: [16]u8 = undefined;
+    const ls = std.fmt.bufPrint(&lb, "{d}", .{body.len}) catch "0";
+    out.appendSlice(allocator, ls) catch {};
+    out.appendSlice(allocator, "\r\nLink: <") catch {};
+    appendAppPath(allocator, &out, "/login");
+    out.appendSlice(allocator, ">; rel=\"self\"\r\nConnection: close\r\n\r\n") catch {};
+    out.appendSlice(allocator, body) catch {};
+    return out.toOwnedSlice(allocator) catch body;
+}
+
+pub fn loginPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 {
+    const raw = body orelse "";
+    var password: []const u8 = "";
+    var it = std.mem.splitScalar(u8, raw, '&');
+    while (it.next()) |pair| {
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (std.mem.eql(u8, pair[0..eq], "password")) password = formUnescape(allocator, pair[eq + 1 ..]);
+    }
+    if (!koru_media.koru_graph.passwordMatches(password)) {
+        return loginHtml(allocator, "Sign-in failed.", 401);
+    }
+    var cookie_buf: [384]u8 = undefined;
+    const cookie = koru_media.koru_auth.setCookieHeader(&cookie_buf, "local", "password");
+    const page = loginHtml(allocator, "Signed in.", 200);
+    // Splice Set-Cookie after the status line.
+    const nl = std.mem.indexOf(u8, page, "\r\n") orelse return page;
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, page[0 .. nl + 2]) catch {};
+    out.appendSlice(allocator, cookie) catch {};
+    out.appendSlice(allocator, page[nl + 2 ..]) catch {};
+    return out.toOwnedSlice(allocator) catch page;
+}
+
+pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     if (koru_media.koru_graph.findEntry(id)) |e| {
         const tag = koru_media.koru_graph.playerTag(e);
         const join = koru_media.koru_graph.findSemantic(id);
@@ -1781,13 +2048,14 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         var html: std.ArrayList(u8) = .empty;
         html.appendSlice(allocator, "<!doctype html>") catch {};
         appendHtmlOpen(allocator, &html);
-        html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Watch ") catch {};
+        html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Play ") catch {};
         html.appendSlice(allocator, title) catch {};
         html.appendSlice(allocator, " · Koru Media</title>") catch {};
         appendStylesheet(allocator, &html);
         appendScriptEnhance(allocator, &html);
         html.appendSlice(allocator, "</head><body>") catch {};
-        appendAppChrome(allocator, &html, e.kind, null, "watch");
+        const kino = std.mem.eql(u8, tag, "video");
+        appendAppChrome(allocator, &html, e.kind, null, if (kino) "play kino" else "play");
         html.appendSlice(allocator, "<h1>") catch {};
         html.appendSlice(allocator, title) catch {};
         html.appendSlice(allocator, "</h1>") catch {};
@@ -1798,21 +2066,15 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         } else if (join) |s| {
             appendSemanticBlock(allocator, &html, s, false);
         }
-        if (!likelyBrowserPlayable(e.container) and (std.mem.eql(u8, tag, "video") or std.mem.eql(u8, tag, "audio"))) {
-            var note_buf: [512]u8 = undefined;
-            const note = if (e.video_brand.len > 0) blk: {
-                const brand = htmlEscaped(allocator, e.video_brand);
-                defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
-                break :blk std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file (brand <code>{s}</code>) may not play in the browser. Use <a href=\"{s}/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, brand, bp(), id_esc }) catch "";
-            } else std.fmt.bufPrint(&note_buf, "<p class=\"capability\" role=\"status\">This <code>{s}</code> file may not play in the browser. Use <a href=\"{s}/media/{s}?download=1\">download</a> if playback fails.</p>", .{ container, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, note) catch {};
+        if (!likelyBrowserPlayable(e) and (std.mem.eql(u8, tag, "video") or std.mem.eql(u8, tag, "audio"))) {
+            appendPlayExternal(allocator, &html, e, id_esc, container, true);
         }
         if (!split) {
             var probe_buf: [512]u8 = undefined;
             const probe = formatProbeNote(allocator, e, &probe_buf);
             if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
         }
-        html.appendSlice(allocator, "<div class=\"watch-stage\">") catch {};
+        html.appendSlice(allocator, "<div class=\"play-stage watch-stage\">") catch {};
         // Player owns identity outside any hx-target / #library-region.
         // Native <audio>/<video> when the browser can; otherwise a plugin slot.
         if (std.mem.eql(u8, tag, "audio")) {
@@ -1850,6 +2112,29 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             const files = koru_media.koru_graph.collectWorkFiles(e.path, &work_files);
             if (!filesAreSeries(e.kind, files)) appendEditions(allocator, &html, files, e.id);
             appendExtrasFrom(allocator, &html, files);
+            const ent_raw = koru_media.koru_graph.entityForAsset(e.id);
+            var ent_copy: [192]u8 = undefined;
+            if (ent_raw.len > 0 and ent_raw.len <= ent_copy.len) {
+                @memcpy(ent_copy[0..ent_raw.len], ent_raw);
+                const ent = ent_copy[0..ent_raw.len];
+                var nxt_buf: [8]koru_media.koru_graph.Related = undefined;
+                const nxt = koru_media.koru_graph.relate(ent, "next", &nxt_buf);
+                if (nxt.len > 0 and nxt[0].id.len > 0) {
+                    var obj_copy: [192]u8 = undefined;
+                    if (nxt[0].id.len <= obj_copy.len) {
+                        @memcpy(obj_copy[0..nxt[0].id.len], nxt[0].id);
+                        const nid = koru_media.koru_graph.assetForEntity(obj_copy[0..nxt[0].id.len]);
+                        if (nid.len > 0) {
+                            const nesc = htmlEscaped(allocator, nid);
+                            defer if (nesc.ptr != nid.ptr) allocator.free(nesc);
+                            html.appendSlice(allocator, "<p class=\"play-next\" data-rel=\"next\"><a href=\"") catch {};
+                            appendAppPath(allocator, &html, "/play/");
+                            html.appendSlice(allocator, nesc) catch {};
+                            html.appendSlice(allocator, "\">Next episode</a></p>") catch {};
+                        }
+                    }
+                }
+            }
         }
         html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
         appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0, true, true);
@@ -1859,7 +2144,7 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         const body = html.toOwnedSlice(allocator) catch "watch error";
         var link: std.ArrayList(u8) = .empty;
         link.appendSlice(allocator, "<") catch {};
-        appendAppPath(allocator, &link, "/watch/");
+        appendAppPath(allocator, &link, "/play/");
         link.appendSlice(allocator, id_esc) catch {};
         link.appendSlice(allocator, ">; rel=\"self\", <") catch {};
         appendAppPath(allocator, &link, "/item/");
@@ -1868,6 +2153,10 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         appendAppPath(allocator, &link, "/media/");
         link.appendSlice(allocator, id_esc) catch {};
         link.appendSlice(allocator, ">; rel=\"related\"") catch {};
+        link.appendSlice(allocator, ", <") catch {};
+        appendAppPath(allocator, &link, "/play/");
+        link.appendSlice(allocator, id_esc) catch {};
+        link.appendSlice(allocator, ".m3u>; rel=\"dlna\"") catch {};
         if (e.subtitle.len > 0) {
             link.appendSlice(allocator, ", <") catch {};
             appendAppPath(allocator, &link, "/subtitles/");

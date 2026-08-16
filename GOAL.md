@@ -107,7 +107,7 @@ The first resource vocabulary is:
 - `/library` — library root.
 - `/library/{kind}` — collection projection, with sorting/filtering/pagination affordances.
 - `/item/{id}` — item representation and available actions.
-- `/watch/{id}` — player projection.
+- `/play/{id}` — player projection.
 - `/media/{id}` — original byte resource.
 - `/art/{id}` — precomputed artwork resource, if present.
 - `/subtitles/{id}` or an equivalent related resource, only if subtitle delivery is implemented.
@@ -290,7 +290,7 @@ Add `/media/{id}` with `GET`, `HEAD`, MIME, length, and single-range support. Us
 
 ### Step 7: add item/player pages
 
-Add `/item/{id}` and `/watch/{id}`. Keep the media element outside any fragment region that can be replaced. Include play, download, parent, and available related-resource links.
+Add `/item/{id}` and `/play/{id}`. Keep the media element outside any fragment region that can be replaced. Include play, download, parent, and available related-resource links.
 
 ### Step 8: add hypermedia enhancement
 

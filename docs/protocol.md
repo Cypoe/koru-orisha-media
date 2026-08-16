@@ -12,7 +12,7 @@ Every representation should have a canonical URL and may include `Link` headers 
 - `Link: </item/{id}?format=jsonld>; rel="alternate"; type="application/ld+json"`
 - Provider catalogue URLs (TMDB, IMDb) appear as HTML links and `rel="related"` only when present on the local snapshot
 
-When a join hits, item/watch HTML splits **catalogue** (prefetched named constructions: `orisha.item` display strings, `orisha.links` provider URLs) from **local archive** (filename, path, container, probe, bytes). Orisha scrapes `projections[]` and merges by asset id; handlers never call TMDB or ffprobe, and they do not read representation fields off `Entity`. Missing `semantic.json`, an empty `projections[]`, or missing constructions leaves physical item HTML unchanged and playback intact. `/` and `/library` always list local manifest files; catalogue chips appear only when those constructions exist.
+When a join hits, item/play HTML splits **catalogue** (prefetched named constructions: `orisha.item` display strings, `orisha.links` provider URLs) from **local archive** (filename, path, container, probe, bytes). Orisha scrapes `projections[]` and merges by asset id; handlers never call TMDB or ffprobe, and they do not read representation fields off `Entity`. Missing `semantic.json`, an empty `projections[]`, or missing constructions leaves physical item HTML unchanged and playback intact. `/` and `/library` always list local manifest files; catalogue chips appear only when those constructions exist.
 
 ## Methods
 

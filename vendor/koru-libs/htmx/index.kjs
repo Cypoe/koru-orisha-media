@@ -115,12 +115,38 @@ function fetchAndSwap(url, target, pushUrl, fallbackUrl, protect, defaultTarget)
         });
 
         document.addEventListener("submit", function (ev) {
-            const form = ev.target.closest && ev.target.closest("form[hx-get]");
+            const form = ev.target.closest && ev.target.closest("form[hx-get], form[hx-post]");
             if (!form) return;
-            const url = hxGetUrl(form);
             const dest = form.getAttribute("hx-target") || defaultTarget;
+            const isPost = form.hasAttribute("hx-post");
+            if (isPost && !form.getAttribute("hx-target")) return;
+            const url = isPost
+                ? (typeof withAppBase === "function"
+                    ? withAppBase(form.getAttribute("hx-post") || form.getAttribute("action") || "")
+                    : form.getAttribute("hx-post") || form.getAttribute("action"))
+                : hxGetUrl(form);
             if (!url) return;
             ev.preventDefault();
+            if (isPost) {
+                const fd = new FormData(form);
+                fetch(url, {
+                    method: "POST",
+                    headers: fragmentHeaders(),
+                    body: new URLSearchParams(fd),
+                })
+                    .then(function (r) {
+                        return r.text();
+                    })
+                    .then(function (html) {
+                        if (!swapInto(dest, html, null, protectSel, defaultTarget)) {
+                            location.href = url;
+                        }
+                    })
+                    .catch(function () {
+                        location.href = url;
+                    });
+                return;
+            }
             const push = form.getAttribute("hx-push-url") === "true" ? url : null;
             fetchAndSwap(url, dest, push, url, protectSel, defaultTarget);
         });

@@ -107,7 +107,7 @@ function withAppBase(pathAndSearch) {
     return base + path + search;
 }
 function mediaIdFromPath() {
-    const m = location.pathname.match(/\/watch\/([^/]+)/);
+    const m = location.pathname.match(/\/play\/([^/.]+)/);
     return m ? decodeURIComponent(m[1]) : null;
 }
 function resumeKey(id) {
@@ -163,18 +163,8 @@ const main_module = {
     handler(__koru_input) {
       if (typeof document === "undefined") return;
 
-      function enhancePlayer() {
-      const player = document.getElementById("player");
-      if (!player) return;
-      const kind = player.getAttribute("data-player") || player.tagName.toLowerCase();
-      const plugins = window.KoruPlayers || {};
-      if (typeof plugins[kind] === "function") {
-      plugins[kind](player);
-      return;
-      }
-      if (!("currentTime" in player)) return;
-      const id = player.getAttribute("data-media-id") || mediaIdFromPath();
-      if (!id) return;
+      function bindResume(player, id) {
+      if (!("currentTime" in player) || !id) return;
       try {
       const saved = localStorage.getItem(resumeKey(id));
       if (saved) {
@@ -220,6 +210,126 @@ const main_module = {
       } catch (_) {}
       }
 
+      function showExternal(player) {
+      const box = document.querySelector(".play-external");
+      if (box) {
+      box.hidden = false;
+      return;
+      }
+      if (!player || !player.getAttribute) return;
+      const id = player.getAttribute("data-media-id");
+      if (!id) return;
+      const note = document.createElement("section");
+      note.className = "play-external capability";
+      note.setAttribute("data-play", "external");
+      const base = appBase();
+      note.innerHTML =
+      "<p>This file did not play in the browser. <a href=\"" +
+      base +
+      "/media/" +
+      id +
+      "?download=1\">download</a> · <a href=\"" +
+      base +
+      "/media/" +
+      id +
+      "\">stream URL</a> · <a rel=\"dlna\" href=\"" +
+      base +
+      "/play/" +
+      id +
+      ".m3u\">playlist</a></p>";
+      player.parentNode && player.parentNode.insertBefore(note, player.nextSibling);
+      }
+
+      function bindCanPlay(player) {
+      if (!player || !player.canPlayType) return;
+      const src = player.getAttribute("src") || "";
+      const mime = player.getAttribute("data-mime") || "";
+      let type = mime;
+      if (!type && /\.mkv(\?|$)/i.test(src)) type = "video/x-matroska";
+      if (type && player.canPlayType(type) === "") showExternal(player);
+      player.addEventListener("error", function () {
+      showExternal(player);
+      });
+      }
+
+      function popPersist(id, kind) {
+      const persist = document.getElementById("persist");
+      if (!persist) {
+      location.href = withAppBase("/play/" + id);
+      return;
+      }
+      persist.hidden = false;
+      persist.classList.add("persist-open");
+      const inner = persist.querySelector(".persist-inner") || persist;
+      const tag = kind === "audio" ? "audio" : "video";
+      inner.innerHTML =
+      "<" +
+      tag +
+      " id=\"player\" data-player=\"" +
+      tag +
+      "\" data-media-id=\"" +
+      id +
+      "\" controls src=\"" +
+      appBase() +
+      "/media/" +
+      id +
+      "\"></" +
+      tag +
+      ">";
+      const player = document.getElementById("player");
+      bindResume(player, id);
+      bindCanPlay(player);
+      if (player && player.play) player.play().catch(function () {
+      showExternal(player);
+      });
+      document.documentElement.classList.remove("kino");
+      const layout = document.querySelector(".layout");
+      if (layout) layout.classList.remove("kino");
+      }
+
+      function enhanceHero() {
+      const teaser = document.querySelector(".hero-teaser[data-src]");
+      if (!teaser) return;
+      const src = teaser.getAttribute("data-src");
+      if (!src) return;
+      teaser.setAttribute("src", src);
+      const io = typeof IntersectionObserver === "function"
+      ? new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+      if (en.isIntersecting) teaser.play && teaser.play().catch(function () {});
+      else teaser.pause && teaser.pause();
+      });
+      })
+      : null;
+      if (io) io.observe(teaser);
+      else teaser.play && teaser.play().catch(function () {});
+      }
+
+      function enhancePlayer() {
+      const player = document.getElementById("player");
+      if (player) {
+      const kind = player.getAttribute("data-player") || player.tagName.toLowerCase();
+      const plugins = window.KoruPlayers || {};
+      if (typeof plugins[kind] === "function") {
+      plugins[kind](player);
+      } else {
+      const id = player.getAttribute("data-media-id") || mediaIdFromPath();
+      bindResume(player, id);
+      bindCanPlay(player);
+      }
+      }
+      enhanceHero();
+      document.addEventListener("click", function (ev) {
+      const a = ev.target.closest && ev.target.closest("a.play-now");
+      if (!a) return;
+      const id = a.getAttribute("data-media-id");
+      if (!id) return;
+      ev.preventDefault();
+      const kind = a.getAttribute("data-player") || "video";
+      popPersist(id, kind);
+      });
+      }
+
       if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", enhancePlayer);
       } else {
@@ -253,12 +363,38 @@ const main_module = {
       });
 
       document.addEventListener("submit", function (ev) {
-      const form = ev.target.closest && ev.target.closest("form[hx-get]");
+      const form = ev.target.closest && ev.target.closest("form[hx-get], form[hx-post]");
       if (!form) return;
-      const url = hxGetUrl(form);
       const dest = form.getAttribute("hx-target") || defaultTarget;
+      const isPost = form.hasAttribute("hx-post");
+      if (isPost && !form.getAttribute("hx-target")) return;
+      const url = isPost
+      ? (typeof withAppBase === "function"
+      ? withAppBase(form.getAttribute("hx-post") || form.getAttribute("action") || "")
+      : form.getAttribute("hx-post") || form.getAttribute("action"))
+      : hxGetUrl(form);
       if (!url) return;
       ev.preventDefault();
+      if (isPost) {
+      const fd = new FormData(form);
+      fetch(url, {
+      method: "POST",
+      headers: fragmentHeaders(),
+      body: new URLSearchParams(fd),
+      })
+      .then(function (r) {
+      return r.text();
+      })
+      .then(function (html) {
+      if (!swapInto(dest, html, null, protectSel, defaultTarget)) {
+      location.href = url;
+      }
+      })
+      .catch(function () {
+      location.href = url;
+      });
+      return;
+      }
       const push = form.getAttribute("hx-push-url") === "true" ? url : null;
       fetchAndSwap(url, dest, push, url, protectSel, defaultTarget);
       });
@@ -300,7 +436,7 @@ const main_module = {
     main_module.enhance_player_event.handler({});
   },
   flow1() {
-    main_module.run_event.handler({ target: "#library-region", protect: "#player", pop_prefix: "/library" });
+    main_module.run_event.handler({ target: "#library-region", protect: "#persist", pop_prefix: "/" });
   },
 };
 main_module.flow0();

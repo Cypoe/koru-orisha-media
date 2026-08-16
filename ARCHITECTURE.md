@@ -17,7 +17,7 @@ The primary resources are collections and media entries:
 - `/library` — the root collection and navigation affordances.
 - `/library/{kind}` — a collection projection with links for sorting, filtering, and pagination.
 - `/media/{id}` — the original media byte resource.
-- `/watch/{id}` — a player projection around the media resource.
+- `/play/{id}` — a player projection around the media resource.
 - `/art/{id}` — an optional precomputed artwork resource.
 - `/fragments/...` — partial representations for enhanced clients.
 

@@ -4,8 +4,8 @@ ID=m_994718
 echo '--- /item'
 curl -sS "http://127.0.0.1:3090/item/$ID"
 echo
-echo '--- /watch'
-curl -sS "http://127.0.0.1:3090/watch/$ID"
+echo '--- /play'
+curl -sS "http://127.0.0.1:3090/play/$ID"
 echo
 echo '--- GET /media'
 curl -sS -D- "http://127.0.0.1:3090/media/$ID" -o /tmp/media.bin | head -20

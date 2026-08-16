@@ -17,6 +17,19 @@ pub const ContentType = koru_http.ContentType;
     // Strip alias (`KORU_BASE_PATH` / `X-Forwarded-Prefix`) before matching routes.
     const path = koru_media.koru_graph.beginRequest(req.path, req.header("X-Forwarded-Prefix"));
     const pq = koru_media.koru_consumers.parseQueryString(req.query);
+    const authed = koru_media.koru_auth.authorize(req, path);
+    if (!authed) {
+        return .{ .status = 401, .body = koru_media.koru_consumers.loginHtml(allocator, "Sign in to continue.", 401), .content_type = null };
+    }
+
+    if (std.mem.eql(u8, path, "/login")) {
+        if (std.mem.eql(u8, method, "GET")) {
+            return .{ .status = 200, .body = koru_media.koru_consumers.loginHtml(allocator, "", 200), .content_type = null };
+        }
+        if (std.mem.eql(u8, method, "POST")) {
+            return .{ .status = 200, .body = koru_media.koru_consumers.loginPost(allocator, req.body), .content_type = null };
+        }
+    }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/")) {
         return .{ .status = 200, .body = koru_media.koru_consumers.homeHtml(allocator), .content_type = null };
@@ -53,9 +66,14 @@ pub const ContentType = koru_http.ContentType;
         }
         return .{ .status = 200, .body = koru_media.koru_consumers.itemHtml(allocator, id), .content_type = null };
     }
-    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/watch/")) {
-        const id = path["/watch/".len..];
-        return .{ .status = 200, .body = koru_media.koru_consumers.watchHtml(allocator, id), .content_type = null };
+    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/play/") and std.mem.endsWith(u8, path, ".m3u")) {
+        const rest = path["/play/".len..];
+        const id = rest[0 .. rest.len - ".m3u".len];
+        return .{ .status = 200, .body = koru_media.koru_consumers.playM3u(allocator, id, req.header("Host")), .content_type = null };
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/play/")) {
+        const id = path["/play/".len..];
+        return .{ .status = 200, .body = koru_media.koru_consumers.playHtml(allocator, id), .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/art/")) {
         const id = path["/art/".len..];
@@ -89,4 +107,12 @@ pub const ContentType = koru_http.ContentType;
         return .{ .status = r.status, .body = r.body, .content_type = r.content_type };
     }
     return .{ .status = 404, .body = "Not Found", .content_type = null };
+}
+
+~proc reindex|zig {
+    koru_media.koru_graph.maybeReindexFlag();
+}
+
+~proc hydrate-catalog|zig {
+    koru_media.koru_hydrate.run();
 }

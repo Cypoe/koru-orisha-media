@@ -3,10 +3,15 @@
 // Sibling stems under src/ (Koru directory modules, same as orisha/lib):
 //   index.k / index.kz     this file — route table → representations
 //   graph.k / graph.kz     physical catalog (SQLite) + semantic overlay
-//   catalog.k / catalog.kz SQLite index + filesystem walker
+//   catalog.k / catalog.kz SQLite index + filesystem walker + graph store
 //   consumers.k / consumers.kz  named constructions → HTML / JSON-LD / bytes
+//   auth.k / auth.kz            principal + cookie session
+//   hydrate.k / hydrate.kz      TMDB/TVDB client (pump `! hydrate`, not GET)
 // Routes include /settings (mounts, base path, catalog store, Reindex flag).
-// Handlers never call TMDB, TVDB, or ffmpeg. Reindex is catalog.kz via reindex.requested.
+// Handlers never call TMDB, TVDB, or ffmpeg. Reindex is catalog.kz via
+// `media:reindex` on the HTTP pump's `! walk`. Hydrate is hydrate.kz via
+// `media:hydrate` on `! hydrate`. Host capabilities (explain):
+// browse, filter, play.video, play.audio, play.external, read.ebook, view.image.
 // Zig companions implement the work; main.k wires http:handler → media:dispatch
 // (Koru ignores http:handler if it lives only inside import media).
 // Do not `import media/graph` or `import media/consumers` here — directory
@@ -19,3 +24,6 @@
 //   src/json/              usage of vendor/json (json-publish CLI; not in this binary)
 
 pub tor dispatch { req: *Request } -> { status: u16, body: string, content_type: ?ContentType }
+
+pub tor reindex {}
+pub tor hydrate-catalog {}
