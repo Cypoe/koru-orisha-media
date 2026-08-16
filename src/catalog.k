@@ -3,5 +3,9 @@
 // TMDB, TVDB, or ffmpeg. Overlay tables: nfo_works / nfo_episodes (disk nfo)
 // and hydrate_works (offline TMDB/TVDB job, keyed by [tt…] imdb_id). Indexer
 // fills nfo from sibling .nfo / tvshow.nfo; hydrate_works is host-side only.
-// library_roots (Settings) chooses which folders under KORU_MEDIA_ROOT to walk.
-// NAS indexer is this module's reindex, not host Python.
+// library_roots (Settings) chooses which folders under KORU_MEDIA_ROOT to walk
+// and tags each with capability/affordances. NAS indexer is this module's
+// reindex, not host Python. Catalog file lives on the /data host bind.
+// The walk skips DSM @eaDir/#recycle, stats DT_UNKNOWN via the dir fd, and
+// ingests with open+fstat (not statx). AccessDenied on one folder does not
+// abort the tree. `..` is rejected as a path component so `HEVC..AI` still indexes.

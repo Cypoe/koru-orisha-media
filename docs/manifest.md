@@ -4,15 +4,15 @@ The manifest is a published snapshot, not a request-time database dependency.
 
 ## Library roots
 
-Mount **one** media root that contains Jellyfin-style folders. Settings persists which of those folders to walk (`library_roots` in the catalog). Defaults: `movies`, `shows`, `music`, `books`, `musicVideos`. Disabled mounts are skipped. The NAS indexer is `catalog.kz` `reindex` (binary), not `scripts/index_media.py`. Kind still comes from the first path component:
+Mount **one** media root that contains library folders. Settings persists which of those folders to walk (`library_roots`, also mirrored in `/config/settings.conf`) and tags each with a **capability** (movies / series / music / books / music_videos / mixed) plus **affordances** (episode graph, extras folders, audio-as-extra). Defaults: `movies`, `shows`, `music`, `books`, `musicVideos`. Disabled mounts are skipped. The NAS indexer is `catalog.kz` `reindex` (binary), not `scripts/index_media.py`. Kind comes from the mount’s capability, then extras folders, then extension:
 
-| folder | `kind` | example |
-|--------|--------|---------|
-| `movies/` | `movie` | `movies/Arrival (2016).mp4` |
-| `shows/` | `tv` | `shows/Series/S01E01.mkv` (no TV fixture in CI yet) |
-| `music/` | `audio` | `music/beep.wav` |
+| capability | `kind` | example |
+|------------|--------|---------|
+| movies | `movie` (audio → `extra` when tagged) | `movies/Arrival (2016).mp4` |
+| series | `tv` (audio → `extra` when tagged) | `shows/Series/S01E01.mkv` |
+| music | `audio` | `music/beep.wav` |
 
-Files outside those folders fall back to extension (video → `movie`, audio → `audio`). Directory wins over extension: `movies/bonus.wav` is still `movie`.
+Files under an unknown folder fall back to extension (video → `movie`, audio → `audio`). Adding a Settings row does not bind a Synology volume — Compose still needs a host bind under `/media/…`.
 
 Compose binds `./media:/media`. Prefer `./media/movies`, `./media/shows`, `./media/music` over three separate binds so the walker stays one walk (`KORU_MEDIA_ROOT=/media`).
 

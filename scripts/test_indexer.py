@@ -409,6 +409,9 @@ class IndexerTests(unittest.TestCase):
             (trailers / "Andor - Official Trailer.mp4").write_bytes(b"vid")
             (ost / "01 - Andor (Main Title Theme) - Episode 5.mp3").write_bytes(b"ID3")
             (series / "01 - Andor (Main Title Theme) - Episode 5.flac").write_bytes(b"fLaC")
+            score = series / "extras" / "Andor Vol. 1 (Original Score)"
+            score.mkdir(parents=True)
+            (score / "01 - Theme.flac").write_bytes(b"fLaC")
             out = Path(td) / "manifest.json"
             subprocess.check_call(
                 [sys.executable, str(INDEXER), "--root", str(root), "--out", str(out)]
@@ -424,9 +427,14 @@ class IndexerTests(unittest.TestCase):
             loose_audio = by_path[
                 "shows/Andor [tt9253284]/01 - Andor (Main Title Theme) - Episode 5.flac"
             ]
+            nested_score = by_path[
+                "shows/Andor [tt9253284]/extras/Andor Vol. 1 (Original Score)/01 - Theme.flac"
+            ]
             self.assertEqual(video["kind"], "tv")
             self.assertEqual(theme["kind"], "extra")
             self.assertEqual(loose_audio["kind"], "extra")
+            self.assertEqual(nested_score["kind"], "extra")
+            self.assertEqual(nested_score["work_key"], video["work_key"])
             self.assertEqual(video["title"], "Kassa")
             self.assertEqual(video["work_title"], "Andor")
             self.assertEqual(video["work_key"], "shows/Andor [tt9253284]")

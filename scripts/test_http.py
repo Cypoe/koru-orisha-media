@@ -82,7 +82,7 @@ def main() -> int:
         if beep:
             check(beep["id"].encode() in body and b'id="library-list"' in body, "audio collection lists fixture")
             check(b'class="empty"' not in body, "audio collection not empty-only")
-            check(b">Discovery<" in body, "music groups album-level work")
+            check(b'aria-label="Discovery"' in body, "music groups album-level work")
             check(body.count(b'class="poster-card"') == 2, "music shows beep + one album card")
             check(b">One More Time<" not in body and b">Aerodynamic<" not in body, "music does not list tracks as works")
         else:
@@ -93,7 +93,8 @@ def main() -> int:
         check(b'placeholder="Search series"' in body, "series search placeholder")
         check(b'class="empty"' not in body, "series collection is not empty")
         check(body.count(b'class="poster-card"') == 1, "series shows one poster per work")
-        check(b">Andor<" in body and b'class="badge kind-tv"' in body, "series card is Andor with SERIES badge")
+        check(b'aria-label="Andor"' in body and b'class="badge kind-tv"' in body, "series card is Andor with SERIES badge")
+        check(b'<span class="title">' not in body, "series cards dump no title text")
         check(andor_ep["id"].encode() in body, "series card links a work file")
         check(ost["id"].encode() not in body, "soundtrack extra is not a series card")
         check(b">Kassa<" not in body and b">One Way Out<" not in body, "series does not list episodes as works")
@@ -125,6 +126,8 @@ def main() -> int:
         check("E01 · Kassa".encode() in body and "E02 · That Would Be Me".encode() in body, "episode labels from SxxEyy")
         check(b"<h2>Extras</h2>" in body and ost["id"].encode() in body, "soundtrack lives under extras")
         check(b"Andor (Main Title Theme)" in body, "extras section names the soundtrack")
+        check(b"<h2>Episodes</h2>" not in body, "soundtrack is not dumped as uncategorized episodes")
+        check(b"extra-list" in body, "extras use a named list not poster dump")
         check(b'<script type="application/ld+json">' in body, "series item embeds JSON-LD")
         check(b'"@type":"TVSeries"' in body and b'"name":"Andor"' in body, "series item JSON-LD is TVSeries")
         check(b"work.movie" not in body and b"/item/work." not in body, "series item does not leak work ids")
@@ -304,15 +307,15 @@ def main() -> int:
         st, hdrs, body = http("GET", "/app.css")
         check(st == 200 and b"--ink" in body, "app.css served")
         check("text/css" in hdrs.get("content-type", ""), "app.css content-type")
-        check(b"white-space: nowrap" in body and b"play-overlay" in body, "app.css tightens meta wrap + hover play")
+        check(b"overflow-wrap: anywhere" in body and b"play-overlay" in body, "app.css wraps meta + hover play")
         check(b"settings-page" in body and b"mount-card" in body, "app.css has settings chrome")
 
         st, _, body = http("GET", "/")
         check(st == 200 and b"Koru Media" in body and b"/app.css" in body and b"Open library" in body, "home brand surface")
-        check(b"Recently added" in body and b"Arrival (2016)" in body and demo_id.encode() in body, "home lists local movies")
+        check(b"Recently added" in body and b'aria-label="Arrival (2016)"' in body and demo_id.encode() in body, "home lists local movies")
         check(f"/item/{demo_id}".encode() in body, "home local movies link to item")
         check(f"/watch/{demo_id}".encode() not in body, "home cards have no under-card watch link")
-        check(b">Andor<" in body, "home series shelf groups Andor")
+        check(b'aria-label="Andor"' in body, "home series shelf groups Andor")
         check(b"class=\"archive-note\"" in body and b"projection index" in body, "home names catalogue overlay when index exists")
         check(b">TMDB<" not in body, "home is not a TMDB grid")
 
@@ -328,23 +331,29 @@ def main() -> int:
         check(b'name="path_0"' in body and b'value="movies"' in body, "settings default movies mount")
         check(b'value="shows"' in body and b'value="music"' in body, "settings default shows+music")
         check(b'value="books"' in body and b'value="musicVideos"' in body, "settings default books+musicVideos")
+        check(b'name="cap_0"' in body and b'name="base_path"' in body, "settings has capability + base path")
+        check(b'name="catalog_driver"' in body and b'name="catalog_dsn"' in body, "settings has catalog store fields")
+        check(b"SQLite (linked)" in body and b"PostgreSQL (not linked)" in body, "settings is honest about unlinked SQL drivers")
         check(b">Reindex<" in body, "settings has Reindex control")
         check(b"index_media.py" not in body and b"hydrate_catalog.py" not in body, "settings does not name Python as indexer")
         check(b"KORU_BASE_PATH" in body, "settings shows web alias")
         check(b"strong>Settings</strong>" in body, "settings nav is active")
+        check(b"mount-add" in body, "settings has an add-library slot")
         check("link" in hdrs and "/settings" in hdrs.get("link", "") and "self" in hdrs.get("link", ""), f"Link header on settings: {hdrs.get('link')}")
 
         mounts = (
-            b"action=save&on_0=1&name_0=Films&path_0=movies"
-            b"&on_1=1&name_1=Series&path_1=shows"
-            b"&on_2=1&name_2=Music&path_2=music"
-            b"&on_3=1&name_3=Books&path_3=books"
-            b"&on_4=1&name_4=Music+videos&path_4=musicVideos"
+            b"action=save&on_0=1&name_0=Films&path_0=movies&cap_0=movies&aff_ex_0=1&aff_ae_0=1"
+            b"&on_1=1&name_1=Series&path_1=shows&cap_1=series&aff_ep_1=1&aff_ex_1=1&aff_ae_1=1"
+            b"&on_2=1&name_2=Music&path_2=music&cap_2=music"
+            b"&on_3=1&name_3=Books&path_3=books&cap_3=books"
+            b"&on_4=1&name_4=Music+videos&path_4=musicVideos&cap_4=music_videos"
+            b"&catalog_driver=sqlite&catalog_dsn=data/catalog.sqlite&walk_on_empty=1"
         )
         st, _, body = http("POST", "/settings", data=mounts)
         check(st == 200 and b'id="settings-page"' in body, "POST /settings save -> 200")
         if b"Saved library mounts" in body:
             check(b'value="Films"' in body, "POST save persists display name")
+            check(b'value="series"' in body, "POST save persists series capability")
         check(b"index_media.py" not in body, "POST save does not name Python indexer")
 
         st, _, body = http("POST", "/settings", data=b"action=save&on_0=1&name_0=Hack&path_0=../etc")
@@ -355,6 +364,23 @@ def main() -> int:
         st, _, body = http("POST", "/settings", data=b"action=save&on_0=1&name_0=Hack&path_0=%2Fetc%2Fpasswd")
         check(st == 200 and b'value="/etc/passwd"' not in body, "POST absolute escape is not stored")
         check(b"Not saved" in body, "POST absolute escape rejected")
+
+        st, _, body = http(
+            "POST",
+            "/settings",
+            data=b"action=save&on_0=1&name_0=Movies&path_0=movies&base_path=%2Fmedia",
+        )
+        check(st == 200 and b"Not saved" in body and b"/media" in body, "POST rejects /media base path")
+
+        st, _, body = http(
+            "POST",
+            "/settings",
+            data=(
+                b"action=save&on_0=1&name_0=Movies&path_0=movies&cap_0=movies"
+                b"&catalog_driver=postgres&catalog_dsn=postgres://db.example/koru"
+            ),
+        )
+        check(st == 200 and b"The selected SQL driver is not linked" in body, "POST postgres driver is stored but not pretended")
 
         st, _, body = http("GET", "/library")
         check(b"/enhance.js" in body and b"/app.css" in body and b"hx-get=" in body, "library progressive enhance hooks")
@@ -384,16 +410,17 @@ def main() -> int:
         arrival = next((e for e in manifest["entries"] if e.get("year") == 2016), None)
         if arrival:
             st, _, body = http("GET", "/library")
-            check(b"Arrival (2016)" in body, "library card shows movie title")
+            check(b'aria-label="Arrival (2016)"' in body, "library card names movie via aria-label")
         else:
             check(False, "year fixture for library row")
 
         reindex = (
-            b"action=reindex&on_0=1&name_0=Movies&path_0=movies"
-            b"&on_1=1&name_1=Series&path_1=shows"
-            b"&on_2=1&name_2=Music&path_2=music"
-            b"&on_3=1&name_3=Books&path_3=books"
-            b"&on_4=1&name_4=Music+videos&path_4=musicVideos"
+            b"action=reindex&on_0=1&name_0=Movies&path_0=movies&cap_0=movies"
+            b"&on_1=1&name_1=Series&path_1=shows&cap_1=series&aff_ep_1=1&aff_ex_1=1&aff_ae_1=1"
+            b"&on_2=1&name_2=Music&path_2=music&cap_2=music"
+            b"&on_3=1&name_3=Books&path_3=books&cap_3=books"
+            b"&on_4=1&name_4=Music+videos&path_4=musicVideos&cap_4=music_videos"
+            b"&catalog_driver=sqlite&walk_on_empty=1"
         )
         st, _, body = http("POST", "/settings", data=reindex)
         check(st == 200 and b'id="settings-page"' in body, "POST reindex -> 200")
@@ -445,13 +472,13 @@ def main() -> int:
         check(b">TMDB<" not in home and b">IMDb<" not in home and b"themoviedb.org" not in home, "missing semantic: home has no catalogue chips")
         check(b"class=\"archive-note\"" in home and b"without a catalogue fetch" in home, "missing semantic: home is local archive")
         st, _, lib = http("GET", "/library")
-        check(st == 200 and b"Arrival (2016)" in lib and demo["id"].encode() in lib, "missing semantic: library lists local files")
+        check(st == 200 and b'aria-label="Arrival (2016)"' in lib and demo["id"].encode() in lib, "missing semantic: library lists local files")
         check(f"/item/{demo['id']}".encode() in lib, "missing semantic: library cards link to item")
         check(f"/watch/{demo['id']}".encode() not in lib, "missing semantic: library has no under-card watch")
         check(b">TMDB<" not in lib and b'class="catalogue"' not in lib, "missing semantic: library has no catalogue chips")
         check(b"without a catalogue fetch" in lib, "missing semantic: library is local archive")
         st, _, movies = http("GET", "/library/movie")
-        check(st == 200 and b"Arrival (2016)" in movies and demo["id"].encode() in movies, "missing semantic: movie collection lists local files")
+        check(st == 200 and b'aria-label="Arrival (2016)"' in movies and demo["id"].encode() in movies, "missing semantic: movie collection lists local files")
         check(b">TMDB<" not in movies, "missing semantic: movie collection has no catalogue chips")
 
     elif mode == "prefix":
@@ -479,6 +506,7 @@ def main() -> int:
         check(b'value="movies"' in body and b">Reindex<" in body, "prefixed settings has mounts + Reindex")
         check(b"index_media.py" not in body, "prefixed settings does not name Python indexer")
         check(prefix.encode() in body and b"KORU_BASE_PATH" in body, "prefixed settings shows web alias")
+        check(b'name="base_path"' in body and b'name="catalog_driver"' in body, "prefixed settings has base path + catalog store")
 
         st, _, body = http("GET", f"{prefix}/watch/{demo_id}")
         check(st == 200 and b'id="player"' in body, "prefixed watch page")

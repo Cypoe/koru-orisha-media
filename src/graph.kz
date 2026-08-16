@@ -69,11 +69,28 @@ var manifest_path_owned: []const u8 = DEFAULT_MANIFEST_PATH;
 var semantic_path_owned: []const u8 = DEFAULT_SEMANTIC_PATH;
 var catalog_path_owned: []const u8 = DEFAULT_CATALOG_PATH;
 var reindex_flag_owned: []const u8 = "data/reindex.requested";
+var base_path_buf: [256]u8 = undefined;
+var base_path_len: usize = 0;
 var base_path_owned: []const u8 = "";
 var req_base_buf: [256]u8 = undefined;
 var req_base: []const u8 = "";
 var req_base_set = false;
 var cfg_ready = false;
+
+const DEFAULT_CONFIG_PATH = "/config/settings.conf";
+var config_path_owned: []const u8 = DEFAULT_CONFIG_PATH;
+var settings_file_buf: [16 * 1024]u8 = undefined;
+var settings_store: [8192]u8 = undefined;
+var settings_store_len: usize = 0;
+var settings_driver_buf: [32]u8 = undefined;
+var settings_driver_len: usize = 0;
+var settings_dsn_buf: [512]u8 = undefined;
+var settings_dsn_len: usize = 0;
+var settings_walk_on_empty: bool = true;
+var settings_have_file = false;
+var pending_libs: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_catalog.LibraryRoot = undefined;
+var pending_lib_n: usize = 0;
+var pending_from_file = false;
 
 pub const SemanticJoin = struct {
     // Join key is the physical opaque id (m_*). Local work ids (work.movie.*)
@@ -138,6 +155,222 @@ fn copyBaseTo(buf: []u8, raw: []const u8) []const u8 {
     return buf[0..s.len];
 }
 
+fn storeBase(raw: []const u8) []const u8 {
+    const copied = copyBaseTo(&base_path_buf, raw);
+    base_path_len = copied.len;
+    base_path_owned = base_path_buf[0..base_path_len];
+    return base_path_owned;
+}
+
+fn isForbiddenBase(s: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(s, "/media");
+}
+
+fn settingsDup(s: []const u8) []const u8 {
+    return storeDup(&settings_store, &settings_store_len, s);
+}
+
+fn parseLibIndex(key: []const u8, prefix: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    return std.fmt.parseInt(usize, rest[0..dot], 10) catch null;
+}
+
+fn parseLibField(key: []const u8, prefix: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const rest = key[prefix.len..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    return rest[dot + 1 ..];
+}
+
+fn loadSettingsFile() void {
+    settings_store_len = 0;
+    pending_lib_n = 0;
+    pending_from_file = false;
+    settings_have_file = false;
+    settings_driver_len = 0;
+    settings_dsn_len = 0;
+    settings_walk_on_empty = true;
+    const path = envOr("KORU_CONFIG", DEFAULT_CONFIG_PATH);
+    config_path_owned = allocDup(path) orelse DEFAULT_CONFIG_PATH;
+    const file = std.fs.cwd().openFile(config_path_owned, .{}) catch return;
+    defer file.close();
+    const n = file.readAll(&settings_file_buf) catch return;
+    settings_have_file = true;
+    var names: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS][]const u8 = .{""} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var paths: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS][]const u8 = .{""} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var caps: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS][]const u8 = .{""} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var affs: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS][]const u8 = .{""} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var ons: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]bool = .{true} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var seen: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]bool = .{false} ** koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
+    var it = std.mem.splitScalar(u8, settings_file_buf[0..n], '\n');
+    while (it.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const val = settingsDup(std.mem.trim(u8, line[eq + 1 ..], " \t"));
+        if (std.mem.eql(u8, key, "base_path")) {
+            if (!isForbiddenBase(val)) _ = storeBase(val);
+        } else if (std.mem.eql(u8, key, "catalog_driver")) {
+            const take = @min(val.len, settings_driver_buf.len);
+            @memcpy(settings_driver_buf[0..take], val[0..take]);
+            settings_driver_len = take;
+        } else if (std.mem.eql(u8, key, "catalog_dsn")) {
+            const take = @min(val.len, settings_dsn_buf.len);
+            @memcpy(settings_dsn_buf[0..take], val[0..take]);
+            settings_dsn_len = take;
+        } else if (std.mem.eql(u8, key, "walk_on_empty")) {
+            settings_walk_on_empty = !(std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false") or std.ascii.eqlIgnoreCase(val, "no"));
+        } else if (parseLibIndex(key, "lib.")) |idx| {
+            if (idx >= koru_media.koru_catalog.MAX_LIBRARY_ROOTS) continue;
+            const field = parseLibField(key, "lib.") orelse continue;
+            seen[idx] = true;
+            if (std.mem.eql(u8, field, "name")) names[idx] = val;
+            if (std.mem.eql(u8, field, "path")) paths[idx] = val;
+            if (std.mem.eql(u8, field, "capability")) caps[idx] = val;
+            if (std.mem.eql(u8, field, "affordances")) affs[idx] = val;
+            if (std.mem.eql(u8, field, "enabled")) ons[idx] = !(std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false"));
+        }
+    }
+    var i: usize = 0;
+    while (i < koru_media.koru_catalog.MAX_LIBRARY_ROOTS) : (i += 1) {
+        if (!seen[i] or paths[i].len == 0) continue;
+        pending_libs[pending_lib_n] = .{
+            .display_name = if (names[i].len > 0) names[i] else paths[i],
+            .rel_path = paths[i],
+            .enabled = ons[i],
+            .capability = caps[i],
+            .affordances = affs[i],
+        };
+        pending_lib_n += 1;
+    }
+    pending_from_file = pending_lib_n > 0;
+}
+
+fn writeSettingsFile(base: []const u8, driver: []const u8, dsn: []const u8, walk: bool, roots: []const koru_media.koru_catalog.LibraryRoot) bool {
+    var buf: [16 * 1024]u8 = undefined;
+    var w: usize = 0;
+    const append = struct {
+        fn go(dest: []u8, wp: *usize, piece: []const u8) void {
+            if (wp.* + piece.len > dest.len) return;
+            @memcpy(dest[wp.* .. wp.* + piece.len], piece);
+            wp.* += piece.len;
+        }
+    }.go;
+    append(&buf, &w, "# koru-orisha-media settings. Lives on the /config host bind.\n");
+    append(&buf, &w, "base_path=");
+    append(&buf, &w, base);
+    append(&buf, &w, "\ncatalog_driver=");
+    append(&buf, &w, driver);
+    append(&buf, &w, "\ncatalog_dsn=");
+    append(&buf, &w, dsn);
+    append(&buf, &w, "\nwalk_on_empty=");
+    append(&buf, &w, if (walk) "1" else "0");
+    append(&buf, &w, "\n");
+    var i: usize = 0;
+    while (i < roots.len) : (i += 1) {
+        const r = roots[i];
+        var idx_buf: [8]u8 = undefined;
+        const idx = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch continue;
+        append(&buf, &w, "\nlib.");
+        append(&buf, &w, idx);
+        append(&buf, &w, ".name=");
+        append(&buf, &w, r.display_name);
+        append(&buf, &w, "\nlib.");
+        append(&buf, &w, idx);
+        append(&buf, &w, ".path=");
+        append(&buf, &w, r.rel_path);
+        append(&buf, &w, "\nlib.");
+        append(&buf, &w, idx);
+        append(&buf, &w, ".enabled=");
+        append(&buf, &w, if (r.enabled) "1" else "0");
+        append(&buf, &w, "\nlib.");
+        append(&buf, &w, idx);
+        append(&buf, &w, ".capability=");
+        append(&buf, &w, r.capability);
+        append(&buf, &w, "\nlib.");
+        append(&buf, &w, idx);
+        append(&buf, &w, ".affordances=");
+        append(&buf, &w, r.affordances);
+        append(&buf, &w, "\n");
+    }
+    if (std.mem.lastIndexOfScalar(u8, config_path_owned, '/')) |slash| {
+        if (slash > 0) std.fs.cwd().makePath(config_path_owned[0..slash]) catch {};
+    }
+    const f = std.fs.cwd().createFile(config_path_owned, .{}) catch return false;
+    defer f.close();
+    f.writeAll(buf[0..w]) catch return false;
+    settings_have_file = true;
+    return true;
+}
+
+fn rememberDriver(driver: []const u8, dsn: []const u8) void {
+    const dtake = @min(driver.len, settings_driver_buf.len);
+    @memcpy(settings_driver_buf[0..dtake], driver[0..dtake]);
+    settings_driver_len = dtake;
+    const stake = @min(dsn.len, settings_dsn_buf.len);
+    @memcpy(settings_dsn_buf[0..stake], dsn[0..stake]);
+    settings_dsn_len = stake;
+}
+
+pub fn catalogDriver() []const u8 {
+    ensureConfig();
+    if (settings_driver_len == 0) return "sqlite";
+    return settings_driver_buf[0..settings_driver_len];
+}
+
+pub fn catalogDsn() []const u8 {
+    ensureConfig();
+    if (settings_dsn_len == 0) return catalog_path_owned;
+    return settings_dsn_buf[0..settings_dsn_len];
+}
+
+pub fn catalogDriverLinked() bool {
+    return std.ascii.eqlIgnoreCase(catalogDriver(), "sqlite");
+}
+
+pub fn walkOnEmpty() bool {
+    ensureConfig();
+    return settings_walk_on_empty;
+}
+
+pub fn configPath() []const u8 {
+    ensureConfig();
+    return config_path_owned;
+}
+
+/// Persist settings to /config and library_roots. Returns false if the catalog
+/// cannot be written. /config write failure is non-fatal (sqlite still saved).
+pub fn persistAppSettings(base: []const u8, driver: []const u8, dsn: []const u8, walk: bool, roots: []const koru_media.koru_catalog.LibraryRoot) bool {
+    ensureConfig();
+    if (isForbiddenBase(base)) return false;
+    _ = storeBase(base);
+    rememberDriver(driver, dsn);
+    settings_walk_on_empty = walk;
+    if (!koru_media.koru_catalog.saveLibraryRoots(roots)) return false;
+    _ = writeSettingsFile(base_path_owned, catalogDriver(), if (settings_dsn_len > 0) settings_dsn_buf[0..settings_dsn_len] else catalog_path_owned, walk, roots);
+    return true;
+}
+
+/// Apply a new base path in-process. Null if empty-after-normalize is OK, error
+/// string not used — returns false when the value is `/media`.
+pub fn applyBasePath(raw: []const u8) bool {
+    if (isForbiddenBase(std.mem.trim(u8, raw, " \t\r\n"))) return false;
+    _ = storeBase(raw);
+    return true;
+}
+
+fn storeDup(store: []u8, used: *usize, s: []const u8) []const u8 {
+    if (s.len == 0) return "";
+    if (used.* + s.len > store.len) return "";
+    const out = store[used.* .. used.* + s.len];
+    @memcpy(out, s);
+    used.* += s.len;
+    return out;
+}
+
 fn siblingName(path: []const u8, name: []const u8) []const u8 {
     const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return name;
     var tmp: [512]u8 = undefined;
@@ -189,14 +422,39 @@ pub fn beginRequest(path: []const u8, forwarded_prefix: ?[]const u8) []const u8 
 pub fn ensureConfig() void {
     if (cfg_ready) return;
     cfg_ready = true;
+    loadSettingsFile();
     media_root_owned = allocDup(envOr("KORU_MEDIA_ROOT", DEFAULT_MEDIA_ROOT)) orelse DEFAULT_MEDIA_ROOT;
     manifest_path_owned = allocDup(envOr("KORU_MANIFEST", DEFAULT_MANIFEST_PATH)) orelse DEFAULT_MANIFEST_PATH;
     semantic_path_owned = allocDup(envOr("KORU_SEMANTIC", DEFAULT_SEMANTIC_PATH)) orelse DEFAULT_SEMANTIC_PATH;
-    catalog_path_owned = allocDup(envOr("KORU_CATALOG", DEFAULT_CATALOG_PATH)) orelse DEFAULT_CATALOG_PATH;
+    const env_catalog = envOr("KORU_CATALOG", DEFAULT_CATALOG_PATH);
+    const driver = if (settings_driver_len > 0) settings_driver_buf[0..settings_driver_len] else "sqlite";
+    if (!std.ascii.eqlIgnoreCase(driver, "sqlite")) {
+        std.debug.print("catalog driver {s} is not linked; using sqlite\n", .{driver});
+    }
+    const sqlite_path = if (std.ascii.eqlIgnoreCase(driver, "sqlite") and settings_dsn_len > 0)
+        settings_dsn_buf[0..settings_dsn_len]
+    else
+        env_catalog;
+    catalog_path_owned = allocDup(sqlite_path) orelse DEFAULT_CATALOG_PATH;
+    if (settings_driver_len == 0) {
+        rememberDriver("sqlite", catalog_path_owned);
+    } else if (settings_dsn_len == 0) {
+        rememberDriver(driver, catalog_path_owned);
+    }
     reindex_flag_owned = siblingName(catalog_path_owned, "reindex.requested");
-    base_path_owned = normalizeBase(envOr("KORU_BASE_PATH", ""));
+    if (base_path_len == 0) {
+        const env_base = envOr("KORU_BASE_PATH", "");
+        if (!isForbiddenBase(env_base)) _ = storeBase(env_base);
+    }
     config_storage_end = storage_len;
     koru_media.koru_catalog.open(catalog_path_owned);
+    if (pending_from_file and pending_lib_n > 0) {
+        _ = koru_media.koru_catalog.saveLibraryRoots(pending_libs[0..pending_lib_n]);
+    } else if (!settings_have_file) {
+        var roots_buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_catalog.LibraryRoot = undefined;
+        const roots = koru_media.koru_catalog.listLibraryRoots(&roots_buf);
+        _ = writeSettingsFile(base_path_owned, driver, catalog_path_owned, settings_walk_on_empty, roots);
+    }
     if (envIs1("KORU_HYDRATE")) {
         std.debug.print("KORU_HYDRATE=1: overlay tables ready; provider HTTP is host-side (scripts/hydrate_catalog.py --catalog {s})\n", .{catalog_path_owned});
     }
@@ -210,7 +468,7 @@ pub fn ensureConfig() void {
         loadManifest();
         loaded = true;
         manifest_mtime_ns = manifestMtimeNs();
-        if (koru_media.koru_catalog.count() == 0) {
+        if (koru_media.koru_catalog.count() == 0 and settings_walk_on_empty and koru_media.koru_catalog.mediaHasFiles(media_root_owned)) {
             _ = koru_media.koru_catalog.reindex(media_root_owned);
         }
         return;
@@ -875,8 +1133,32 @@ fn firstSegment(rel: []const u8) []const u8 {
     return rel;
 }
 
-/// Library root names the work (shows → series). File kind uses extras folders
-/// then MIME/ext so audio under shows/ is extra, not tv.
+fn rootCapability(first: []const u8) []const u8 {
+    var buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_catalog.LibraryRoot = undefined;
+    const roots = koru_media.koru_catalog.listLibraryRoots(&buf);
+    for (roots) |lib| {
+        if (std.ascii.eqlIgnoreCase(lib.rel_path, first)) {
+            if (lib.capability.len > 0) return lib.capability;
+            return koru_media.koru_catalog.inferCapability(first);
+        }
+    }
+    return koru_media.koru_catalog.inferCapability(first);
+}
+
+fn rootAffordances(first: []const u8) []const u8 {
+    var buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_catalog.LibraryRoot = undefined;
+    const roots = koru_media.koru_catalog.listLibraryRoots(&buf);
+    for (roots) |lib| {
+        if (std.ascii.eqlIgnoreCase(lib.rel_path, first)) {
+            if (lib.affordances.len > 0) return lib.affordances;
+            return koru_media.koru_catalog.inferAffordances(rootCapability(first));
+        }
+    }
+    return koru_media.koru_catalog.inferAffordances(rootCapability(first));
+}
+
+/// Library capability names the work (series → tv). File kind uses extras folders
+/// then MIME/ext so audio under a series/movies tree is extra, not a standalone track.
 pub fn fileKind(rel: []const u8) []const u8 {
     var start: usize = 0;
     while (start < rel.len) {
@@ -887,6 +1169,16 @@ pub fn fileKind(rel: []const u8) []const u8 {
         start = end + 1;
     }
     const first = firstSegment(rel);
+    var cap_hold: [32]u8 = undefined;
+    var aff_hold: [128]u8 = undefined;
+    const cap_src = rootCapability(first);
+    const cap_n = @min(cap_src.len, cap_hold.len);
+    @memcpy(cap_hold[0..cap_n], cap_src[0..cap_n]);
+    const cap: []const u8 = cap_hold[0..cap_n];
+    const aff_src = rootAffordances(first);
+    const aff_n = @min(aff_src.len, aff_hold.len);
+    @memcpy(aff_hold[0..aff_n], aff_src[0..aff_n]);
+    const aff: []const u8 = aff_hold[0..aff_n];
     const ext = extOfPath(rel);
     var is_audio = false;
     var is_book = false;
@@ -896,17 +1188,14 @@ pub fn fileKind(rel: []const u8) []const u8 {
     for (KIND_BOOK_EXT) |e| {
         if (std.ascii.eqlIgnoreCase(ext, e)) is_book = true;
     }
-    if (std.ascii.eqlIgnoreCase(first, "movies")) {
-        if (is_audio) return "extra";
-        return "movie";
+    if (koru_media.koru_catalog.hasAffordance(aff, "audio_as_extra") and is_audio) {
+        if (std.mem.eql(u8, cap, "series") or std.mem.eql(u8, cap, "movies")) return "extra";
     }
-    if (std.ascii.eqlIgnoreCase(first, "shows") or std.ascii.eqlIgnoreCase(first, "tv")) {
-        if (is_audio) return "extra";
-        return "tv";
-    }
-    if (std.ascii.eqlIgnoreCase(first, "music")) return "audio";
-    if (std.ascii.eqlIgnoreCase(first, "books")) return "book";
-    if (std.ascii.eqlIgnoreCase(first, "musicvideos") or std.ascii.eqlIgnoreCase(first, "musicvidoes")) return "musicVideo";
+    if (std.mem.eql(u8, cap, "movies")) return "movie";
+    if (std.mem.eql(u8, cap, "series")) return "tv";
+    if (std.mem.eql(u8, cap, "music")) return "audio";
+    if (std.mem.eql(u8, cap, "books")) return "book";
+    if (std.mem.eql(u8, cap, "music_videos")) return "musicVideo";
     if (is_audio) return "audio";
     if (is_book) return "book";
     return "movie";

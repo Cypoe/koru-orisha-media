@@ -232,6 +232,11 @@ fn isRemotePoster(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "https://") or std.mem.startsWith(u8, url, "http://");
 }
 
+fn entryIsExtra(e: koru_media.koru_graph.Entry) bool {
+    if (std.mem.eql(u8, e.kind, "extra")) return true;
+    return std.mem.eql(u8, koru_media.koru_graph.fileKind(e.path), "extra");
+}
+
 fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
     const shown = cardTitle(e);
     const title = htmlEscaped(allocator, shown);
@@ -244,12 +249,16 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
     out.appendSlice(allocator, "<li class=\"poster-card\"><a class=\"poster-link\" href=\"") catch {};
     appendAppPath(allocator, out, "/item/");
     out.appendSlice(allocator, id_esc) catch {};
+    out.appendSlice(allocator, "\" aria-label=\"") catch {};
+    out.appendSlice(allocator, title) catch {};
     out.appendSlice(allocator, "\"><span class=\"poster-frame\">") catch {};
     if (e.poster.len > 0) {
         out.appendSlice(allocator, "<img class=\"poster-art\" src=\"") catch {};
         appendAppPath(allocator, out, "/art/");
         out.appendSlice(allocator, id_esc) catch {};
-        out.appendSlice(allocator, "\" alt=\"\"/>") catch {};
+        out.appendSlice(allocator, "\" alt=\"") catch {};
+        out.appendSlice(allocator, title) catch {};
+        out.appendSlice(allocator, "\"/>") catch {};
     } else blk: {
         const h = koru_media.koru_graph.findHydrateOverlay(e.imdb_id);
         if (!isRemotePoster(h.poster_url)) {
@@ -260,15 +269,15 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
         defer if (u.ptr != h.poster_url.ptr) allocator.free(u);
         out.appendSlice(allocator, "<img class=\"poster-art\" src=\"") catch {};
         out.appendSlice(allocator, u) catch {};
-        out.appendSlice(allocator, "\" alt=\"\"/>") catch {};
+        out.appendSlice(allocator, "\" alt=\"") catch {};
+        out.appendSlice(allocator, title) catch {};
+        out.appendSlice(allocator, "\"/>") catch {};
     }
     out.appendSlice(allocator, "<span class=\"badge kind-") catch {};
     out.appendSlice(allocator, kind_esc) catch {};
     out.appendSlice(allocator, "\">") catch {};
     out.appendSlice(allocator, badge) catch {};
-    out.appendSlice(allocator, "</span><span class=\"play-overlay\" aria-hidden=\"true\"></span></span><span class=\"title\">") catch {};
-    out.appendSlice(allocator, title) catch {};
-    out.appendSlice(allocator, "</span></a></li>") catch {};
+    out.appendSlice(allocator, "</span><span class=\"play-overlay\" aria-hidden=\"true\"></span></span></a></li>") catch {};
 }
 
 fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, with_region: bool, as_row: bool) void {
@@ -566,10 +575,129 @@ fn formSlotIndex(key: []const u8, prefix: []const u8) ?usize {
     return std.fmt.parseInt(usize, num, 10) catch null;
 }
 
+fn formBool(val: []const u8) bool {
+    return val.len > 0 and !std.mem.eql(u8, val, "0") and !std.ascii.eqlIgnoreCase(val, "false");
+}
+
+fn joinAffordances(ep: bool, extras: bool, audio_extra: bool, buf: []u8) []const u8 {
+    var w: usize = 0;
+    const add = struct {
+        fn go(dest: []u8, wp: *usize, name: []const u8) void {
+            if (wp.* > 0) {
+                if (wp.* + 1 > dest.len) return;
+                dest[wp.*] = ',';
+                wp.* += 1;
+            }
+            if (wp.* + name.len > dest.len) return;
+            @memcpy(dest[wp.* .. wp.* + name.len], name);
+            wp.* += name.len;
+        }
+    }.go;
+    if (ep) add(buf, &w, "episode_graph");
+    if (extras) add(buf, &w, "extras");
+    if (audio_extra) add(buf, &w, "audio_as_extra");
+    return buf[0..w];
+}
+
+fn appendCapSelect(allocator: std.mem.Allocator, out: *std.ArrayList(u8), idx: []const u8, current: []const u8) void {
+    const opts = [_]struct { v: []const u8, l: []const u8 }{
+        .{ .v = "movies", .l = "Movies — film works" },
+        .{ .v = "series", .l = "Series — episode graph" },
+        .{ .v = "music", .l = "Music — audio library" },
+        .{ .v = "books", .l = "Books" },
+        .{ .v = "music_videos", .l = "Music videos" },
+        .{ .v = "mixed", .l = "Mixed — infer from files" },
+    };
+    out.appendSlice(allocator, "<label>Capability <select name=\"cap_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\">") catch {};
+    for (opts) |o| {
+        out.appendSlice(allocator, "<option value=\"") catch {};
+        out.appendSlice(allocator, o.v) catch {};
+        out.appendSlice(allocator, "\"") catch {};
+        if (std.mem.eql(u8, current, o.v)) out.appendSlice(allocator, " selected") catch {};
+        out.appendSlice(allocator, ">") catch {};
+        out.appendSlice(allocator, o.l) catch {};
+        out.appendSlice(allocator, "</option>") catch {};
+    }
+    out.appendSlice(allocator, "</select></label>") catch {};
+}
+
+fn appendAffChecks(allocator: std.mem.Allocator, out: *std.ArrayList(u8), idx: []const u8, aff: []const u8) void {
+    const ep = koru_media.koru_catalog.hasAffordance(aff, "episode_graph");
+    const extras = koru_media.koru_catalog.hasAffordance(aff, "extras");
+    const audio_ex = koru_media.koru_catalog.hasAffordance(aff, "audio_as_extra");
+    out.appendSlice(allocator, "<fieldset class=\"mount-aff\"><legend>Affordances</legend>") catch {};
+    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ep_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"1\"") catch {};
+    if (ep) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Episode graph</label>") catch {};
+    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ex_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"1\"") catch {};
+    if (extras) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Extras folders</label>") catch {};
+    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ae_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"1\"") catch {};
+    if (audio_ex) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Audio as extra</label></fieldset>") catch {};
+}
+
+fn appendMountCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), i: usize, root: ?koru_media.koru_graph.LibraryRoot, media: []const u8, add_slot: bool) void {
+    const enabled = if (root) |r| r.enabled else false;
+    const name: []const u8 = if (root) |r| r.display_name else "";
+    const path: []const u8 = if (root) |r| r.rel_path else "";
+    const cap: []const u8 = if (root) |r| (if (r.capability.len > 0) r.capability else koru_media.koru_catalog.inferCapability(path)) else "mixed";
+    const aff: []const u8 = if (root) |r| r.affordances else "";
+    const name_esc = htmlEscaped(allocator, name);
+    defer if (name_esc.ptr != name.ptr) allocator.free(name_esc);
+    const path_esc = htmlEscaped(allocator, path);
+    defer if (path_esc.ptr != path.ptr) allocator.free(path_esc);
+    var idx_buf: [4]u8 = undefined;
+    const idx = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch "0";
+    out.appendSlice(allocator, "<li class=\"mount-card") catch {};
+    if (add_slot) out.appendSlice(allocator, " mount-add") catch {};
+    out.appendSlice(allocator, "\"><label class=\"mount-on\"><input type=\"checkbox\" name=\"on_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"1\"") catch {};
+    if (enabled) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Enabled</label><label>Name <input type=\"text\" name=\"name_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"") catch {};
+    out.appendSlice(allocator, name_esc) catch {};
+    out.appendSlice(allocator, "\" maxlength=\"80\" placeholder=\"Display name\"></label><label>Path <input type=\"text\" name=\"path_") catch {};
+    out.appendSlice(allocator, idx) catch {};
+    out.appendSlice(allocator, "\" value=\"") catch {};
+    out.appendSlice(allocator, path_esc) catch {};
+    out.appendSlice(allocator, "\" maxlength=\"200\" spellcheck=\"false\" autocomplete=\"off\" placeholder=\"folder under /media\"></label>") catch {};
+    appendCapSelect(allocator, out, idx, cap);
+    if (!add_slot) {
+        out.appendSlice(allocator, "<label class=\"mount-drop\"><input type=\"checkbox\" name=\"drop_") catch {};
+        out.appendSlice(allocator, idx) catch {};
+        out.appendSlice(allocator, "\" value=\"1\"> Remove</label>") catch {};
+    }
+    appendAffChecks(allocator, out, idx, aff);
+    if (path.len > 0) {
+        out.appendSlice(allocator, "<p class=\"hint\"><code>") catch {};
+        const m_esc = htmlEscaped(allocator, media);
+        defer if (m_esc.ptr != media.ptr) allocator.free(m_esc);
+        out.appendSlice(allocator, m_esc) catch {};
+        out.appendSlice(allocator, "/") catch {};
+        out.appendSlice(allocator, path_esc) catch {};
+        out.appendSlice(allocator, "</code> must be a Compose host bind — this page cannot mount Synology volumes.</p>") catch {};
+    } else if (add_slot) {
+        out.appendSlice(allocator, "<p class=\"hint\">Add a folder already bind-mounted under the media root, then tag how the indexer should treat it.</p>") catch {};
+    }
+    out.appendSlice(allocator, "</li>") catch {};
+}
+
 fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), notice: []const u8) void {
     var roots_buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_graph.LibraryRoot = undefined;
     const roots = koru_media.koru_graph.listLibraryRoots(&roots_buf);
     const media = koru_media.koru_graph.mediaRoot();
+    const max = koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
     out.appendSlice(allocator, "<div id=\"settings-page\" class=\"settings-page\"><h1>Settings</h1>") catch {};
     if (notice.len > 0) {
         out.appendSlice(allocator, "<p class=\"notice\" role=\"status\">") catch {};
@@ -578,63 +706,68 @@ fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), not
         out.appendSlice(allocator, n_esc) catch {};
         out.appendSlice(allocator, "</p>") catch {};
     }
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Libraries</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">Folders under the media root that the indexer walks. Compose already bind-mounts DSM shares into the container; this page does not remount them.</p>") catch {};
     out.appendSlice(allocator, "<form method=\"post\" action=\"") catch {};
     appendAppPath(allocator, out, "/settings");
-    out.appendSlice(allocator, "\" class=\"settings-form\"><ul class=\"mount-list\">") catch {};
+    out.appendSlice(allocator, "\" class=\"settings-form\">") catch {};
+
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Libraries</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">Enabled folders under the media root that the binary indexer walks. Tag each entry by capability (what the library is) and affordances (episode graph, extras, audio-as-extra). Compose still has to bind the DSM share into <code>/media/…</code> — adding a row here does not mount a volume.</p>") catch {};
+    out.appendSlice(allocator, "<ul class=\"mount-list\">") catch {};
     var i: usize = 0;
-    while (i < koru_media.koru_catalog.MAX_LIBRARY_ROOTS) : (i += 1) {
-        const has = i < roots.len;
-        const enabled = if (has) roots[i].enabled else false;
-        const name: []const u8 = if (has) roots[i].display_name else "";
-        const path: []const u8 = if (has) roots[i].rel_path else "";
-        const name_esc = htmlEscaped(allocator, name);
-        defer if (name_esc.ptr != name.ptr) allocator.free(name_esc);
-        const path_esc = htmlEscaped(allocator, path);
-        defer if (path_esc.ptr != path.ptr) allocator.free(path_esc);
-        var idx_buf: [4]u8 = undefined;
-        const idx = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch "0";
-        out.appendSlice(allocator, "<li class=\"mount-card\"><label class=\"mount-on\"><input type=\"checkbox\" name=\"on_") catch {};
-        out.appendSlice(allocator, idx) catch {};
-        out.appendSlice(allocator, "\" value=\"1\"") catch {};
-        if (enabled) out.appendSlice(allocator, " checked") catch {};
-        out.appendSlice(allocator, "> Enabled</label><label>Name <input type=\"text\" name=\"name_") catch {};
-        out.appendSlice(allocator, idx) catch {};
-        out.appendSlice(allocator, "\" value=\"") catch {};
-        out.appendSlice(allocator, name_esc) catch {};
-        out.appendSlice(allocator, "\" maxlength=\"80\"></label><label>Path <input type=\"text\" name=\"path_") catch {};
-        out.appendSlice(allocator, idx) catch {};
-        out.appendSlice(allocator, "\" value=\"") catch {};
-        out.appendSlice(allocator, path_esc) catch {};
-        out.appendSlice(allocator, "\" maxlength=\"200\" spellcheck=\"false\" autocomplete=\"off\"></label>") catch {};
-        if (path.len > 0) {
-            out.appendSlice(allocator, "<p class=\"hint\"><code>") catch {};
-            const m_esc = htmlEscaped(allocator, media);
-            defer if (m_esc.ptr != media.ptr) allocator.free(m_esc);
-            out.appendSlice(allocator, m_esc) catch {};
-            out.appendSlice(allocator, "/") catch {};
-            out.appendSlice(allocator, path_esc) catch {};
-            out.appendSlice(allocator, "</code></p>") catch {};
-        }
-        out.appendSlice(allocator, "</li>") catch {};
+    while (i < roots.len and i < max) : (i += 1) {
+        appendMountCard(allocator, out, i, roots[i], media, false);
     }
-    out.appendSlice(allocator, "</ul><p class=\"settings-actions\"><button type=\"submit\" name=\"action\" value=\"save\" class=\"primary\">Save</button>") catch {};
-    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"reindex\" class=\"secondary\">Reindex</button></p></form></section>") catch {};
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Index</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">Reindex walks enabled folders into the catalog on the next idle request so a playing stream is not interrupted. The walker is this app’s binary, not a host script.</p></section>") catch {};
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Web alias</h2><p class=\"lede\">") catch {};
-    const alias = bp();
-    if (alias.len == 0) {
-        out.appendSlice(allocator, "No <code>KORU_BASE_PATH</code> — this process serves at <code>/</code>. Set the env in Compose to match the WebStation alias (anything except <code>/media</code>).</p></section>") catch {};
+    if (i < max) {
+        appendMountCard(allocator, out, i, null, media, true);
+    }
+    out.appendSlice(allocator, "</ul></section>") catch {};
+
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Indexer</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">Reindex walks enabled folders into the catalog on the next idle request so a playing stream is not interrupted. The walker is this app’s binary, not a host script. A walk that finds 0 files against a non-empty catalog is rolled back.</p>") catch {};
+    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"hidden\" name=\"walk_on_empty\" value=\"0\"><input type=\"checkbox\" name=\"walk_on_empty\" value=\"1\"") catch {};
+    if (koru_media.koru_graph.walkOnEmpty()) out.appendSlice(allocator, " checked") catch {};
+    out.appendSlice(allocator, "> Reindex automatically when the catalog is empty and media binds have files</label>") catch {};
+    out.appendSlice(allocator, "<p class=\"hint\">Same flag as <code>reindex.requested</code> next to the catalog file. <code>KORU_REINDEX=1</code> still forces a walk on boot.</p></section>") catch {};
+
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Catalog store</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">SQLite is the linked driver. An external SQL DSN can be stored for a later build; this process will not pretend to open Postgres or MySQL.</p>") catch {};
+    const drv = koru_media.koru_graph.catalogDriver();
+    out.appendSlice(allocator, "<label>Driver <select name=\"catalog_driver\"><option value=\"sqlite\"") catch {};
+    if (std.ascii.eqlIgnoreCase(drv, "sqlite")) out.appendSlice(allocator, " selected") catch {};
+    out.appendSlice(allocator, ">SQLite (linked)</option><option value=\"postgres\"") catch {};
+    if (std.ascii.eqlIgnoreCase(drv, "postgres")) out.appendSlice(allocator, " selected") catch {};
+    out.appendSlice(allocator, ">PostgreSQL (not linked)</option><option value=\"mysql\"") catch {};
+    if (std.ascii.eqlIgnoreCase(drv, "mysql")) out.appendSlice(allocator, " selected") catch {};
+    out.appendSlice(allocator, ">MySQL (not linked)</option></select></label>") catch {};
+    const dsn = koru_media.koru_graph.catalogDsn();
+    const dsn_esc = htmlEscaped(allocator, dsn);
+    defer if (dsn_esc.ptr != dsn.ptr) allocator.free(dsn_esc);
+    out.appendSlice(allocator, "<label>DSN / SQLite path <input type=\"text\" name=\"catalog_dsn\" value=\"") catch {};
+    out.appendSlice(allocator, dsn_esc) catch {};
+    out.appendSlice(allocator, "\" maxlength=\"400\" spellcheck=\"false\" autocomplete=\"off\"></label>") catch {};
+    if (!koru_media.koru_graph.catalogDriverLinked()) {
+        out.appendSlice(allocator, "<p class=\"notice\" role=\"status\">This driver is not linked. The catalog stays on SQLite until a later build opens external SQL.</p>") catch {};
     } else {
-        out.appendSlice(allocator, "<code>KORU_BASE_PATH</code> is <code>") catch {};
-        const a_esc = htmlEscaped(allocator, alias);
-        defer if (a_esc.ptr != alias.ptr) allocator.free(a_esc);
-        out.appendSlice(allocator, a_esc) catch {};
-        out.appendSlice(allocator, "</code> (Compose / WebStation). Changing it requires a container restart.</p></section>") catch {};
+        out.appendSlice(allocator, "<p class=\"hint\">SQLite file must live on the <code>/data</code> host bind so it survives Container Manager / Watchtower recreates. Changing the path applies on the next process start.</p>") catch {};
     }
-    out.appendSlice(allocator, "</div>") catch {};
+    out.appendSlice(allocator, "</section>") catch {};
+
+    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Base path</h2>") catch {};
+    out.appendSlice(allocator, "<p class=\"lede\">WebStation alias / reverse-proxy prefix. Saved under <code>") catch {};
+    const cfg = koru_media.koru_graph.configPath();
+    const cfg_esc = htmlEscaped(allocator, cfg);
+    defer if (cfg_esc.ptr != cfg.ptr) allocator.free(cfg_esc);
+    out.appendSlice(allocator, cfg_esc) catch {};
+    out.appendSlice(allocator, "</code>. Compose env <code>KORU_BASE_PATH</code> is the fallback when this field is empty. Do not use <code>/media</code> — that name is the byte-stream route.</p>") catch {};
+    const alias = bp();
+    const alias_esc = htmlEscaped(allocator, alias);
+    defer if (alias_esc.ptr != alias.ptr) allocator.free(alias_esc);
+    out.appendSlice(allocator, "<label>Base path <input type=\"text\" name=\"base_path\" value=\"") catch {};
+    out.appendSlice(allocator, alias_esc) catch {};
+    out.appendSlice(allocator, "\" maxlength=\"80\" spellcheck=\"false\" placeholder=\"/korisha\"></label></section>") catch {};
+
+    out.appendSlice(allocator, "<p class=\"settings-actions\"><button type=\"submit\" name=\"action\" value=\"save\" class=\"primary\">Save</button>") catch {};
+    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"reindex\" class=\"secondary\">Reindex</button></p></form></div>") catch {};
 }
 
 pub fn settingsHtml(allocator: std.mem.Allocator, notice: []const u8) []const u8 {
@@ -658,10 +791,19 @@ pub fn settingsHtml(allocator: std.mem.Allocator, notice: []const u8) []const u8
 pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 {
     const raw = body orelse "";
     const max = koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
-    var names: [8][]const u8 = .{""} ** 8;
-    var paths: [8][]const u8 = .{""} ** 8;
-    var ons: [8]bool = .{false} ** 8;
+    var names: [16][]const u8 = .{""} ** 16;
+    var paths: [16][]const u8 = .{""} ** 16;
+    var caps: [16][]const u8 = .{""} ** 16;
+    var ons: [16]bool = .{false} ** 16;
+    var drops: [16]bool = .{false} ** 16;
+    var aff_ep: [16]bool = .{false} ** 16;
+    var aff_ex: [16]bool = .{false} ** 16;
+    var aff_ae: [16]bool = .{false} ** 16;
     var action: []const u8 = "save";
+    var base_raw: []const u8 = koru_media.koru_graph.basePath();
+    var driver: []const u8 = koru_media.koru_graph.catalogDriver();
+    var dsn: []const u8 = koru_media.koru_graph.catalogDsn();
+    var walk = true;
     var it = std.mem.splitScalar(u8, raw, '&');
     while (it.next()) |pair| {
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
@@ -669,21 +811,43 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
         const val = formUnescape(allocator, pair[eq + 1 ..]);
         if (std.mem.eql(u8, key, "action")) {
             action = val;
-            continue;
-        }
-        if (formSlotIndex(key, "name_")) |idx| {
+        } else if (std.mem.eql(u8, key, "base_path")) {
+            base_raw = val;
+        } else if (std.mem.eql(u8, key, "catalog_driver")) {
+            driver = val;
+        } else if (std.mem.eql(u8, key, "catalog_dsn")) {
+            dsn = val;
+        } else if (std.mem.eql(u8, key, "walk_on_empty")) {
+            walk = formBool(val);
+        } else if (formSlotIndex(key, "name_")) |idx| {
             if (idx < max) names[idx] = val;
         } else if (formSlotIndex(key, "path_")) |idx| {
             if (idx < max) paths[idx] = val;
+        } else if (formSlotIndex(key, "cap_")) |idx| {
+            if (idx < max) caps[idx] = val;
         } else if (formSlotIndex(key, "on_")) |idx| {
-            if (idx < max) ons[idx] = val.len > 0 and !std.mem.eql(u8, val, "0");
+            if (idx < max) ons[idx] = formBool(val);
+        } else if (formSlotIndex(key, "drop_")) |idx| {
+            if (idx < max) drops[idx] = formBool(val);
+        } else if (formSlotIndex(key, "aff_ep_")) |idx| {
+            if (idx < max) aff_ep[idx] = formBool(val);
+        } else if (formSlotIndex(key, "aff_ex_")) |idx| {
+            if (idx < max) aff_ex[idx] = formBool(val);
+        } else if (formSlotIndex(key, "aff_ae_")) |idx| {
+            if (idx < max) aff_ae[idx] = formBool(val);
         }
     }
-    var built: [8]koru_media.koru_graph.LibraryRoot = undefined;
+    const base_trim = std.mem.trim(u8, base_raw, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(base_trim, "/media")) {
+        return settingsHtml(allocator, "Not saved: base path cannot be /media (that name is the byte-stream route).");
+    }
+    var built: [16]koru_media.koru_graph.LibraryRoot = undefined;
+    var aff_bufs: [16][96]u8 = undefined;
     var n: usize = 0;
     var i: usize = 0;
     var bad = false;
     while (i < max) : (i += 1) {
+        if (drops[i]) continue;
         const p = std.mem.trim(u8, paths[i], " \t");
         if (p.len == 0) continue;
         var rel_buf: [256]u8 = undefined;
@@ -693,12 +857,19 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
         };
         var name = std.mem.trim(u8, names[i], " \t");
         if (name.len == 0) name = rel;
+        var cap = std.mem.trim(u8, caps[i], " \t");
+        if (cap.len == 0) cap = koru_media.koru_catalog.inferCapability(rel);
+        const aff = joinAffordances(aff_ep[i], aff_ex[i], aff_ae[i], &aff_bufs[n]);
         const name_owned = allocator.dupe(u8, name) catch name;
         const rel_owned = allocator.dupe(u8, rel) catch rel;
+        const cap_owned = allocator.dupe(u8, cap) catch cap;
+        const aff_owned = allocator.dupe(u8, aff) catch aff;
         built[n] = .{
             .display_name = name_owned,
             .rel_path = rel_owned,
             .enabled = ons[i],
+            .capability = cap_owned,
+            .affordances = aff_owned,
         };
         n += 1;
     }
@@ -708,12 +879,21 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     if (n == 0) {
         return settingsHtml(allocator, "Not saved: keep at least one library path. Disable a folder with the checkbox instead of clearing every path.");
     }
-    if (!koru_media.koru_graph.saveLibraryRoots(built[0..n])) {
+    const dsn_trim = std.mem.trim(u8, dsn, " \t");
+    const drv_trim = std.mem.trim(u8, driver, " \t");
+    if (!koru_media.koru_graph.persistAppSettings(base_trim, drv_trim, dsn_trim, walk, built[0..n])) {
         return settingsHtml(allocator, "Not saved: catalog is not writable.");
     }
+    const linked = std.ascii.eqlIgnoreCase(drv_trim, "sqlite");
     if (std.mem.eql(u8, action, "reindex")) {
         koru_media.koru_graph.requestReindex();
+        if (!linked) {
+            return settingsHtml(allocator, "Saved. Reindex is flagged — the next idle request walks enabled folders into the SQLite catalog. The selected SQL driver is not linked.");
+        }
         return settingsHtml(allocator, "Saved. Reindex is flagged — the next idle request walks enabled folders into the catalog.");
+    }
+    if (!linked) {
+        return settingsHtml(allocator, "Saved library mounts and settings. The selected SQL driver is not linked; the catalog stays on SQLite.");
     }
     return settingsHtml(allocator, "Saved library mounts.");
 }
@@ -852,7 +1032,7 @@ fn appendJsonU32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), n: u32) 
 fn workRepId(files: []const koru_media.koru_graph.Entry, fallback: []const u8) []const u8 {
     var best: ?[]const u8 = null;
     for (files) |f| {
-        if (std.mem.eql(u8, f.kind, "extra")) continue;
+        if (entryIsExtra(f)) continue;
         if (best) |b| {
             if (std.mem.order(u8, f.id, b) == .lt) best = f.id;
         } else best = f.id;
@@ -877,17 +1057,21 @@ fn workImdbOf(e: koru_media.koru_graph.Entry, files: []const koru_media.koru_gra
 }
 
 fn jsonLdIsSeriesWork(e: koru_media.koru_graph.Entry, files: []const koru_media.koru_graph.Entry) bool {
-    if (std.mem.eql(u8, e.kind, "extra")) return false;
+    if (entryIsExtra(e)) return false;
     if (!filesAreSeries(e.kind, files)) return false;
     return std.mem.eql(u8, e.id, workRepId(files, e.id));
 }
 
 fn jsonLdType(e: koru_media.koru_graph.Entry, files: []const koru_media.koru_graph.Entry) []const u8 {
+    if (entryIsExtra(e)) {
+        if (std.mem.startsWith(u8, e.mime, "video/")) return "VideoObject";
+        return "MusicRecording";
+    }
     if (jsonLdIsSeriesWork(e, files)) return "TVSeries";
-    if (std.mem.eql(u8, e.kind, "tv") or ((e.season > 0 or e.episode > 0) and !std.mem.eql(u8, e.kind, "extra"))) return "TVEpisode";
+    if (std.mem.eql(u8, e.kind, "tv") or e.season > 0 or e.episode > 0) return "TVEpisode";
     if (std.mem.eql(u8, e.kind, "movie")) return "Movie";
     if (std.mem.eql(u8, e.kind, "book")) return "Book";
-    if (std.mem.eql(u8, e.kind, "audio") or std.mem.eql(u8, e.kind, "music") or std.mem.eql(u8, e.kind, "extra")) return "MusicRecording";
+    if (std.mem.eql(u8, e.kind, "audio") or std.mem.eql(u8, e.kind, "music")) return "MusicRecording";
     return "CreativeWork";
 }
 
@@ -945,7 +1129,7 @@ fn appendEpisodeStub(allocator: std.mem.Allocator, out: *std.ArrayList(u8), f: k
 
 fn firstTrailer(files: []const koru_media.koru_graph.Entry) ?koru_media.koru_graph.Entry {
     for (files) |f| {
-        if (!std.mem.eql(u8, f.kind, "extra")) continue;
+        if (!entryIsExtra(f)) continue;
         if (koru_media.koru_graph.pathIsTrailer(f.path)) return f;
     }
     return null;
@@ -1001,7 +1185,7 @@ fn buildCatalogJsonLd(allocator: std.mem.Allocator, e: koru_media.koru_graph.Ent
         appendImdbSameAs(allocator, &out, workImdbOf(e, files));
         var any_ep = false;
         for (files) |f| {
-            if (std.mem.eql(u8, f.kind, "extra")) continue;
+            if (entryIsExtra(f)) continue;
             if (!any_ep) {
                 out.appendSlice(allocator, ",\"episode\":[") catch {};
                 any_ep = true;
@@ -1156,7 +1340,7 @@ fn appendNfoOverlay(allocator: std.mem.Allocator, html: *std.ArrayList(u8), nfo:
 fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
     var n: usize = 0;
     for (files) |f| {
-        if (!std.mem.eql(u8, f.kind, "extra")) continue;
+        if (!entryIsExtra(f)) continue;
         if (!koru_media.koru_graph.pathIsTrailer(f.path)) continue;
         const id_esc = htmlEscaped(allocator, f.id);
         defer if (id_esc.ptr != f.id.ptr) allocator.free(id_esc);
@@ -1302,7 +1486,7 @@ fn itemHeading(e: koru_media.koru_graph.Entry, join: ?koru_media.koru_graph.Sema
 fn filesAreSeries(kind: []const u8, files: []const koru_media.koru_graph.Entry) bool {
     if (std.mem.eql(u8, kind, "tv")) return true;
     for (files) |f| {
-        if (std.mem.eql(u8, f.kind, "extra")) continue;
+        if (entryIsExtra(f)) continue;
         if (f.season > 0 or f.episode > 0) return true;
     }
     return false;
@@ -1311,7 +1495,7 @@ fn filesAreSeries(kind: []const u8, files: []const koru_media.koru_graph.Entry) 
 fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
     var any_ep = false;
     for (files) |f| {
-        if (!std.mem.eql(u8, f.kind, "extra")) {
+        if (!entryIsExtra(f)) {
             any_ep = true;
             break;
         }
@@ -1321,7 +1505,7 @@ fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: 
     var current_season: u32 = 0xFFFFFFFF;
     var list_open = false;
     for (files) |f| {
-        if (std.mem.eql(u8, f.kind, "extra")) continue;
+        if (entryIsExtra(f)) continue;
         if (f.season != current_season) {
             if (list_open) html.appendSlice(allocator, "</ol>") catch {};
             current_season = f.season;
@@ -1360,18 +1544,27 @@ fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: 
 fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
     var any_extra = false;
     for (files) |f| {
-        if (std.mem.eql(u8, f.kind, "extra")) {
+        if (entryIsExtra(f)) {
             any_extra = true;
             break;
         }
     }
     if (!any_extra) return;
-    html.appendSlice(allocator, "<section class=\"extras\"><h2>Extras</h2><ul class=\"library-list poster-row\">") catch {};
+    html.appendSlice(allocator, "<section class=\"extras\"><h2>Extras</h2><ol class=\"episode-list extra-list\">") catch {};
     for (files) |f| {
-        if (!std.mem.eql(u8, f.kind, "extra")) continue;
-        appendPosterCard(allocator, html, f);
+        if (!entryIsExtra(f)) continue;
+        const ep_title = htmlEscaped(allocator, f.title);
+        defer if (ep_title.ptr != f.title.ptr) allocator.free(ep_title);
+        const ep_id = htmlEscaped(allocator, f.id);
+        defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
+        html.appendSlice(allocator, "<li><a href=\"") catch {};
+        appendAppPath(allocator, html, "/watch/");
+        html.appendSlice(allocator, ep_id) catch {};
+        html.appendSlice(allocator, "\">") catch {};
+        html.appendSlice(allocator, ep_title) catch {};
+        html.appendSlice(allocator, "</a></li>") catch {};
     }
-    html.appendSlice(allocator, "</ul></section>") catch {};
+    html.appendSlice(allocator, "</ol></section>") catch {};
 }
 
 pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
@@ -1586,23 +1779,9 @@ pub fn watchHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"{s}/item/{s}\">item</a> · <a href=\"{s}/media/{s}?download=1\">download</a> · <a href=\"{s}/library/{s}\">more {s}</a></p>", .{ bp(), id_esc, bp(), id_esc, bp(), kind_esc, kind_esc }) catch "";
         html.appendSlice(allocator, nav) catch {};
         {
-            var mates: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
-            const extras = koru_media.koru_graph.collectWorkmates(e.path, e.id, &mates);
-            var any_extra = false;
-            for (extras) |m| {
-                if (std.mem.eql(u8, m.kind, "extra")) {
-                    any_extra = true;
-                    break;
-                }
-            }
-            if (any_extra) {
-                html.appendSlice(allocator, "<section class=\"extras\"><h2>Extras</h2><ul class=\"library-list poster-row\">") catch {};
-                for (extras) |m| {
-                    if (!std.mem.eql(u8, m.kind, "extra")) continue;
-                    appendPosterCard(allocator, &html, m);
-                }
-                html.appendSlice(allocator, "</ul></section>") catch {};
-            }
+            var work_files: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+            const files = koru_media.koru_graph.collectWorkFiles(e.path, &work_files);
+            appendExtrasFrom(allocator, &html, files);
         }
         html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
         appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0, true, true);

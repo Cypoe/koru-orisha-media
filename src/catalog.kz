@@ -90,7 +90,9 @@ const SCHEMA =
     \\  display_name TEXT NOT NULL,
     \\  rel_path TEXT NOT NULL UNIQUE,
     \\  enabled INTEGER NOT NULL DEFAULT 1,
-    \\  sort INTEGER NOT NULL DEFAULT 0
+    \\  sort INTEGER NOT NULL DEFAULT 0,
+    \\  capability TEXT NOT NULL DEFAULT '',
+    \\  affordances TEXT NOT NULL DEFAULT ''
     \\);
     \\CREATE INDEX IF NOT EXISTS idx_library_roots_sort ON library_roots(sort);
 ;
@@ -99,10 +101,12 @@ pub const LibraryRoot = struct {
     display_name: []const u8,
     rel_path: []const u8,
     enabled: bool,
+    capability: []const u8 = "",
+    affordances: []const u8 = "",
 };
 
-pub const MAX_LIBRARY_ROOTS: usize = 8;
-var roots_store: [4096]u8 = undefined;
+pub const MAX_LIBRARY_ROOTS: usize = 16;
+var roots_store: [8192]u8 = undefined;
 var roots_store_len: usize = 0;
 
 const ENTRY_COLS = "id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title";
@@ -224,6 +228,60 @@ fn migrateColumns() void {
     ensureColumn("work_title", "ALTER TABLE entries ADD COLUMN work_title TEXT NOT NULL DEFAULT ''");
 }
 
+fn libraryRootColumnExists(name: []const u8) bool {
+    var stmt: ?*sqlite3_stmt = null;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(library_roots)", -1, &stmt, null) != SQLITE_OK) return false;
+    defer _ = sqlite3_finalize(stmt);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (std.mem.eql(u8, colText(stmt, 1), name)) return true;
+    }
+    return false;
+}
+
+fn migrateLibraryRoots() void {
+    if (!libraryRootColumnExists("capability")) {
+        execSql("ALTER TABLE library_roots ADD COLUMN capability TEXT NOT NULL DEFAULT ''");
+    }
+    if (!libraryRootColumnExists("affordances")) {
+        execSql("ALTER TABLE library_roots ADD COLUMN affordances TEXT NOT NULL DEFAULT ''");
+    }
+}
+
+/// Well-known first-segment names used when a row has no capability yet.
+pub fn inferCapability(rel: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(rel, "movies")) return "movies";
+    if (std.ascii.eqlIgnoreCase(rel, "shows") or std.ascii.eqlIgnoreCase(rel, "tv")) return "series";
+    if (std.ascii.eqlIgnoreCase(rel, "music")) return "music";
+    if (std.ascii.eqlIgnoreCase(rel, "books")) return "books";
+    if (std.ascii.eqlIgnoreCase(rel, "musicvideos") or std.ascii.eqlIgnoreCase(rel, "musicvidoes")) return "music_videos";
+    return "mixed";
+}
+
+pub fn inferAffordances(capability: []const u8) []const u8 {
+    if (std.mem.eql(u8, capability, "series")) return "episode_graph,extras,audio_as_extra";
+    if (std.mem.eql(u8, capability, "movies")) return "extras,audio_as_extra";
+    return "";
+}
+
+pub fn hasAffordance(list: []const u8, name: []const u8) bool {
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |part| {
+        const p = std.mem.trim(u8, part, " \t");
+        if (std.mem.eql(u8, p, name)) return true;
+    }
+    return false;
+}
+
+fn filledCapability(rel: []const u8, stored: []const u8) []const u8 {
+    if (stored.len > 0) return stored;
+    return inferCapability(rel);
+}
+
+fn filledAffordances(rel: []const u8, cap: []const u8, stored: []const u8) []const u8 {
+    if (stored.len > 0) return stored;
+    return inferAffordances(if (cap.len > 0) cap else inferCapability(rel));
+}
+
 pub fn open(path: []const u8) void {
     if (catalog_ready) return;
     catalog_path_owned = path;
@@ -249,6 +307,7 @@ pub fn open(path: []const u8) void {
     db = pdb;
     execSql(SCHEMA);
     migrateColumns();
+    migrateLibraryRoots();
     catalog_ready = true;
     ensureLibraryRoots();
 }
@@ -268,12 +327,12 @@ fn ensureLibraryRoots() void {
     if (!catalog_ready) return;
     if (libraryRootCount() > 0) return;
     execSql(
-        \\INSERT INTO library_roots(display_name, rel_path, enabled, sort) VALUES
-        \\ ('Movies','movies',1,0),
-        \\ ('Series','shows',1,1),
-        \\ ('Music','music',1,2),
-        \\ ('Books','books',1,3),
-        \\ ('Music videos','musicVideos',1,4)
+        \\INSERT INTO library_roots(display_name, rel_path, enabled, sort, capability, affordances) VALUES
+        \\ ('Movies','movies',1,0,'movies','extras,audio_as_extra'),
+        \\ ('Series','shows',1,1,'series','episode_graph,extras,audio_as_extra'),
+        \\ ('Music','music',1,2,'music',''),
+        \\ ('Books','books',1,3,'books',''),
+        \\ ('Music videos','musicVideos',1,4,'music_videos','')
     );
 }
 
@@ -282,17 +341,24 @@ pub fn listLibraryRoots(out: []LibraryRoot) []LibraryRoot {
     ensureLibraryRoots();
     roots_store_len = 0;
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT display_name, rel_path, enabled FROM library_roots ORDER BY sort, id", -1, &stmt, null) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT display_name, rel_path, enabled, capability, affordances FROM library_roots ORDER BY sort, id", -1, &stmt, null) != SQLITE_OK) {
         return out[0..0];
     }
     defer _ = sqlite3_finalize(stmt);
     var n: usize = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW and n < out.len) {
         const enabled_i = sqlite3_column_int64(stmt, 2);
+        const rel = storeDup(&roots_store, &roots_store_len, colText(stmt, 1));
+        const cap_raw = colText(stmt, 3);
+        const aff_raw = colText(stmt, 4);
+        const cap = filledCapability(rel, cap_raw);
+        const aff = filledAffordances(rel, cap, aff_raw);
         out[n] = .{
             .display_name = storeDup(&roots_store, &roots_store_len, colText(stmt, 0)),
-            .rel_path = storeDup(&roots_store, &roots_store_len, colText(stmt, 1)),
+            .rel_path = rel,
             .enabled = enabled_i != 0,
+            .capability = storeDup(&roots_store, &roots_store_len, cap),
+            .affordances = storeDup(&roots_store, &roots_store_len, aff),
         };
         n += 1;
     }
@@ -306,12 +372,16 @@ pub fn saveLibraryRoots(roots: []const LibraryRoot) bool {
     while (i < roots.len) : (i += 1) {
         const r = roots[i];
         var stmt: ?*sqlite3_stmt = null;
-        const sql = "INSERT OR IGNORE INTO library_roots(display_name, rel_path, enabled, sort) VALUES(?,?,?,?)";
+        const sql = "INSERT OR IGNORE INTO library_roots(display_name, rel_path, enabled, sort, capability, affordances) VALUES(?,?,?,?,?,?)";
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, null) != SQLITE_OK) return false;
+        const cap = filledCapability(r.rel_path, r.capability);
+        const aff = filledAffordances(r.rel_path, cap, r.affordances);
         bindText(stmt, 1, r.display_name);
         bindText(stmt, 2, r.rel_path);
         _ = sqlite3_bind_int64(stmt, 3, if (r.enabled) 1 else 0);
         _ = sqlite3_bind_int64(stmt, 4, @intCast(i));
+        bindText(stmt, 5, cap);
+        bindText(stmt, 6, aff);
         _ = sqlite3_step(stmt);
         _ = sqlite3_finalize(stmt);
     }
@@ -514,12 +584,34 @@ fn orderSql(sort: koru_media.koru_graph.SortMode) []const u8 {
 
 fn whereSql(kind_filter: ?[]const u8, q: ?[]const u8) []const u8 {
     const has_q = if (q) |needle| needle.len > 0 else false;
+    const skip_stale_extra = blk: {
+        if (kind_filter) |k| {
+            if (std.mem.eql(u8, k, "audio") or std.mem.eql(u8, k, "extra")) break :blk false;
+        }
+        break :blk true;
+    };
     if (kind_filter) |_| {
-        if (has_q) return "WHERE kind=? AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)";
-        return "WHERE kind=?";
+        if (has_q) {
+            return if (skip_stale_extra)
+                "WHERE kind=? AND (kind='audio' OR mime NOT LIKE 'audio/%') AND path NOT LIKE '%/extras/%' AND path NOT LIKE '%/featurettes/%' AND path NOT LIKE '%/trailers/%' AND path NOT LIKE '%/soundtrack/%' AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)"
+            else
+                "WHERE kind=? AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)";
+        }
+        return if (skip_stale_extra)
+            "WHERE kind=? AND (kind='audio' OR mime NOT LIKE 'audio/%') AND path NOT LIKE '%/extras/%' AND path NOT LIKE '%/featurettes/%' AND path NOT LIKE '%/trailers/%' AND path NOT LIKE '%/soundtrack/%'"
+        else
+            "WHERE kind=?";
     }
-    if (has_q) return "WHERE kind!='extra' AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)";
-    return "WHERE kind!='extra'";
+    if (has_q) {
+        return if (skip_stale_extra)
+            "WHERE kind!='extra' AND (kind='audio' OR mime NOT LIKE 'audio/%') AND path NOT LIKE '%/extras/%' AND path NOT LIKE '%/featurettes/%' AND path NOT LIKE '%/trailers/%' AND path NOT LIKE '%/soundtrack/%' AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)"
+        else
+            "WHERE kind!='extra' AND (title LIKE '%' || ? || '%' COLLATE NOCASE OR work_title LIKE '%' || ? || '%' COLLATE NOCASE)";
+    }
+    return if (skip_stale_extra)
+        "WHERE kind!='extra' AND (kind='audio' OR mime NOT LIKE 'audio/%') AND path NOT LIKE '%/extras/%' AND path NOT LIKE '%/featurettes/%' AND path NOT LIKE '%/trailers/%' AND path NOT LIKE '%/soundtrack/%'"
+    else
+        "WHERE kind!='extra'";
 }
 
 fn bindWhere(stmt: ?*sqlite3_stmt, kind_filter: ?[]const u8, q: ?[]const u8) void {
@@ -546,13 +638,13 @@ pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: koru_media.ko
     const where = whereSql(kind_filter, q);
     const work_group = "CASE WHEN work_key='' THEN id ELSE work_key END";
 
-    var count_sql: [768]u8 = undefined;
-    var list_sql: [1536]u8 = undefined;
+    var count_sql: [1024]u8 = undefined;
+    var list_sql: [2048]u8 = undefined;
     const count_z = std.fmt.bufPrint(&count_sql, "SELECT COUNT(DISTINCT {s}) FROM entries {s}", .{ work_group, where }) catch return .{ .items = out[0..0], .total = 0 };
     const list_z = std.fmt.bufPrint(&list_sql, "SELECT {s} FROM entries WHERE id IN (SELECT MIN(id) FROM entries {s} GROUP BY {s}) ORDER BY {s} LIMIT {d} OFFSET {d}", .{ ENTRY_COLS, where, work_group, orderSql(sort), cap, offset }) catch return .{ .items = out[0..0], .total = 0 };
 
     var cstmt: ?*sqlite3_stmt = null;
-    var cz: [769]u8 = undefined;
+    var cz: [1025]u8 = undefined;
     const czp = zsql(&cz, count_z) orelse return .{ .items = out[0..0], .total = 0 };
     if (sqlite3_prepare_v2(db, czp, -1, &cstmt, null) != SQLITE_OK) return .{ .items = out[0..0], .total = 0 };
     defer _ = sqlite3_finalize(cstmt);
@@ -564,7 +656,7 @@ pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: koru_media.ko
     }
 
     var lst: ?*sqlite3_stmt = null;
-    var lz: [1537]u8 = undefined;
+    var lz: [2049]u8 = undefined;
     const lzp = zsql(&lz, list_z) orelse return .{ .items = out[0..0], .total = total };
     if (sqlite3_prepare_v2(db, lzp, -1, &lst, null) != SQLITE_OK) return .{ .items = out[0..0], .total = total };
     defer _ = sqlite3_finalize(lst);
@@ -631,7 +723,20 @@ fn isMediaName(name: []const u8) bool {
 }
 
 fn kindFor(rel: []const u8) []const u8 {
+    if (pathHasExtraMarker(rel)) return "extra";
     return koru_media.koru_graph.fileKind(rel);
+}
+
+fn pathHasExtraMarker(rel: []const u8) bool {
+    const marks = [_][]const u8{
+        "/extras/",     "/extra/",      "/featurettes/", "/featurette/",
+        "/soundtrack/", "/trailers/",   "/trailer/",     "/ost/",
+        "/score/",
+    };
+    for (marks) |m| {
+        if (std.mem.indexOf(u8, rel, m) != null) return true;
+    }
+    return false;
 }
 
 fn mimeFor(rel: []const u8) []const u8 {
@@ -970,12 +1075,31 @@ fn probeFtyp(full: []const u8, brand_out: *[4]u8) []const u8 {
     return brand_out;
 }
 
-fn ingestFile(root: []const u8, rel: []const u8) bool {
-    if (std.mem.indexOf(u8, rel, "..") != null) return false;
+fn pathHasParentDir(rel: []const u8) bool {
+    var it = std.mem.splitScalar(u8, rel, '/');
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return true;
+    }
+    return false;
+}
+
+/// Open + fstat. Zig 0.15 `Dir.statFile` uses `statx`, which DSM btrfs/ACL
+/// shares reject; `openat`/`fstat` still work (busybox `stat` uses those).
+fn ingestFile(root: []const u8, rel: []const u8, file_dir: std.fs.Dir, basename: []const u8) bool {
+    if (pathHasParentDir(rel)) return false;
     if (rel.len == 0 or rel[0] == '/') return false;
-    var full_buf: [1024]u8 = undefined;
+    var full_buf: [4096]u8 = undefined;
     const full = std.fmt.bufPrint(&full_buf, "{s}/{s}", .{ root, rel }) catch return false;
-    const st = std.fs.cwd().statFile(full) catch return false;
+    const opened = file_dir.openFile(basename, .{}) catch |err| {
+        std.debug.print("ingest open {s} {}\n", .{ rel, err });
+        return false;
+    };
+    defer opened.close();
+    const pst = std.posix.fstat(opened.handle) catch |err| {
+        std.debug.print("ingest fstat {s} {}\n", .{ rel, err });
+        return false;
+    };
+    const st = std.fs.File.Stat.fromPosix(pst);
     const mtime_ns: u64 = if (st.mtime < 0) 0 else @intCast(st.mtime);
     const id_arr = opaqueId(rel, st.size, mtime_ns);
     const id: []const u8 = &id_arr;
@@ -1032,51 +1156,146 @@ fn ingestFile(root: []const u8, rel: []const u8) bool {
     return true;
 }
 
+fn skipDsmJunk(name: []const u8) bool {
+    return std.mem.eql(u8, name, "@eaDir") or std.mem.eql(u8, name, "#recycle") or std.mem.eql(u8, name, "@tmp");
+}
+
+fn joinRel(buf: *[1024]u8, a: []const u8, b: []const u8) ?[]const u8 {
+    if (a.len == 0) {
+        if (b.len > buf.len) return null;
+        @memcpy(buf[0..b.len], b);
+        return buf[0..b.len];
+    }
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ a, b }) catch null;
+}
+
+fn entryKind(dir: std.fs.Dir, name: []const u8, reported: std.fs.File.Kind) ?std.fs.File.Kind {
+    if (reported != .unknown) return reported;
+    const st = dir.statFile(name) catch return null;
+    return st.kind;
+}
+
+/// Iterate one library folder. Zig's Dir.walk only descends `.directory` and
+/// aborts the tree on AccessDenied (`@eaDir`). DSM shares often report
+/// DT_UNKNOWN, so we stat and keep going on errors.
+fn walkMediaDir(root: []const u8, prefix: []const u8, dir: std.fs.Dir, rel_from_lib: []const u8, stop_first: bool) usize {
+    var it = dir.iterate();
+    var n: usize = 0;
+    var listed: usize = 0;
+    while (true) {
+        const ent = it.next() catch |err| {
+            std.debug.print("iterate {s}/{s} err {}\n", .{ prefix, rel_from_lib, err });
+            break;
+        } orelse break;
+        listed += 1;
+        if (skipDsmJunk(ent.name)) continue;
+        const kind = entryKind(dir, ent.name, ent.kind) orelse continue;
+        if (kind == .directory) {
+            var sub = dir.openDir(ent.name, .{ .iterate = true }) catch |err| {
+                if (rel_from_lib.len == 0) std.debug.print("openDir {s}/{s} {}\n", .{ prefix, ent.name, err });
+                continue;
+            };
+            defer sub.close();
+            var child_buf: [1024]u8 = undefined;
+            const child = joinRel(&child_buf, rel_from_lib, ent.name) orelse continue;
+            n += walkMediaDir(root, prefix, sub, child, stop_first);
+            if (stop_first and n > 0) return n;
+            continue;
+        }
+        if (kind != .file) continue;
+        if (!isMediaName(ent.name)) continue;
+        if (stop_first) return 1;
+        var rel_buf: [1024]u8 = undefined;
+        const rel = if (prefix.len == 0)
+            (joinRel(&rel_buf, rel_from_lib, ent.name) orelse continue)
+        else if (rel_from_lib.len == 0)
+            (joinRel(&rel_buf, prefix, ent.name) orelse continue)
+        else
+            (std.fmt.bufPrint(&rel_buf, "{s}/{s}/{s}", .{ prefix, rel_from_lib, ent.name }) catch continue);
+        if (ingestFile(root, rel, dir, ent.name)) n += 1;
+    }
+    if (rel_from_lib.len == 0) {
+        std.debug.print("listed {s} {d} ingested {d}\n", .{ prefix, listed, n });
+    }
+    return n;
+}
+
+fn treeHasMedia(root: []const u8, prefix: []const u8) bool {
+    var dir_buf: [1024]u8 = undefined;
+    const dir_path = if (prefix.len == 0)
+        root
+    else
+        (std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ root, prefix }) catch return false);
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return false;
+    defer dir.close();
+    return walkMediaDir(root, prefix, dir, "", true) > 0;
+}
+
+/// True when an enabled library bind actually contains media files.
+/// Empty image placeholders and unreadable ACL mounts return false.
+pub fn mediaHasFiles(root: []const u8) bool {
+    if (!catalog_ready) return false;
+    ensureLibraryRoots();
+    var roots_buf: [MAX_LIBRARY_ROOTS]LibraryRoot = undefined;
+    const roots = listLibraryRoots(&roots_buf);
+    var any = false;
+    for (roots) |lib| {
+        if (!lib.enabled or lib.rel_path.len == 0) continue;
+        any = true;
+        if (treeHasMedia(root, lib.rel_path)) return true;
+    }
+    if (!any) return treeHasMedia(root, "");
+    return false;
+}
+
 fn indexOneTree(root: []const u8, prefix: []const u8) usize {
     var dir_buf: [1024]u8 = undefined;
     const dir_path = if (prefix.len == 0)
         root
     else
         (std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ root, prefix }) catch return 0);
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return 0;
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        std.debug.print("indexOneTree open {s} failed: {}\n", .{ dir_path, err });
+        return 0;
+    };
     defer dir.close();
-    const allocator = std.heap.c_allocator;
-    var walker = dir.walk(allocator) catch return 0;
-    defer walker.deinit();
-    var n: usize = 0;
-    while (walker.next() catch null) |ent| {
-        if (ent.kind != .file) continue;
-        if (!isMediaName(ent.basename)) continue;
-        var rel_buf: [1024]u8 = undefined;
-        const rel = if (prefix.len == 0)
-            ent.path
-        else
-            (std.fmt.bufPrint(&rel_buf, "{s}/{s}", .{ prefix, ent.path }) catch continue);
-        if (ingestFile(root, rel)) n += 1;
-    }
-    return n;
+    return walkMediaDir(root, prefix, dir, "", false);
 }
 
 /// Walk enabled library roots under `root` (container `/media` or fixtures)
 /// and replace the catalog. Disabled Settings mounts are skipped.
+/// If the walk finds nothing but the catalog already had rows, roll back so
+/// a bind-mount miss during Watchtower recreate cannot wipe the library.
 pub fn reindex(root: []const u8) usize {
     if (!catalog_ready) return 0;
     ensureLibraryRoots();
+    const before = count();
     execSql("BEGIN");
     execSql("DELETE FROM entries");
     execSql("DELETE FROM nfo_works");
     execSql("DELETE FROM nfo_episodes");
     var roots_buf: [MAX_LIBRARY_ROOTS]LibraryRoot = undefined;
     const roots = listLibraryRoots(&roots_buf);
+    std.debug.print("reindex roots {d} under {s}\n", .{ roots.len, root });
     var n: usize = 0;
     var enabled_n: usize = 0;
     for (roots) |lib| {
         if (!lib.enabled or lib.rel_path.len == 0) continue;
+        var path_buf: [256]u8 = undefined;
+        const take = @min(lib.rel_path.len, path_buf.len);
+        @memcpy(path_buf[0..take], lib.rel_path[0..take]);
         enabled_n += 1;
-        n += indexOneTree(root, lib.rel_path);
+        const got = indexOneTree(root, path_buf[0..take]);
+        std.debug.print("reindex tree {s} -> {d}\n", .{ path_buf[0..take], got });
+        n += got;
     }
     if (roots.len == 0) {
         n += indexOneTree(root, "");
+    }
+    if (n == 0 and before > 0) {
+        execSql("ROLLBACK");
+        std.debug.print("reindex found 0 files under {s} (had {d}); rolled back\n", .{ root, before });
+        return before;
     }
     execSql("COMMIT");
     std.debug.print("indexed {d} entries under {s} ({d} libraries)\n", .{ n, root, enabled_n });

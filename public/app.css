@@ -261,6 +261,8 @@ h1 {
   font-size: clamp(1.6rem, 3vw, 2.4rem);
   line-height: 1.15;
   margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 h2 {
@@ -307,13 +309,10 @@ h2 {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
 }
 
 .poster-link {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  display: block;
   text-decoration: none;
   color: inherit;
 }
@@ -410,6 +409,8 @@ h2 {
   color: var(--ink);
   text-decoration: none;
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .poster-link:hover .title,
@@ -417,12 +418,20 @@ h2 {
   color: var(--accent-hot);
 }
 
+.meta,
+.meta-line,
+.overview,
+.item-body,
+.file-path,
+.file-title,
+.episode-list a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .meta {
   font-size: 0.8rem;
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   max-width: 100%;
 }
 
@@ -668,7 +677,7 @@ section.seasons {
 
 /* —— Settings (library mounts + binary reindex) —— */
 .settings-page {
-  max-width: 44rem;
+  max-width: 52rem;
 }
 
 .settings-section {
@@ -686,13 +695,17 @@ section.seasons {
 
 .mount-card {
   display: grid;
-  grid-template-columns: auto 1fr 1fr;
+  grid-template-columns: auto 1fr 1fr minmax(12rem, 1.2fr) auto;
   gap: 0.65rem 1rem;
   align-items: end;
   padding: 0.85rem 1rem;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--card-radius);
+}
+
+.mount-card.mount-add {
+  border-style: dashed;
 }
 
 .mount-card .hint {
@@ -710,7 +723,8 @@ section.seasons {
   color: var(--muted);
 }
 
-.mount-card .mount-on {
+.mount-card .mount-on,
+.mount-card .mount-drop {
   flex-direction: row;
   align-items: center;
   gap: 0.45rem;
@@ -720,13 +734,66 @@ section.seasons {
   padding-bottom: 0.35rem;
 }
 
-.mount-card input[type="text"] {
+.mount-card .mount-drop {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.mount-card input[type="text"],
+.mount-card select {
   font: inherit;
   color: var(--ink);
   background: var(--paper-deep);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0.45rem 0.65rem;
+}
+
+.mount-aff {
+  grid-column: 1 / -1;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.1rem;
+  align-items: center;
+}
+
+.mount-aff legend {
+  padding: 0;
+  margin-right: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.mount-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.settings-section > label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.75rem 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.settings-section > label input[type="text"],
+.settings-section > label select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.65rem;
+  max-width: 36rem;
 }
 
 .settings-actions {
