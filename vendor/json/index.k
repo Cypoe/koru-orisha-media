@@ -4,9 +4,8 @@
 // Request handlers do not import this module.
 //
 // Read events match koru/yyjson's test surface (parse / root / object.get /
-// array.get / array.each / object.each / as.* / close) so
-// W:\src\koru-libs\yyjson\tests\basic.kz and features.kz can run against this
-// codec. No phantom Doc<open!> — close is still required to free the tree.
+// array.get / array.each / object.each / as.* / close) so the yyjson
+// `basic.kz` / `features.kz` suites can run against this codec.
 // Write stays Zig pub fns (emitJson / appendEscaped) used by src/json.
 
 pub tor parse { text: string }

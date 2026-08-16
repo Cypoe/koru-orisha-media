@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run vendor/json Koru tests ported from W:\src\koru-libs\yyjson\tests
+# Run vendor/json Koru tests ported from koru-libs yyjson tests
 # (basic.kz + features.kz). Phantom Doc negatives are not applicable.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

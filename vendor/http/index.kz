@@ -1,9 +1,9 @@
 // http — this app's HTTP / HATEOAS runtime (not Orisha).
 //
 // Complete request parse, Range, STREAM:v1 send, idle accept-loop.
-// Orisha (vendor/orisha) stays a verbatim copy of W:\\src\\orisha\\lib
-// so it can be re-vendored without losing playback. Switch main.k to
-// orisha:serve only when pump:reply understands STREAM:v1 + Request extras.
+// Orisha (vendor/orisha) stays a verbatim upstream lib/ snapshot so it can
+// be re-vendored without losing playback. Switch main.k to orisha:serve
+// only when pump:reply understands STREAM:v1 + Request extras.
 
 ~std/compiler:requires {
     exe.linkLibC();
@@ -208,31 +208,34 @@ fn idleSecs() ?u32 {
     const listen_fd = server.inner.stream.handle;
 
     // While STREAM:v1 bodies are parked, poll listen + those sockets so a movie
-    // does not stall / or posters. When nothing is parked, this is the old
-    // listen-only idle poll.
+    // does not stall / or posters. `walk()` is an effect: the body splices into
+    // the caller, so module names go through `$mod`.
     wait: while (true) {
-        pumpAllParked();
-        const npark = parkedCount();
-        var pfds: [1 + MAX_STREAMS]std.posix.pollfd = undefined;
+        $mod.pumpAllParked();
+        if ($mod.parkedCount() == 0) {
+            walk();
+            hydrate();
+        }
+        const npark = $mod.parkedCount();
+        var pfds: [1 + $mod.MAX_STREAMS]std.posix.pollfd = undefined;
         pfds[0] = .{ .fd = listen_fd, .events = std.posix.POLL.IN, .revents = 0 };
         var np: usize = 1;
-        for (&parked) |s| {
+        for (&$mod.parked) |s| {
             if (!s.used) continue;
             pfds[np] = .{ .fd = s.sock, .events = std.posix.POLL.OUT, .revents = 0 };
             np += 1;
         }
 
         const timeout: i32 = blk: {
-            if (idleSecs()) |secs| {
+            if ($mod.idleSecs()) |secs| {
                 if (npark == 0) break :blk @as(i32, @intCast(secs * 1000));
             }
-            if (npark > 0) break :blk 250;
-            break :blk -1;
+            break :blk 250;
         };
 
         const n = std.posix.poll(pfds[0..np], timeout) catch 0;
         if (n == 0 and npark == 0) {
-            if (idleSecs() != null) {
+            if ($mod.idleSecs() != null) {
                 std.debug.print("Idle timeout — exiting\n", .{});
                 std.process.exit(0);
             }
@@ -243,12 +246,12 @@ fn idleSecs() ?u32 {
         while (i < np) : (i += 1) {
             const re = pfds[i].revents;
             if (re == 0) continue;
-            for (&parked) |*s| {
+            for (&$mod.parked) |*s| {
                 if (s.used and s.sock == pfds[i].fd) {
                     if (re & (std.posix.POLL.ERR | std.posix.POLL.HUP | std.posix.POLL.NVAL) != 0) {
-                        finishParked(s);
+                        $mod.finishParked(s);
                     } else {
-                        _ = pumpParked(s);
+                        _ = $mod.pumpParked(s);
                     }
                     break;
                 }
@@ -258,12 +261,10 @@ fn idleSecs() ?u32 {
         if (pfds[0].revents & std.posix.POLL.IN != 0) break :wait;
     }
 
-    // Accept connection
     const conn = server.inner.accept() catch {
         return .{ .failed = .{ .msg = "Accept failed", .server = server } };
     };
 
-    // Read HTTP request
     var buffer: [4096]u8 = undefined;
     const bytes_read = conn.stream.read(&buffer) catch {
         conn.stream.close();
@@ -276,10 +277,9 @@ fn idleSecs() ?u32 {
     }
 
     const request_data = buffer[0..bytes_read];
-    const parts = parseHttpRequest(allocator, request_data);
+    const parts = $mod.parseHttpRequest(allocator, request_data);
 
-    // Allocate request
-    const req = allocator.create(Request) catch {
+    const req = allocator.create($mod.Request) catch {
         conn.stream.close();
         return .{ .failed = .{ .msg = "Failed to allocate request", .server = server } };
     };
@@ -297,8 +297,7 @@ fn idleSecs() ?u32 {
         .allocator = allocator,
     };
 
-    // Allocate connection handle
-    const conn_handle = allocator.create(ConnHandle) catch {
+    const conn_handle = allocator.create($mod.ConnHandle) catch {
         conn.stream.close();
         return .{ .failed = .{ .msg = "Failed to allocate connection", .server = server } };
     };
@@ -310,7 +309,7 @@ fn idleSecs() ?u32 {
 ~proc send|zig {
     const allocator = conn.allocator;
 
-    const special = sendSpecial(conn.stream, body, &active_streams);
+    const special = $mod.sendSpecial(conn.stream, body, &$mod.active_streams);
     switch (special) {
         .sent => return .sent,
         .failed => |msg| return .{ .failed = msg },
@@ -319,15 +318,14 @@ fn idleSecs() ?u32 {
 
     const ct = if (content_type) |ct_str| ct_str else "text/plain";
 
-    // Build HTTP response
     var response_buf: std.ArrayList(u8) = .empty;
     defer response_buf.deinit(allocator);
 
     var len_buf: [20]u8 = undefined;
     const len_str = std.fmt.bufPrint(&len_buf, "{}", .{body.len}) catch "0";
     var date_buf: [29]u8 = undefined;
-    formatHttpDate(&date_buf);
-    if (headerPrefixClose(status)) |prefix| {
+    $mod.formatHttpDate(&date_buf);
+    if ($mod.headerPrefixClose(status)) |prefix| {
         response_buf.appendSlice(allocator, prefix) catch {};
         response_buf.appendSlice(allocator, len_str) catch {};
         response_buf.appendSlice(allocator, "\r\nContent-Type: ") catch {};
@@ -341,7 +339,7 @@ fn idleSecs() ?u32 {
         _ = std.fmt.bufPrint(&status_buf, "{}", .{status}) catch {};
         response_buf.appendSlice(allocator, &status_buf) catch {};
         response_buf.appendSlice(allocator, " ") catch {};
-        response_buf.appendSlice(allocator, statusText(status)) catch {};
+        response_buf.appendSlice(allocator, $mod.statusText(status)) catch {};
         response_buf.appendSlice(allocator, "\r\n") catch {};
         response_buf.appendSlice(allocator, "Content-Type: ") catch {};
         response_buf.appendSlice(allocator, ct) catch {};
@@ -353,11 +351,8 @@ fn idleSecs() ?u32 {
         response_buf.appendSlice(allocator, "\r\nConnection: close\r\n\r\n") catch {};
     }
 
-    // Body
     response_buf.appendSlice(allocator, body) catch {};
 
-    // Send (avoid `_ = expr catch` — koruc currently emits `_ = &expr catch` in
-    // effect-branch proc bodies and breaks Zig typechecking).
     conn.stream.writeAll(response_buf.items) catch {
         conn.stream.close();
         return .{ .failed = "Write failed" };

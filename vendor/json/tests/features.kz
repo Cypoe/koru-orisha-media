@@ -1,4 +1,4 @@
-// Port of W:\src\koru-libs\yyjson\tests\features.kz against vendor/json.
+// Port of koru-libs yyjson tests/features.kz against vendor/json.
 // Phantom Doc/Builder negatives are not applicable (no Doc<open!>).
 //
 // EXPECTED output:

@@ -6,15 +6,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMG="koru-orisha-media-build:local"
-KORU_BUILD="${KORU_BUILD:-/home/cypoe/src/koru-build}"
+KORU_BUILD="${KORU_BUILD:-$HOME/src/koru-build}"
 
 if [[ ! -x "$KORU_BUILD/zig-out/bin/koruc" ]]; then
   echo "error: no koruc at $KORU_BUILD/zig-out/bin/koruc" >&2
   exit 1
 fi
 
-# Same std snapshot the pinned koruc was built against. Do not mount a
-# newer W:\src\koru koru_std — emit and /usr/local/src will disagree.
+# Same std snapshot the pinned koruc was built against. A newer koru_std
+# than this koruc will fail to link (emit vs compiler sources disagree).
 STD="$KORU_BUILD/koru_std"
 
 docker build -t "$IMG" -q -f - "$ROOT" <<'DOCKERFILE' >/dev/null
@@ -43,6 +43,7 @@ docker run --rm \
   -v "$STD:/usr/local/koru_std:ro" \
   -v "$ROOT:/work" \
   -e HOME=/tmp \
+  -e VENDOR_ORIGIN_REV="${VENDOR_ORIGIN_REV:-}" \
   "$IMG" \
   bash -lc "set -euo pipefail
     mkdir -p /tmp/kwork

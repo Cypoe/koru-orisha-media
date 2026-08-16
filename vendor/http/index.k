@@ -1,10 +1,10 @@
 // http — this app's HTTP / HATEOAS runtime (not Orisha).
 //
 // Request extras (Range, query, Prefer, Accept, If-None-Match, header()),
-// STREAM:v1 + raw HTTP/1. send, and run-accept-loop + idle.
-// Orisha stays vendored verbatim from W:\src\orisha\lib. Do not import orisha
-// from main.k until pump:reply understands this spec (koruc still double-emits
-// koru_pump on orisha:serve).
+// STREAM:v1 + raw HTTP/1. send, and the accept pump (listen + parked STREAM).
+// Orisha stays vendored verbatim. Do not import orisha from main.k until
+// pump:reply understands this spec (koruc still double-emits koru_pump on
+// orisha:serve).
 
 import std/io
 
@@ -13,6 +13,8 @@ pub tor listen { port: u16 }
 | failed string
 
 pub tor accept { server: *ServerHandle }
+! walk
+! hydrate
 | request { req: *Request, conn: *ConnHandle, server: *ServerHandle }
 | failed { msg: string, server: *ServerHandle }
 
@@ -29,6 +31,8 @@ pub tor run-accept-loop { port: u16 }
 tor accept-loop { server: *ServerHandle }
 accept-loop =
     http:accept(server)
+    ! walk |> _
+    ! hydrate |> _
     | request r |> http:handler(r.req): res |> http:send(r.conn, res.status, res.body, res.content_type)
         | sent |> accept-loop(r.server)
         | failed _ |> accept-loop(r.server)

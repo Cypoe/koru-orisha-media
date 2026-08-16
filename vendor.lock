@@ -1,6 +1,39 @@
 {
   "version": 2,
   "bindings": {
+    "orisha": {
+      "path": "./vendor/orisha",
+      "origin": {
+        "source": "git",
+        "package": "./vendor/orisha",
+        "version": "521a4d7",
+        "integrity": "sha256:112b2d4e8aa12bf3aa63870a86d5729ca6fdf50b73ac29bcb648bca6e2461eb1"
+      },
+      "as-copied": {
+        "tree": "sha256:112b2d4e8aa12bf3aa63870a86d5729ca6fdf50b73ac29bcb648bca6e2461eb1",
+        "files": {
+          "VENDOR.md": "24b73d9eb4ab8551dc24b9bb826d642567ce004cd88c80e34215445ba142f6fa",
+          "index.k": "c481796917ac61f3d9ac9683cd3b2abecb06d3e79cbe50e324e69da0382e58b3",
+          "index.kz": "14627c28091d91f6fb63f9818394280f2c39e1d2866d450e194af6cc28e6bd5e",
+          "pump.k": "b7751a27d5d5fba068cfa4c07c064d8ec5c8f6c6ea12f4a796ac115a0f706377",
+          "pump.kz": "f892af6237bb66c96613b90f4c0eeee001e42bac5b2f1920baab250c2e2c2b76",
+          "routing.k": "615495aba99501489733c6340d4d1f57a90792b0759925b1ee1e6c291908a82f",
+          "routing.kz": "1118d5daa4fc9f7fa654c6464018f69b017b88b41dd7aff6b38b6aa54d16735d"
+        }
+      },
+      "as-compiled": {
+        "tree": "sha256:112b2d4e8aa12bf3aa63870a86d5729ca6fdf50b73ac29bcb648bca6e2461eb1",
+        "files": {
+          "VENDOR.md": "24b73d9eb4ab8551dc24b9bb826d642567ce004cd88c80e34215445ba142f6fa",
+          "index.k": "c481796917ac61f3d9ac9683cd3b2abecb06d3e79cbe50e324e69da0382e58b3",
+          "index.kz": "14627c28091d91f6fb63f9818394280f2c39e1d2866d450e194af6cc28e6bd5e",
+          "pump.k": "b7751a27d5d5fba068cfa4c07c064d8ec5c8f6c6ea12f4a796ac115a0f706377",
+          "pump.kz": "f892af6237bb66c96613b90f4c0eeee001e42bac5b2f1920baab250c2e2c2b76",
+          "routing.k": "615495aba99501489733c6340d4d1f57a90792b0759925b1ee1e6c291908a82f",
+          "routing.kz": "1118d5daa4fc9f7fa654c6464018f69b017b88b41dd7aff6b38b6aa54d16735d"
+        }
+      }
+    },
     "http": {
       "path": "./vendor/http",
       "origin": {
@@ -18,42 +51,11 @@
         }
       },
       "as-compiled": {
-        "tree": "sha256:e8586e2d4fdffa9cb714eaaf382a540a4f49107b241085c3468573e5d28cb851",
+        "tree": "sha256:501aade2be679f629e764b04f6fa583275c3287555df3305fdd7de25f25a9122",
         "files": {
           "README.md": "d08ce5a9e673a275b3d489846e242b911135b55a4d969c2d2914a283151010aa",
-          "index.k": "261781501ce5855457bc612b8381a096f91c94661b56af02c990afc7eddd5c7b",
-          "index.kz": "5047225ca14ac30bc3ec19db25cc67ae53c9761482327008cd22b0f4ce5b361f"
-        }
-      }
-    },
-    "json": {
-      "path": "./vendor/json",
-      "origin": {
-        "source": "tree",
-        "package": "././vendor/json",
-        "version": "local",
-        "integrity": "sha256:ad7b21f7a8c7252470635c2f153bfd4e475ab444cdfdda52d37b7744e435ce05"
-      },
-      "as-copied": {
-        "tree": "sha256:ad7b21f7a8c7252470635c2f153bfd4e475ab444cdfdda52d37b7744e435ce05",
-        "files": {
-          "index.k": "1fde61baa8363d1003c4364c668416c6ce6de55142839a79fdb8815bf55e6e6f",
-          "index.kz": "cada73b663da1e6e170bbca5acfc4c7671e0ea1777426bdbd200fc668e361d6c",
-          "tests/basic.expected": "02c6b1987ba7902e09b81a7cf7c896c62f3d8838496ff0dbcc7fed61a5c818bf",
-          "tests/basic.kz": "af528507d24cd1f4e2932be9fd9aef9f9416671e52a890ed2a98731ce39136c5",
-          "tests/features.expected": "04ca0abed82b3428b27c732bb11632995d9614c4cd1f3a0b3b62e8c8d8d0d343",
-          "tests/features.kz": "e6e4c98b8f495213738580c85720c9b376f4c09e395206f68fd1596bc05d4115"
-        }
-      },
-      "as-compiled": {
-        "tree": "sha256:ad7b21f7a8c7252470635c2f153bfd4e475ab444cdfdda52d37b7744e435ce05",
-        "files": {
-          "index.k": "1fde61baa8363d1003c4364c668416c6ce6de55142839a79fdb8815bf55e6e6f",
-          "index.kz": "cada73b663da1e6e170bbca5acfc4c7671e0ea1777426bdbd200fc668e361d6c",
-          "tests/basic.expected": "02c6b1987ba7902e09b81a7cf7c896c62f3d8838496ff0dbcc7fed61a5c818bf",
-          "tests/basic.kz": "af528507d24cd1f4e2932be9fd9aef9f9416671e52a890ed2a98731ce39136c5",
-          "tests/features.expected": "04ca0abed82b3428b27c732bb11632995d9614c4cd1f3a0b3b62e8c8d8d0d343",
-          "tests/features.kz": "e6e4c98b8f495213738580c85720c9b376f4c09e395206f68fd1596bc05d4115"
+          "index.k": "db00e8076924b25e811f28b40bbb3280cbf932fe85c5004402ee6da053404396",
+          "index.kz": "344889474cfaabf5c61a7474046dad0a0990086f0ea41e1d3c46321d44809930"
         }
       }
     },
@@ -77,49 +79,45 @@
         }
       },
       "as-compiled": {
-        "tree": "sha256:dfc0e2adb9b14c017a7c3123e03344003959f84eeeef045d76b6ac9bea71369e",
+        "tree": "sha256:1858c5edb203126b6562472183eae12a5d4dbaeebc36d411baa924cce92c3fe3",
         "files": {
-          "README.md": "81d423b2a2de5c198b7ab45547ec783d59b08dbee3a3011f8dd540b1165120ce",
+          "README.md": "7e5f15ddca42b58e08e8d369111f5a21318d3551bb952c3df882424854c5ff75",
           "dom/index.k": "e1a3e701a3d0f9f30517eb3d27e4d2d44e823ec8834e164152fe03546645f000",
           "dom/index.kjs": "88ec9ebf7a58bd47488bb2d93c47b425169b1ec42713005a74bd3408820c380b",
           "dom/index.kz": "c9b57866393efcd4922a2d3b7f0055cd47a00419f1cb7cbb8c25b44de9a1b2e5",
           "htmx/index.k": "52226e93240debae9d2b2fb596499001ea3d81534333446db809217b255c3ef1",
-          "htmx/index.kjs": "2e3a25e8041e0ccb462f0a748878c356ea2dd0ec0c2c6156101472cda1b5969e"
+          "htmx/index.kjs": "4414d5067c89926542c1e656794c600306be5cde032e533fb63b2ed3aae18231"
         }
       }
     },
-    "orisha": {
-      "path": "./vendor/orisha",
+    "json": {
+      "path": "./vendor/json",
       "origin": {
-        "source": "git",
-        "package": "././vendor/orisha",
-        "version": "521a4d7",
-        "integrity": "sha256:1a60af81813eb951e6d1bd504826ecc170093e00c59491da19dd04ca71c569f5"
+        "source": "tree",
+        "package": "././vendor/json",
+        "version": "local",
+        "integrity": "sha256:ad7b21f7a8c7252470635c2f153bfd4e475ab444cdfdda52d37b7744e435ce05"
       },
       "as-copied": {
-        "tree": "sha256:1a60af81813eb951e6d1bd504826ecc170093e00c59491da19dd04ca71c569f5",
+        "tree": "sha256:ad7b21f7a8c7252470635c2f153bfd4e475ab444cdfdda52d37b7744e435ce05",
         "files": {
-          ".vendor-rev": "b40b51d06db4f706537c38b06e76ad1904d7d9e5e4f0d73a9d4d118cbc341d2e",
-          "VENDOR.md": "01d2e3b5759142d7afd8b30b21933db0461cf3d57e07728fe10c58f288d09d7a",
-          "index.k": "c481796917ac61f3d9ac9683cd3b2abecb06d3e79cbe50e324e69da0382e58b3",
-          "index.kz": "14627c28091d91f6fb63f9818394280f2c39e1d2866d450e194af6cc28e6bd5e",
-          "pump.k": "b7751a27d5d5fba068cfa4c07c064d8ec5c8f6c6ea12f4a796ac115a0f706377",
-          "pump.kz": "f892af6237bb66c96613b90f4c0eeee001e42bac5b2f1920baab250c2e2c2b76",
-          "routing.k": "615495aba99501489733c6340d4d1f57a90792b0759925b1ee1e6c291908a82f",
-          "routing.kz": "1118d5daa4fc9f7fa654c6464018f69b017b88b41dd7aff6b38b6aa54d16735d"
+          "index.k": "1fde61baa8363d1003c4364c668416c6ce6de55142839a79fdb8815bf55e6e6f",
+          "index.kz": "cada73b663da1e6e170bbca5acfc4c7671e0ea1777426bdbd200fc668e361d6c",
+          "tests/basic.expected": "02c6b1987ba7902e09b81a7cf7c896c62f3d8838496ff0dbcc7fed61a5c818bf",
+          "tests/basic.kz": "af528507d24cd1f4e2932be9fd9aef9f9416671e52a890ed2a98731ce39136c5",
+          "tests/features.expected": "04ca0abed82b3428b27c732bb11632995d9614c4cd1f3a0b3b62e8c8d8d0d343",
+          "tests/features.kz": "e6e4c98b8f495213738580c85720c9b376f4c09e395206f68fd1596bc05d4115"
         }
       },
       "as-compiled": {
-        "tree": "sha256:1a60af81813eb951e6d1bd504826ecc170093e00c59491da19dd04ca71c569f5",
+        "tree": "sha256:d68bd2f077e1d707da4a3cc9d6cd25e2260be91f45b232d4e991d74251005de5",
         "files": {
-          ".vendor-rev": "b40b51d06db4f706537c38b06e76ad1904d7d9e5e4f0d73a9d4d118cbc341d2e",
-          "VENDOR.md": "01d2e3b5759142d7afd8b30b21933db0461cf3d57e07728fe10c58f288d09d7a",
-          "index.k": "c481796917ac61f3d9ac9683cd3b2abecb06d3e79cbe50e324e69da0382e58b3",
-          "index.kz": "14627c28091d91f6fb63f9818394280f2c39e1d2866d450e194af6cc28e6bd5e",
-          "pump.k": "b7751a27d5d5fba068cfa4c07c064d8ec5c8f6c6ea12f4a796ac115a0f706377",
-          "pump.kz": "f892af6237bb66c96613b90f4c0eeee001e42bac5b2f1920baab250c2e2c2b76",
-          "routing.k": "615495aba99501489733c6340d4d1f57a90792b0759925b1ee1e6c291908a82f",
-          "routing.kz": "1118d5daa4fc9f7fa654c6464018f69b017b88b41dd7aff6b38b6aa54d16735d"
+          "index.k": "2262aedf893cbdcd9073969a526b00801b5f88f147cfd98c2541164b4b71c687",
+          "index.kz": "cada73b663da1e6e170bbca5acfc4c7671e0ea1777426bdbd200fc668e361d6c",
+          "tests/basic.expected": "02c6b1987ba7902e09b81a7cf7c896c62f3d8838496ff0dbcc7fed61a5c818bf",
+          "tests/basic.kz": "f06eedfd4082bf06bf09cebf47dfa0b4a64169d2ca02b52e379db405c7230e19",
+          "tests/features.expected": "04ca0abed82b3428b27c732bb11632995d9614c4cd1f3a0b3b62e8c8d8d0d343",
+          "tests/features.kz": "2d3f90916ee8c96e6c6d5a6c469c97a0e8c08b88fe5a382800fe48454af78462"
         }
       }
     }

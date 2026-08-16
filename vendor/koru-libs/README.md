@@ -4,7 +4,7 @@ Same idea as [`orisha`](../orisha): libraries live here; `src/` only consumes th
 
 | Path | Module | Upstream | Vendored |
 |------|--------|----------|----------|
-| `dom/` | `koru/dom` | `W:\src\koru-libs\dom` (`index.k` + `index.kjs` + `index.kz`) | 2026-08-13 — library stem only (no `app/`, `tests/`, `board/`, `closer/`) |
+| `dom/` | `koru/dom` | upstream `koru-libs/dom` (`index.k` + `index.kjs` + `index.kz`) | 2026-08-13 — library stem only (no `app/`, `tests/`, `board/`, `closer/`) |
 | `htmx/` | `koru/htmx` | **ours** (not upstream yet) | generic `hx-*` / `HX-Request` fetch+swap host |
 
 `import koru/dom` and `import koru/htmx` resolve through `"koru": "./vendor/koru-libs"` in the frontend emit `koru.json` (`scripts/build-frontend.sh`). Do not compile an isolated copy of a lib as `main.k`.

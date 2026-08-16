@@ -1,6 +1,6 @@
 # Vendored Orisha lib
 
-Verbatim `lib/` from the Orisha git checkout, after `git pull`.
+Verbatim upstream `lib/` at `521a4d7`, after `git pull`.
 
 App HTTP (Range, STREAM:v1, run-accept-loop) lives in [`vendor/http`](../http/).
 Refresh with:

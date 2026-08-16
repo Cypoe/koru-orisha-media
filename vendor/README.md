@@ -22,7 +22,7 @@
 | `bash scripts/koruc.sh main.k vendor sync` | After editing **our** trees (`vendor/http`): as-compiled only, keeps as-copied. |
 | `bash scripts/koruc.sh main.k vendor diff` | Patch vs upstream (`as-copied` vs live). |
 
-`scripts/vendor-orisha.sh` does `git pull` on the Orisha checkout, snapshots `lib/` into `vendor/orisha`, then `vendor copy orisha`. Do not bind `vendor/http` as an npm package — it is this app's HTTP spec.
+`scripts/vendor-orisha.sh` does `git pull` on the Orisha checkout (`ORISHA_SRC`), snapshots `lib/` into `vendor/orisha`, then `vendor copy orisha`. The pin is **`vendor.lock` next to `main.k`**, not a sidecar inside the tree. Do not bind `vendor/http` as an npm package — it is this app's HTTP spec.
 
 ```text
 import http
