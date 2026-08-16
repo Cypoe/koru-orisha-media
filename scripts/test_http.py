@@ -550,6 +550,40 @@ def main() -> int:
         check(f"{prefix}/media/m_and1e2".encode() in jbody, "prefixed episode contentUrl")
         check(b"/item/work." not in jbody, "prefixed jsonld keeps opaque ids")
 
+    elif mode == "overlap":
+        import socket
+        import threading
+        from urllib.parse import urlparse
+
+        big_id = os.environ["KORU_TEST_BIG_ID"]
+        parsed = urlparse(BASE)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 80
+        home_st: list[int | None] = [None]
+        home_done = threading.Event()
+
+        def fetch_home() -> None:
+            st, _, _ = http("GET", "/")
+            home_st[0] = st
+            home_done.set()
+
+        sock = socket.create_connection((host, port), timeout=5)
+        try:
+            sock.sendall(f"GET /media/{big_id} HTTP/1.1\r\nHost: test\r\n\r\n".encode())
+            hdr = b""
+            while b"\r\n\r\n" not in hdr:
+                chunk = sock.recv(1)
+                if not chunk:
+                    break
+                hdr += chunk
+            check(hdr.startswith(b"HTTP/1.1 200") or hdr.startswith(b"HTTP/1.1 206"), "slow STREAM headers")
+            t = threading.Thread(target=fetch_home, daemon=True)
+            t.start()
+            ok = home_done.wait(3.0)
+            check(ok and home_st[0] == 200, "GET / returns while a STREAM body is still open")
+        finally:
+            sock.close()
+
     else:
         print(f"unknown mode {mode}", file=sys.stderr)
         return 2

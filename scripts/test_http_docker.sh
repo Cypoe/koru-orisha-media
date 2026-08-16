@@ -100,4 +100,39 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=security python3 "$ROOT/scripts/test_http.py"
+
+echo "== http: STREAM does not stall GET / =="
+cleanup
+OV=$(mktemp -d)
+mkdir -p "$OV/media"
+dd if=/dev/zero of="$OV/media/big.bin" bs=1048576 count=4 status=none
+cat >"$OV/manifest.json" <<'JSON'
+{
+  "entries": [
+    {
+      "id": "m_big",
+      "kind": "movie",
+      "title": "big",
+      "path": "big.bin",
+      "bytes": 4194304,
+      "modified_ns": 1,
+      "mime": "application/octet-stream"
+    }
+  ]
+}
+JSON
+docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
+  -e KORU_MEDIA_ROOT=media \
+  -e KORU_MANIFEST=manifest.json \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$OV:/app" \
+  -w /app debian:bookworm-slim /app/media-server >/dev/null
+for i in $(seq 1 50); do
+  if curl -sf "http://127.0.0.1:${PORT}/" >/dev/null; then break; fi
+  sleep 0.1
+done
+KORU_TEST_BASE="http://127.0.0.1:${PORT}" KORU_TEST_MODE=overlap KORU_TEST_BIG_ID=m_big python3 "$ROOT/scripts/test_http.py"
+chmod -R u+w "$OV" 2>/dev/null || true
+rm -rf "$OV" || true
+
 echo "HTTP OK"

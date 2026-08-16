@@ -65,6 +65,109 @@ pub fn streamsBusy() bool {
     return active_streams.load(.seq_cst) != 0;
 }
 
+// STREAM:v1 used to writeAll the whole file inside send(), so one movie held
+// accept. Park on WouldBlock and let accept() poll listen + stream fds.
+const MAX_STREAMS: usize = 16;
+const O_NONBLOCK: u32 = @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }));
+
+const ParkedStream = struct {
+    sock: std.posix.socket_t,
+    file: std.fs.File,
+    remaining: u64,
+    used: bool = false,
+};
+
+var parked: [MAX_STREAMS]ParkedStream = [_]ParkedStream{.{
+    .sock = 0,
+    .file = undefined,
+    .remaining = 0,
+    .used = false,
+}} ** MAX_STREAMS;
+
+fn parkedCount() usize {
+    var n: usize = 0;
+    for (&parked) |s| {
+        if (s.used) n += 1;
+    }
+    return n;
+}
+
+fn markNonBlocking(fd: std.posix.fd_t) void {
+    const flags = std.posix.fcntl(fd, std.posix.F.GETFL, 0) catch 0;
+    _ = std.posix.fcntl(fd, std.posix.F.SETFL, flags | O_NONBLOCK) catch {};
+}
+
+fn finishParked(s: *ParkedStream) void {
+    if (!s.used) return;
+    s.file.close();
+    std.posix.close(s.sock);
+    s.used = false;
+    _ = active_streams.fetchSub(1, .seq_cst);
+}
+
+/// Write one chunk. true = still parked. false = finished or failed (slot freed).
+fn pumpParked(s: *ParkedStream) bool {
+    if (!s.used) return false;
+    if (s.remaining == 0) {
+        finishParked(s);
+        return false;
+    }
+    var chunk: [64 * 1024]u8 = undefined;
+    const want: usize = @intCast(@min(s.remaining, chunk.len));
+    const n = s.file.read(chunk[0..want]) catch {
+        finishParked(s);
+        return false;
+    };
+    if (n == 0) {
+        finishParked(s);
+        return false;
+    }
+    const w = std.posix.write(s.sock, chunk[0..n]) catch |err| switch (err) {
+        error.WouldBlock => {
+            s.file.seekBy(-@as(i64, @intCast(n))) catch {
+                finishParked(s);
+                return false;
+            };
+            return true;
+        },
+        else => {
+            finishParked(s);
+            return false;
+        },
+    };
+    if (w == 0) {
+        finishParked(s);
+        return false;
+    }
+    if (w < n) {
+        s.file.seekBy(-@as(i64, @intCast(n - w))) catch {
+            finishParked(s);
+            return false;
+        };
+    }
+    s.remaining -= w;
+    if (s.remaining == 0) {
+        finishParked(s);
+        return false;
+    }
+    return true;
+}
+
+fn pumpAllParked() void {
+    for (&parked) |*s| {
+        if (s.used) _ = pumpParked(s);
+    }
+}
+
+fn parkStream(sock: std.posix.socket_t, file: std.fs.File, remaining: u64) bool {
+    for (&parked) |*s| {
+        if (s.used) continue;
+        s.* = .{ .sock = sock, .file = file, .remaining = remaining, .used = true };
+        _ = active_streams.fetchAdd(1, .seq_cst);
+        return true;
+    }
+    return false;
+}
 
 fn idleSecs() ?u32 {
     const v = std.posix.getenv("KORU_IDLE_SECS") orelse return null;
@@ -102,20 +205,57 @@ fn idleSecs() ?u32 {
 }
 ~proc accept|zig {
     const allocator = server.allocator;
+    const listen_fd = server.inner.stream.handle;
 
-    // Optional idle exit: poll listen socket; if quiet and no streams, exit process.
-    if (idleSecs()) |secs| {
-        const fd = server.inner.stream.handle;
-        var pfd = [_]std.posix.pollfd{.{
-            .fd = fd,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const n = std.posix.poll(&pfd, @as(i32, @intCast(secs * 1000))) catch 0;
-        if (n == 0 and active_streams.load(.seq_cst) == 0) {
-            std.debug.print("Idle timeout — exiting\n", .{});
-            std.process.exit(0);
+    // While STREAM:v1 bodies are parked, poll listen + those sockets so a movie
+    // does not stall / or posters. When nothing is parked, this is the old
+    // listen-only idle poll.
+    wait: while (true) {
+        pumpAllParked();
+        const npark = parkedCount();
+        var pfds: [1 + MAX_STREAMS]std.posix.pollfd = undefined;
+        pfds[0] = .{ .fd = listen_fd, .events = std.posix.POLL.IN, .revents = 0 };
+        var np: usize = 1;
+        for (&parked) |s| {
+            if (!s.used) continue;
+            pfds[np] = .{ .fd = s.sock, .events = std.posix.POLL.OUT, .revents = 0 };
+            np += 1;
         }
+
+        const timeout: i32 = blk: {
+            if (idleSecs()) |secs| {
+                if (npark == 0) break :blk @as(i32, @intCast(secs * 1000));
+            }
+            if (npark > 0) break :blk 250;
+            break :blk -1;
+        };
+
+        const n = std.posix.poll(pfds[0..np], timeout) catch 0;
+        if (n == 0 and npark == 0) {
+            if (idleSecs() != null) {
+                std.debug.print("Idle timeout — exiting\n", .{});
+                std.process.exit(0);
+            }
+            continue :wait;
+        }
+
+        var i: usize = 1;
+        while (i < np) : (i += 1) {
+            const re = pfds[i].revents;
+            if (re == 0) continue;
+            for (&parked) |*s| {
+                if (s.used and s.sock == pfds[i].fd) {
+                    if (re & (std.posix.POLL.ERR | std.posix.POLL.HUP | std.posix.POLL.NVAL) != 0) {
+                        finishParked(s);
+                    } else {
+                        _ = pumpParked(s);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (pfds[0].revents & std.posix.POLL.IN != 0) break :wait;
     }
 
     // Accept connection
@@ -384,21 +524,81 @@ fn sendSpecial(stream: std.net.Stream, body: []const u8, lease: *std.atomic.Valu
         rest = rest[nl3 + 1 ..];
         if (rest.len == 0 or rest[0] != '\n') return failClose(stream, "Bad STREAM");
         const hdrs = rest[1..];
-        _ = lease.fetchAdd(1, .seq_cst);
-        defer _ = lease.fetchSub(1, .seq_cst);
         stream.writeAll(hdrs) catch return failClose(stream, "Write failed");
         const file = std.fs.cwd().openFile(path, .{}) catch return failClose(stream, "Open failed");
-        defer file.close();
-        file.seekTo(start) catch return failClose(stream, "Seek failed");
+        file.seekTo(start) catch {
+            file.close();
+            return failClose(stream, "Seek failed");
+        };
         var remaining: u64 = if (end >= start) end - start + 1 else 0;
+        const fd = stream.handle;
+        markNonBlocking(fd);
         var chunk: [64 * 1024]u8 = undefined;
         while (remaining > 0) {
             const want: usize = @intCast(@min(remaining, chunk.len));
-            const n = file.read(chunk[0..want]) catch return failClose(stream, "Read failed");
+            const n = file.read(chunk[0..want]) catch {
+                file.close();
+                return failClose(stream, "Read failed");
+            };
             if (n == 0) break;
-            stream.writeAll(chunk[0..n]) catch return failClose(stream, "Write failed");
-            remaining -= n;
+            const w = std.posix.write(fd, chunk[0..n]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    file.seekBy(-@as(i64, @intCast(n))) catch {
+                        file.close();
+                        return failClose(stream, "Seek failed");
+                    };
+                    if (parkStream(fd, file, remaining)) return .sent;
+                    // No slot: finish this body on this call (old serial path).
+                    markNonBlocking(fd); // still nonblock; drain with poll-on-this-fd
+                    break;
+                },
+                else => {
+                    file.close();
+                    return failClose(stream, "Write failed");
+                },
+            };
+            if (w == 0) {
+                file.close();
+                return failClose(stream, "Write failed");
+            }
+            if (w < n) {
+                file.seekBy(-@as(i64, @intCast(n - w))) catch {
+                    file.close();
+                    return failClose(stream, "Seek failed");
+                };
+            }
+            remaining -= w;
         }
+        if (remaining > 0) {
+            // Slot-full fallback: block this connection until the rest is out.
+            _ = lease.fetchAdd(1, .seq_cst);
+            defer {
+                _ = lease.fetchSub(1, .seq_cst);
+                file.close();
+                stream.close();
+            }
+            while (remaining > 0) {
+                const want: usize = @intCast(@min(remaining, chunk.len));
+                const n = file.read(chunk[0..want]) catch return .{ .failed = "Read failed" };
+                if (n == 0) break;
+                var off: usize = 0;
+                while (off < n) {
+                    const w = std.posix.write(fd, chunk[off..n]) catch |err| switch (err) {
+                        error.WouldBlock => {
+                            var pfd = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.OUT, .revents = 0 }};
+                            _ = std.posix.poll(&pfd, 30_000) catch return .{ .failed = "Write failed" };
+                            continue;
+                        },
+                        else => return .{ .failed = "Write failed" },
+                    };
+                    if (w == 0) return .{ .failed = "Write failed" };
+                    off += w;
+                }
+                remaining -= n;
+            }
+            return .sent;
+        }
+        file.close();
         stream.close();
         return .sent;
     }
