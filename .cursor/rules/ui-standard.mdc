@@ -1,0 +1,16 @@
+---
+description: Medushu UI standard — tokens, no native chrome, complete states.
+alwaysApply: true
+---
+
+# UI standard
+
+Tokens live in `public/app.css` (`--ink`, `--muted`, `--paper`, `--paper-deep`, `--surface`, `--accent`, `--accent-hot`, `--line`, `--radius`, `--header`, `--drawer`). Do not invent one-off hex. Dark default. Fonts: `--font-display` / `--font-body` (Inter).
+
+Never ship unstyled native chrome: `a`, `button`, `select`, `input`, `video`/`audio`, checkboxes, range, `summary`, scrollbars. Every control is a button/chip/field with border + surface, `transition` on color/background/border/opacity only (no font-size or font-weight hover shift), and `:focus-visible`.
+
+Desktop: left sidebar of labeled buttons. Narrow (`max-width: 60rem`): bottom icon-only bar, **one row**, Settings included, every item still looks like a button when idle.
+
+No AI orbs, purple neon glow, pulsing pills, nested cards-in-cards, or `TODO` stubs. Empty/error/loading states are complete.
+
+HTML is `public/fragments/{layout,components,pages}/` filled at request time. No Svelte/React compile. Edit `src/frontend/host.kjs` then `bash scripts/build-frontend.sh`. When adding a UI landmark (`play-title`, `persist-max`, `is-current`, `topbar-logo`), add an assert in `scripts/test_http.py` — do not add a screenshot suite.

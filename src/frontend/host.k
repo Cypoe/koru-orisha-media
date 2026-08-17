@@ -26,5 +26,6 @@ import koru/htmx
 pub tor enhance-player {}
 
 enhance-player()
-// pop_prefix is the app route; html[data-base] supplies the WebStation alias.
+// pop_prefix "/" matches Home `/`, `/item`, `/library` so popstate
+// re-fetches those browse routes without unloading #persist.
 koru/htmx:run(target: "#library-region", protect: "#persist", pop_prefix: "/")

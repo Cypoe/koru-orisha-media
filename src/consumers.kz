@@ -134,22 +134,93 @@ fn appendAppPath(allocator: std.mem.Allocator, out: *std.ArrayList(u8), path: []
     out.appendSlice(allocator, path) catch {};
 }
 
-fn appendHtmlOpen(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    out.appendSlice(allocator, "<html lang=\"en\" data-base=\"") catch {};
-    out.appendSlice(allocator, bp()) catch {};
-    out.appendSlice(allocator, "\">") catch {};
+fn brandName() []const u8 {
+    return "Medushu";
 }
 
-fn appendStylesheet(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    out.appendSlice(allocator, "<link rel=\"stylesheet\" href=\"") catch {};
-    appendAppPath(allocator, out, "/app.css");
-    out.appendSlice(allocator, "\">") catch {};
+const FragSlot = struct { k: []const u8, v: []const u8 };
+
+fn fragOkName(name: []const u8) bool {
+    if (name.len < 6 or !std.mem.endsWith(u8, name, ".html")) return false;
+    if (name[0] == '/' or std.mem.indexOf(u8, name, "..") != null or std.mem.indexOf(u8, name, "//") != null) return false;
+    for (name[0 .. name.len - 5]) |ch| {
+        const ok = (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9') or ch == '-' or ch == '/';
+        if (!ok) return false;
+    }
+    return true;
 }
 
-fn appendScriptEnhance(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    out.appendSlice(allocator, "<script src=\"") catch {};
-    appendAppPath(allocator, out, "/enhance.js");
-    out.appendSlice(allocator, "\" defer></script>") catch {};
+fn fragSlot(slots: []const FragSlot, key: []const u8) []const u8 {
+    for (slots) |s| {
+        if (std.mem.eql(u8, s.k, key)) return s.v;
+    }
+    if (std.mem.eql(u8, key, "base")) return bp();
+    if (std.mem.eql(u8, key, "brand")) return brandName();
+    if (std.mem.eql(u8, key, "browse")) return " hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"";
+    return "";
+}
+
+fn appendFilled(allocator: std.mem.Allocator, out: *std.ArrayList(u8), tpl: []const u8, slots: []const FragSlot) void {
+    var i: usize = 0;
+    while (i < tpl.len) {
+        if (std.mem.indexOfPos(u8, tpl, i, "{{")) |open| {
+            out.appendSlice(allocator, tpl[i..open]) catch {};
+            const close = std.mem.indexOfPos(u8, tpl, open + 2, "}}") orelse {
+                out.appendSlice(allocator, tpl[open..]) catch {};
+                return;
+            };
+            const key = std.mem.trim(u8, tpl[open + 2 .. close], " \t");
+            out.appendSlice(allocator, fragSlot(slots, key)) catch {};
+            i = close + 2;
+        } else {
+            out.appendSlice(allocator, tpl[i..]) catch {};
+            return;
+        }
+    }
+}
+
+fn appendFrag(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, slots: []const FragSlot) void {
+    if (!fragOkName(name)) return;
+    var path_buf: [160]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "public/fragments/{s}", .{name}) catch return;
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const tpl = file.readToEndAlloc(allocator, 24 * 1024) catch return;
+    defer allocator.free(tpl);
+    appendFilled(allocator, out, tpl, slots);
+}
+
+fn fragOwned(allocator: std.mem.Allocator, name: []const u8, slots: []const FragSlot) []const u8 {
+    var tmp: std.ArrayList(u8) = .empty;
+    appendFrag(allocator, &tmp, name, slots);
+    return tmp.toOwnedSlice(allocator) catch "";
+}
+
+fn appendPageOpen(allocator: std.mem.Allocator, out: *std.ArrayList(u8), title: []const u8, body_attrs: []const u8) void {
+    appendPageOpenExtra(allocator, out, title, body_attrs, "");
+}
+
+fn appendPageOpenExtra(allocator: std.mem.Allocator, out: *std.ArrayList(u8), title: []const u8, body_attrs: []const u8, head_extra: []const u8) void {
+    appendFrag(allocator, out, "layout/page-open.html", &.{
+        .{ .k = "title", .v = title },
+        .{ .k = "body_attrs", .v = body_attrs },
+        .{ .k = "head_extra", .v = head_extra },
+    });
+}
+
+fn appendPageClose(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
+    appendFrag(allocator, out, "layout/page-close.html", &.{});
+}
+
+fn appendNavItem(allocator: std.mem.Allocator, out: *std.ArrayList(u8), href: []const u8, label: []const u8, on: bool, nav: []const u8) void {
+    const shown = if (on) fragOwned(allocator, "layout/nav-strong.html", &.{.{ .k = "label", .v = label }}) else label;
+    defer if (on and shown.len > 0) allocator.free(shown);
+    appendFrag(allocator, out, "layout/nav-item.html", &.{
+        .{ .k = "href", .v = href },
+        .{ .k = "label", .v = shown },
+        .{ .k = "active", .v = if (on) " active" else "" },
+        .{ .k = "nav", .v = nav },
+    });
 }
 
 fn libraryBasePath(buf: []u8, kind_filter: ?[]const u8) []const u8 {
@@ -166,26 +237,22 @@ fn appendLibraryEmpty(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kin
         if (needle.len > 0 and total == 0) {
             const q_esc = htmlEscaped(allocator, needle);
             defer if (q_esc.ptr != needle.ptr) allocator.free(q_esc);
-            var msg: [768]u8 = undefined;
-            const line = std.fmt.bufPrint(&msg, "<p class=\"empty\" role=\"status\">No titles match “{s}”. <a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">Clear search</a></p>", .{ q_esc, base, base }) catch {
-                out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No titles match this search.</p>") catch {};
-                return;
-            };
-            out.appendSlice(allocator, line) catch {};
+            appendFrag(allocator, out, "pages/empty-search.html", &.{
+                .{ .k = "q", .v = q_esc },
+                .{ .k = "action", .v = base },
+            });
             return;
         }
     }
     if (total == 0) {
         if (kind_filter) |_| {
-            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No items in this collection. <a href=\"") catch {};
-            appendAppPath(allocator, out, "/library");
-            out.appendSlice(allocator, "\">Browse all</a></p>") catch {};
+            appendFrag(allocator, out, "pages/empty-kind.html", &.{});
         } else {
-            out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">Library is empty.</p>") catch {};
+            appendFrag(allocator, out, "pages/empty-library.html", &.{});
         }
         return;
     }
-    out.appendSlice(allocator, "<p class=\"empty\" role=\"status\">No more items on this page.</p>") catch {};
+    appendFrag(allocator, out, "pages/empty-page.html", &.{});
 }
 
 const DEFAULT_PAGE: u32 = 48;
@@ -198,6 +265,15 @@ fn kindLabel(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "book")) return "Books";
     if (std.mem.eql(u8, kind, "extra")) return "Extras";
     return kind;
+}
+
+fn capabilityKind(capability: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, capability, "movies")) return "movie";
+    if (std.mem.eql(u8, capability, "series")) return "tv";
+    if (std.mem.eql(u8, capability, "music")) return "audio";
+    if (std.mem.eql(u8, capability, "books")) return "book";
+    if (std.mem.eql(u8, capability, "music_videos")) return "musicVideo";
+    return null;
 }
 
 fn kindBadge(kind: []const u8) []const u8 {
@@ -251,6 +327,37 @@ fn editionCaption(rel: []const u8, any_3d: bool) []const u8 {
     return label;
 }
 
+fn qualityPillsHtml(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry) []const u8 {
+    if (std.mem.eql(u8, e.kind, "audio") or std.mem.eql(u8, e.kind, "book") or std.mem.eql(u8, e.kind, "extra")) return "";
+    var bits = koru_media.koru_graph.qualityBitsFromPath(e.path);
+    var files_buf: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+    const files = koru_media.koru_graph.collectWorkFiles(e.path, &files_buf);
+    for (files) |f| {
+        if (entryIsExtra(f)) continue;
+        bits = koru_media.koru_graph.mergeQualityBits(bits, koru_media.koru_graph.qualityBitsFromPath(f.path));
+    }
+    var tmp: std.ArrayList(u8) = .empty;
+    const add = struct {
+        fn go(alloc: std.mem.Allocator, dest: *std.ArrayList(u8), kind: []const u8, label: []const u8) void {
+            appendFrag(alloc, dest, "components/poster-tag.html", &.{
+                .{ .k = "kind", .v = kind },
+                .{ .k = "label", .v = label },
+            });
+        }
+    }.go;
+    if (bits.eight_k) add(allocator, &tmp, "res", "8K") else if (bits.uhd) add(allocator, &tmp, "res", "UHD/4K");
+    if (bits.dv) add(allocator, &tmp, "hdr", "DV") else if (bits.hdr) add(allocator, &tmp, "hdr", "HDR");
+    if (bits.atmos) {
+        if (bits.ch71) add(allocator, &tmp, "audio", "DOLBY ATMOS 7.1") else if (bits.ch51) add(allocator, &tmp, "audio", "DOLBY ATMOS 5.1") else add(allocator, &tmp, "audio", "ATMOS");
+    } else if (bits.dtsx) add(allocator, &tmp, "audio", "DTS-X");
+    if (bits.dim3d) add(allocator, &tmp, "3d", "3D");
+    if (tmp.items.len == 0) {
+        tmp.deinit(allocator);
+        return "";
+    }
+    return tmp.toOwnedSlice(allocator) catch "";
+}
+
 fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
     const shown = cardTitle(e);
     const title = htmlEscaped(allocator, shown);
@@ -260,38 +367,37 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
     const kind_esc = htmlEscaped(allocator, e.kind);
     defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
     const badge = kindBadge(e.kind);
-    out.appendSlice(allocator, "<li class=\"poster-card\"><a class=\"poster-link\" href=\"") catch {};
-    appendAppPath(allocator, out, "/item/");
-    out.appendSlice(allocator, id_esc) catch {};
-    out.appendSlice(allocator, "\" aria-label=\"") catch {};
-    out.appendSlice(allocator, title) catch {};
-    out.appendSlice(allocator, "\"><span class=\"poster-frame\">") catch {};
-    if (e.poster.len > 0) {
-        out.appendSlice(allocator, "<img class=\"poster-art\" src=\"") catch {};
-        appendAppPath(allocator, out, "/art/");
-        out.appendSlice(allocator, id_esc) catch {};
-        out.appendSlice(allocator, "\" alt=\"") catch {};
-        out.appendSlice(allocator, title) catch {};
-        out.appendSlice(allocator, "\"/>") catch {};
-    } else blk: {
-        const h = koru_media.koru_graph.findHydrateOverlay(e.imdb_id);
+    const tags = qualityPillsHtml(allocator, e);
+    defer if (tags.len > 0) allocator.free(tags);
+    var src_buf: [256]u8 = undefined;
+    const art = blk: {
+        if (e.poster.len > 0) {
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+            break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        const h = koru_media.koru_graph.findHydrateForAsset(e.id, e.imdb_id);
         if (!isRemotePoster(h.poster_url)) {
-            out.appendSlice(allocator, "<span class=\"poster-art poster-fallback\" aria-hidden=\"true\"></span>") catch {};
-            break :blk;
+            break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
         }
         const u = htmlEscaped(allocator, h.poster_url);
         defer if (u.ptr != h.poster_url.ptr) allocator.free(u);
-        out.appendSlice(allocator, "<img class=\"poster-art\" src=\"") catch {};
-        out.appendSlice(allocator, u) catch {};
-        out.appendSlice(allocator, "\" alt=\"") catch {};
-        out.appendSlice(allocator, title) catch {};
-        out.appendSlice(allocator, "\"/>") catch {};
-    }
-    out.appendSlice(allocator, "<span class=\"badge kind-") catch {};
-    out.appendSlice(allocator, kind_esc) catch {};
-    out.appendSlice(allocator, "\">") catch {};
-    out.appendSlice(allocator, badge) catch {};
-    out.appendSlice(allocator, "</span><span class=\"play-overlay\" aria-hidden=\"true\"></span></span></a></li>") catch {};
+        break :blk fragOwned(allocator, "components/poster-art.html", &.{
+            .{ .k = "src", .v = u },
+            .{ .k = "title", .v = title },
+        });
+    };
+    defer allocator.free(art);
+    appendFrag(allocator, out, "components/poster-card.html", &.{
+        .{ .k = "id", .v = id_esc },
+        .{ .k = "title", .v = title },
+        .{ .k = "kind", .v = kind_esc },
+        .{ .k = "badge", .v = badge },
+        .{ .k = "art", .v = art },
+        .{ .k = "tags", .v = tags },
+    });
 }
 
 fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, with_region: bool, as_row: bool) void {
@@ -302,47 +408,38 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
     const start: usize = offset;
     const end: usize = start + items.len;
     const row = as_row;
-    // Single swap root: list + pagination. Never include #player here.
-    if (with_region) {
-        out.appendSlice(allocator, "<div id=\"library-region\">") catch {};
-    } else {
-        out.appendSlice(allocator, "<div class=\"shelf-region\">") catch {};
-    }
+    // List + pagination live inside page-level #library-region (chrome / fragments).
+    appendFrag(allocator, out, "components/list-wrap-open.html", &.{.{ .k = "class", .v = if (with_region) "library-region" else "shelf-region" }});
     if (items.len == 0) {
         appendLibraryEmpty(allocator, out, kind_filter, q, page.total);
     } else {
-        if (with_region) {
-            if (row) {
-                out.appendSlice(allocator, "<ul id=\"library-list\" class=\"library-list poster-row\">") catch {};
-            } else {
-                out.appendSlice(allocator, "<ul id=\"library-list\" class=\"library-list poster-grid\">") catch {};
-            }
-        } else if (row) {
-            out.appendSlice(allocator, "<ul class=\"library-list poster-row\">") catch {};
-        } else {
-            out.appendSlice(allocator, "<ul class=\"library-list poster-grid\">") catch {};
-        }
+        appendFrag(allocator, out, "components/list-ul-open.html", &.{
+            .{ .k = "id_attr", .v = if (with_region) " id=\"library-list\"" else "" },
+            .{ .k = "layout", .v = if (row) "poster-row" else "poster-grid" },
+        });
         for (items) |e| {
             appendPosterCard(allocator, out, e);
         }
-        out.appendSlice(allocator, "</ul>") catch {};
+        appendFrag(allocator, out, "components/list-ul-close.html", &.{});
     }
     if (!row and page.total > end) {
         var qb: [192]u8 = undefined;
         const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(end)));
-        var nb: [512]u8 = undefined;
-        const next = std.fmt.bufPrint(&nb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">next</a></p>", .{ qs, qs }) catch "";
-        out.appendSlice(allocator, next) catch {};
+        appendFrag(allocator, out, "components/pagination.html", &.{
+            .{ .k = "href", .v = qs },
+            .{ .k = "label", .v = "next" },
+        });
     }
     if (!row and start > 0) {
         const prev_off = if (start > page_limit) start - page_limit else 0;
         var qb: [192]u8 = undefined;
         const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(prev_off)));
-        var pb: [512]u8 = undefined;
-        const prev = std.fmt.bufPrint(&pb, "<p class=\"pagination\"><a href=\"{s}\" hx-get=\"{s}\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">prev</a></p>", .{ qs, qs }) catch "";
-        out.appendSlice(allocator, prev) catch {};
+        appendFrag(allocator, out, "components/pagination.html", &.{
+            .{ .k = "href", .v = qs },
+            .{ .k = "label", .v = "prev" },
+        });
     }
-    out.appendSlice(allocator, "</div>") catch {};
+    appendFrag(allocator, out, "components/list-wrap-close.html", &.{});
 }
 
 // ============================================================================
@@ -356,27 +453,20 @@ fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kin
     const action = libraryBasePath(&base_buf, kind_filter);
     const placeholder = searchPlaceholder(kind_filter);
 
-    out.appendSlice(allocator, "<nav class=\"affordances\"><form method=\"get\" action=\"") catch {};
-    out.appendSlice(allocator, action) catch {};
-    if (swap) {
-        out.appendSlice(allocator, "\" class=\"search\" hx-get=\"") catch {};
-        out.appendSlice(allocator, action) catch {};
-        out.appendSlice(allocator, "\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\"><label class=\"sr-only\">Search</label><input type=\"search\" name=\"q\" value=\"") catch {};
-    } else {
-        out.appendSlice(allocator, "\" class=\"search\"><label class=\"sr-only\">Search</label><input type=\"search\" name=\"q\" value=\"") catch {};
-    }
-    out.appendSlice(allocator, q_esc) catch {};
-    out.appendSlice(allocator, "\" placeholder=\"") catch {};
-    out.appendSlice(allocator, placeholder) catch {};
-    out.appendSlice(allocator, "\"/></form>") catch {};
-    if (q_val.len > 0) {
-        out.appendSlice(allocator, "<p><a href=\"") catch {};
-        out.appendSlice(allocator, action) catch {};
-        out.appendSlice(allocator, "\" hx-get=\"") catch {};
-        out.appendSlice(allocator, action) catch {};
-        out.appendSlice(allocator, "\" hx-target=\"#library-region\" hx-swap=\"outerHTML\" hx-push-url=\"true\">clear search</a></p>") catch {};
-    }
-    out.appendSlice(allocator, "</nav>") catch {};
+    const hx = if (swap) fragOwned(allocator, "layout/hx-get.html", &.{.{ .k = "action", .v = action }}) else "";
+    defer if (hx.len > 0) allocator.free(hx);
+    const clear = if (q_val.len > 0)
+        fragOwned(allocator, "layout/search-clear.html", &.{.{ .k = "action", .v = action }})
+    else
+        "";
+    defer if (clear.len > 0) allocator.free(clear);
+    appendFrag(allocator, out, "layout/search.html", &.{
+        .{ .k = "action", .v = action },
+        .{ .k = "hx", .v = hx },
+        .{ .k = "q", .v = q_esc },
+        .{ .k = "placeholder", .v = placeholder },
+        .{ .k = "clear", .v = clear },
+    });
 }
 
 const KIND_NAV = [_]struct { id: []const u8, cap: []const u8 }{
@@ -388,19 +478,16 @@ const KIND_NAV = [_]struct { id: []const u8, cap: []const u8 }{
     .{ .id = "extra", .cap = "browse" },
 };
 
-fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, on_discover: bool) void {
-    out.appendSlice(allocator, "<nav class=\"kinds sidebar-nav\" data-host-register=\"") catch {};
-    out.appendSlice(allocator, koru_media.koru_graph.hostRegisterText()) catch {};
-    out.appendSlice(allocator, "\">") catch {};
-    if (on_discover) {
-        out.appendSlice(allocator, "<a class=\"nav-item active\" href=\"") catch {};
-        appendAppPath(allocator, out, "/");
-        out.appendSlice(allocator, "\"><strong>Discover</strong></a>") catch {};
-    } else {
-        out.appendSlice(allocator, "<a class=\"nav-item\" href=\"") catch {};
-        appendAppPath(allocator, out, "/");
-        out.appendSlice(allocator, "\">Discover</a>") catch {};
-    }
+fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, extra_class: []const u8) void {
+    const on_home = std.mem.eql(u8, extra_class, "home");
+    const on_library = std.mem.eql(u8, extra_class, "library");
+    appendFrag(allocator, out, "layout/nav-open.html", &.{.{ .k = "register", .v = koru_media.koru_graph.hostRegisterText() }});
+    var home_href: [160]u8 = undefined;
+    const home = std.fmt.bufPrint(&home_href, "{s}/", .{bp()}) catch "/";
+    appendNavItem(allocator, out, home, "Home", on_home, "home");
+    var lib_href: [160]u8 = undefined;
+    const lib = std.fmt.bufPrint(&lib_href, "{s}/library", .{bp()}) catch "/library";
+    appendNavItem(allocator, out, lib, "Library", on_library, "library");
     var present: [16][]const u8 = undefined;
     const kinds = koru_media.koru_graph.listPresentKinds(&present);
     for (KIND_NAV) |item| {
@@ -413,54 +500,42 @@ fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_fil
             }
         }
         if (!found) continue;
-        const label = kindLabel(item.id);
+        var href_buf: [192]u8 = undefined;
+        const href = std.fmt.bufPrint(&href_buf, "{s}/library/{s}", .{ bp(), item.id }) catch continue;
         const on = if (kind_filter) |k| std.mem.eql(u8, k, item.id) else false;
-        out.appendSlice(allocator, "<a class=\"nav-item") catch {};
-        if (on) out.appendSlice(allocator, " active") catch {};
-        out.appendSlice(allocator, "\" href=\"") catch {};
-        appendAppPath(allocator, out, "/library/");
-        out.appendSlice(allocator, item.id) catch {};
-        out.appendSlice(allocator, "\">") catch {};
-        if (on) {
-            out.appendSlice(allocator, "<strong>") catch {};
-            out.appendSlice(allocator, label) catch {};
-            out.appendSlice(allocator, "</strong>") catch {};
-        } else {
-            out.appendSlice(allocator, label) catch {};
-        }
-        out.appendSlice(allocator, "</a>") catch {};
+        appendNavItem(allocator, out, href, kindLabel(item.id), on, item.id);
     }
-    out.appendSlice(allocator, "</nav>") catch {};
+    var settings_href: [160]u8 = undefined;
+    const sh = std.fmt.bufPrint(&settings_href, "{s}/settings", .{bp()}) catch "/settings";
+    appendNavItem(allocator, out, sh, "Settings", std.mem.eql(u8, extra_class, "settings"), "settings");
+    appendFrag(allocator, out, "layout/nav-close.html", &.{});
 }
 
 fn appendAppChrome(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, extra_class: []const u8) void {
-    out.appendSlice(allocator, "<div class=\"layout") catch {};
-    if (extra_class.len > 0) {
-        out.appendSlice(allocator, " ") catch {};
-        out.appendSlice(allocator, extra_class) catch {};
-    }
-    out.appendSlice(allocator, "\"><aside class=\"sidebar\"><a class=\"logo\" href=\"") catch {};
-    appendAppPath(allocator, out, "/");
-    out.appendSlice(allocator, "\">Koru Media</a>") catch {};
-    appendKindNav(allocator, out, kind_filter, std.mem.eql(u8, extra_class, "home"));
-    out.appendSlice(allocator, "<nav class=\"sidebar-nav sidebar-foot\">") catch {};
-    if (std.mem.eql(u8, extra_class, "settings")) {
-        out.appendSlice(allocator, "<a class=\"nav-item active\" href=\"") catch {};
-        appendAppPath(allocator, out, "/settings");
-        out.appendSlice(allocator, "\"><strong>Settings</strong></a>") catch {};
-    } else {
-        out.appendSlice(allocator, "<a class=\"nav-item\" href=\"") catch {};
-        appendAppPath(allocator, out, "/settings");
-        out.appendSlice(allocator, "\">Settings</a>") catch {};
-    }
-    out.appendSlice(allocator, "</nav></aside><div class=\"main\"><header class=\"topbar\">") catch {};
-    const swap = extra_class.len == 0 or std.mem.eql(u8, extra_class, "home");
+    var class_buf: [64]u8 = undefined;
+    const layout_class: []const u8 = if (extra_class.len == 0)
+        ""
+    else
+        (std.fmt.bufPrint(&class_buf, " {s}", .{extra_class}) catch extra_class);
+    appendFrag(allocator, out, "layout/chrome-start.html", &.{.{ .k = "layout_class", .v = layout_class }});
+    appendKindNav(allocator, out, kind_filter, extra_class);
+    appendFrag(allocator, out, "layout/chrome-foot.html", &.{});
+    const swap = !std.mem.eql(u8, extra_class, "settings");
     libraryAffordances(allocator, out, kind_filter, q, swap);
-    out.appendSlice(allocator, "</header><div class=\"content\">") catch {};
+    const content_class: []const u8 = if (std.mem.eql(u8, extra_class, "home")) " content-home" else "";
+    const kino_on = std.mem.indexOf(u8, extra_class, "kino") != null;
+    const kino_html = fragOwned(allocator, "components/player-kino.html", &.{
+        .{ .k = "pressed", .v = if (kino_on) "true" else "false" },
+    });
+    defer if (kino_html.len > 0) allocator.free(kino_html);
+    appendFrag(allocator, out, "layout/chrome-region.html", &.{
+        .{ .k = "content_class", .v = content_class },
+        .{ .k = "kino", .v = kino_html },
+    });
 }
 
 fn appendAppChromeEnd(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    out.appendSlice(allocator, "</div></div></div><div id=\"persist\" class=\"persist-player\" hidden><div class=\"persist-inner\"></div></div>") catch {};
+    appendFrag(allocator, out, "layout/chrome-end.html", &.{});
 }
 
 fn preferMinimal(prefer: ?[]const u8) bool {
@@ -489,118 +564,170 @@ fn renderHttpHtml(allocator: std.mem.Allocator, link: []const u8, html: []const 
     return out.toOwnedSlice(allocator) catch html;
 }
 
-fn appendHero(allocator: std.mem.Allocator, html: *std.ArrayList(u8), hero: koru_media.koru_graph.HeroInfo) void {
+fn htmlNotFound(allocator: std.mem.Allocator) []const u8 {
+    const body = fragOwned(allocator, "layout/not-found.html", &.{});
+    defer if (body.len > 0) allocator.free(body);
+    var out: std.ArrayList(u8) = .empty;
+    out.appendSlice(allocator, "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n") catch {};
+    {
+        var lb: [32]u8 = undefined;
+        const ls = std.fmt.bufPrint(&lb, "Content-Length: {d}\r\n", .{body.len}) catch "";
+        out.appendSlice(allocator, ls) catch {};
+    }
+    out.appendSlice(allocator, "Connection: close\r\n\r\n") catch {};
+    out.appendSlice(allocator, body) catch {};
+    return out.toOwnedSlice(allocator) catch "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+}
+
+fn appendHeroSlide(allocator: std.mem.Allocator, html: *std.ArrayList(u8), hero: koru_media.koru_graph.HeroInfo) void {
     if (hero.asset_id.len == 0) return;
     const id_esc = htmlEscaped(allocator, hero.asset_id);
     defer if (id_esc.ptr != hero.asset_id.ptr) allocator.free(id_esc);
     const title = htmlEscaped(allocator, hero.title);
     defer if (title.ptr != hero.title.ptr) allocator.free(title);
-    html.appendSlice(allocator, "<section class=\"hero\" data-hero=\"orisha.hero\"><div class=\"hero-art\">") catch {};
-    html.appendSlice(allocator, "<img class=\"hero-poster\" src=\"") catch {};
-    appendAppPath(allocator, html, "/art/");
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, "\" alt=\"") catch {};
-    html.appendSlice(allocator, title) catch {};
-    html.appendSlice(allocator, "\"/>") catch {};
-    if (hero.trailer_id.len > 0) {
-        const tid = htmlEscaped(allocator, hero.trailer_id);
-        defer if (tid.ptr != hero.trailer_id.ptr) allocator.free(tid);
-        html.appendSlice(allocator, "<video class=\"hero-teaser\" muted loop playsinline preload=\"metadata\" data-src=\"") catch {};
-        appendAppPath(allocator, html, "/media/");
-        html.appendSlice(allocator, tid) catch {};
-        html.appendSlice(allocator, "\"></video>") catch {};
-    } else if (hero.youtube_key.len > 0) {
-        const yt = htmlEscaped(allocator, hero.youtube_key);
-        defer if (yt.ptr != hero.youtube_key.ptr) allocator.free(yt);
-        html.appendSlice(allocator, "<div class=\"hero-teaser\" data-youtube=\"") catch {};
-        html.appendSlice(allocator, yt) catch {};
-        html.appendSlice(allocator, "\"></div>") catch {};
+    const art = blk: {
+        if (hero.has_poster and hero.poster_url.len > 0) {
+            const u = htmlEscaped(allocator, hero.poster_url);
+            defer if (u.ptr != hero.poster_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = u },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (hero.has_poster) {
+            var src_buf: [256]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+    };
+    defer allocator.free(art);
+    const teaser = blk: {
+        if (hero.trailer_id.len > 0) {
+            const tid = htmlEscaped(allocator, hero.trailer_id);
+            defer if (tid.ptr != hero.trailer_id.ptr) allocator.free(tid);
+            break :blk fragOwned(allocator, "components/hero-teaser.html", &.{.{ .k = "id", .v = tid }});
+        }
+        if (hero.youtube_key.len > 0) {
+            const yt = htmlEscaped(allocator, hero.youtube_key);
+            defer if (yt.ptr != hero.youtube_key.ptr) allocator.free(yt);
+            break :blk fragOwned(allocator, "components/hero-youtube.html", &.{.{ .k = "key", .v = yt }});
+        }
+        break :blk "";
+    };
+    defer if (teaser.len > 0) allocator.free(teaser);
+    const plot = if (hero.plot.len > 0) blk: {
+        const p = htmlEscaped(allocator, hero.plot);
+        defer if (p.ptr != hero.plot.ptr) allocator.free(p);
+        break :blk fragOwned(allocator, "components/overview.html", &.{.{ .k = "text", .v = p }});
+    } else "";
+    defer if (plot.len > 0) allocator.free(plot);
+    appendFrag(allocator, html, "components/hero-slide.html", &.{
+        .{ .k = "id", .v = id_esc },
+        .{ .k = "title", .v = title },
+        .{ .k = "art", .v = art },
+        .{ .k = "teaser", .v = teaser },
+        .{ .k = "plot", .v = plot },
+    });
+}
+
+fn appendHeroCarousel(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) void {
+    var buf: [8]koru_media.koru_graph.HeroInfo = undefined;
+    var heroes = koru_media.koru_graph.listHeroes(&buf);
+    if (heroes.len == 0) {
+        if (koru_media.koru_graph.findHero()) |one| {
+            buf[0] = one;
+            heroes = buf[0..1];
+        }
     }
-    html.appendSlice(allocator, "</div><div class=\"hero-copy\"><h1>") catch {};
-    html.appendSlice(allocator, title) catch {};
-    html.appendSlice(allocator, "</h1>") catch {};
-    if (hero.plot.len > 0) {
-        const plot = htmlEscaped(allocator, hero.plot);
-        defer if (plot.ptr != hero.plot.ptr) allocator.free(plot);
-        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
-        html.appendSlice(allocator, plot) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+    if (heroes.len == 0) return;
+    appendFrag(allocator, html, "components/hero-open.html", &.{});
+    for (heroes) |hero| {
+        appendHeroSlide(allocator, html, hero);
     }
-    html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary play-now\" href=\"") catch {};
-    appendAppPath(allocator, html, "/play/");
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, "\" data-media-id=\"") catch {};
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, "\">Play</a></p></div></section>") catch {};
+    appendFrag(allocator, html, "components/hero-track-close.html", &.{});
+    if (heroes.len > 1) appendFrag(allocator, html, "components/hero-controls.html", &.{});
+    appendFrag(allocator, html, "components/hero-close.html", &.{});
 }
 
 fn appendArchiveStatus(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
     if (koru_media.koru_graph.hasProjectionIndex()) {
-        out.appendSlice(allocator, "<p class=\"archive-note\" role=\"status\">Local archive — catalogue names and links overlay matched titles when a projection index is present.</p>") catch {};
+        appendFrag(allocator, out, "pages/archive-catalogue.html", &.{});
     } else {
-        out.appendSlice(allocator, "<p class=\"archive-note\" role=\"status\">Local archive — titles here are files on disk and play without a catalogue fetch.</p>") catch {};
+        appendFrag(allocator, out, "pages/archive-local.html", &.{});
+    }
+}
+
+fn appendHomeShelf(allocator: std.mem.Allocator, html: *std.ArrayList(u8), title: []const u8, kind_filter: ?[]const u8) void {
+    var tmp: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+    const page = koru_media.koru_graph.collectPage(kind_filter, null, .recent, 0, 12, &tmp);
+    if (page.items.len == 0) return;
+    const title_esc = htmlEscaped(allocator, title);
+    defer if (title_esc.ptr != title.ptr) allocator.free(title_esc);
+    appendFrag(allocator, html, "pages/shelf-open.html", &.{.{ .k = "title", .v = title_esc }});
+    appendLibraryList(allocator, html, kind_filter, .recent, null, 12, 0, false, true);
+    appendFrag(allocator, html, "pages/shelf-close.html", &.{});
+}
+
+fn appendHomeBody(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) void {
+    appendHeroCarousel(allocator, html);
+    appendHomeShelf(allocator, html, "Recently added", null);
+    var roots_buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_graph.LibraryRoot = undefined;
+    const roots = koru_media.koru_graph.listLibraryRoots(&roots_buf);
+    for (roots) |root| {
+        if (!root.enabled) continue;
+        const cap = if (root.capability.len > 0) root.capability else koru_media.koru_catalog.inferCapability(root.rel_path);
+        const kind = capabilityKind(cap) orelse continue;
+        const title = if (root.display_name.len > 0) root.display_name else kindLabel(kind);
+        appendHomeShelf(allocator, html, title, kind);
     }
 }
 
 pub fn homeHtml(allocator: std.mem.Allocator) []const u8 {
     var html: std.ArrayList(u8) = .empty;
-    html.appendSlice(allocator, "<!doctype html>") catch {};
-    appendHtmlOpen(allocator, &html);
-    html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Koru Media</title>") catch {};
-    appendStylesheet(allocator, &html);
-    appendScriptEnhance(allocator, &html);
-    html.appendSlice(allocator, "</head><body>") catch {};
+    appendPageOpen(allocator, &html, brandName(), "");
     appendAppChrome(allocator, &html, null, null, "home");
-    if (koru_media.koru_graph.findHero()) |hero| {
-        appendHero(allocator, &html, hero);
-    }
-    html.appendSlice(allocator, "<p class=\"lede\">A direct-play library — browse, play, and stream originals without a transcoder.</p>") catch {};
-    appendArchiveStatus(allocator, &html);
-    html.appendSlice(allocator, "<p class=\"cta\"><a class=\"primary\" href=\"") catch {};
-    appendAppPath(allocator, &html, "/library");
-    html.appendSlice(allocator, "\">Open library</a></p>") catch {};
-    html.appendSlice(allocator, "<section class=\"shelf\"><h2>Recently added</h2>") catch {};
-    appendLibraryList(allocator, &html, "movie", .recent, null, 12, 0, true, true);
-    html.appendSlice(allocator, "</section>") catch {};
-    if (koru_media.koru_graph.hasKind("tv")) {
-        html.appendSlice(allocator, "<section class=\"shelf\"><h2>Series</h2>") catch {};
-        appendLibraryList(allocator, &html, "tv", .recent, null, 12, 0, false, true);
-        html.appendSlice(allocator, "</section>") catch {};
-    }
-    if (koru_media.koru_graph.hasKind("audio")) {
-        html.appendSlice(allocator, "<section class=\"shelf\"><h2>Music</h2>") catch {};
-        appendLibraryList(allocator, &html, "audio", .recent, null, 12, 0, false, true);
-        html.appendSlice(allocator, "</section>") catch {};
-    }
+    appendHomeBody(allocator, &html);
     appendAppChromeEnd(allocator, &html);
-    html.appendSlice(allocator, "</body></html>") catch {};
+    appendPageClose(allocator, &html);
     const body = html.toOwnedSlice(allocator) catch "home error";
     var home_link: [384]u8 = undefined;
     const home_l = std.fmt.bufPrint(&home_link, "<{s}>; rel=\"self\", <{s}/library>; rel=\"related\", <{s}/library/movie>; rel=\"collection\"", .{ homeAbs(), bp(), bp() }) catch "</>; rel=\"self\"";
     return renderHttpHtml(allocator, allocator.dupe(u8, home_l) catch home_l, body);
 }
 
+pub fn homeFragment(allocator: std.mem.Allocator) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    appendFrag(allocator, &html, "layout/region-open.html", &.{});
+    appendHomeBody(allocator, &html);
+    appendFrag(allocator, &html, "layout/region-close.html", &.{});
+    const body = html.toOwnedSlice(allocator) catch "home fragment error";
+    var home_link: [160]u8 = undefined;
+    const home_l = std.fmt.bufPrint(&home_link, "<{s}>; rel=\"self\"", .{homeAbs()}) catch "</>; rel=\"self\"";
+    return renderHttpHtml(allocator, allocator.dupe(u8, home_l) catch home_l, body);
+}
+
+fn appendLibraryHeading(allocator: std.mem.Allocator, html: *std.ArrayList(u8), kind_filter: ?[]const u8) void {
+    const title: []const u8 = if (kind_filter) |k| kindLabel(k) else "Library";
+    appendFrag(allocator, html, "layout/heading.html", &.{.{ .k = "title", .v = title }});
+    appendArchiveStatus(allocator, html);
+}
+
 pub fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
     const page_sz: u32 = if (limit == 0) DEFAULT_PAGE else limit;
     var html: std.ArrayList(u8) = .empty;
-    html.appendSlice(allocator, "<!doctype html>") catch {};
-    appendHtmlOpen(allocator, &html);
-    html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Library · Koru Media</title>") catch {};
-    appendStylesheet(allocator, &html);
-    appendScriptEnhance(allocator, &html);
-    html.appendSlice(allocator, "</head><body>") catch {};
-    appendAppChrome(allocator, &html, kind_filter, q, "");
-    html.appendSlice(allocator, "<h1>") catch {};
-    if (kind_filter) |k| {
-        html.appendSlice(allocator, kindLabel(k)) catch {};
-    } else {
-        html.appendSlice(allocator, "Library") catch {};
-    }
-    html.appendSlice(allocator, "</h1>") catch {};
-    appendArchiveStatus(allocator, &html);
+    var title_buf: [96]u8 = undefined;
+    const page_title = std.fmt.bufPrint(&title_buf, "Library · {s}", .{brandName()}) catch "Library";
+    appendPageOpen(allocator, &html, page_title, "");
+    const chrome: []const u8 = if (kind_filter == null) "library" else "";
+    appendAppChrome(allocator, &html, kind_filter, q, chrome);
+    appendLibraryHeading(allocator, &html, kind_filter);
     appendLibraryList(allocator, &html, kind_filter, sort, q, page_sz, offset, true, false);
     appendAppChromeEnd(allocator, &html);
-    html.appendSlice(allocator, "</body></html>") catch {};
+    appendPageClose(allocator, &html);
     const body = html.toOwnedSlice(allocator) catch "library error";
     if (kind_filter) |k| {
         const k_esc = htmlEscaped(allocator, k);
@@ -682,41 +809,24 @@ fn appendCapSelect(allocator: std.mem.Allocator, out: *std.ArrayList(u8), idx: [
         .{ .v = "music_videos", .l = "Music videos" },
         .{ .v = "mixed", .l = "Mixed — infer from files" },
     };
-    out.appendSlice(allocator, "<label>Capability <select name=\"cap_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\">") catch {};
+    appendFrag(allocator, out, "components/mount-cap-open.html", &.{.{ .k = "idx", .v = idx }});
     for (opts) |o| {
-        out.appendSlice(allocator, "<option value=\"") catch {};
-        out.appendSlice(allocator, o.v) catch {};
-        out.appendSlice(allocator, "\"") catch {};
-        if (std.mem.eql(u8, current, o.v)) out.appendSlice(allocator, " selected") catch {};
-        out.appendSlice(allocator, ">") catch {};
-        out.appendSlice(allocator, o.l) catch {};
-        out.appendSlice(allocator, "</option>") catch {};
+        appendFrag(allocator, out, "components/mount-option.html", &.{
+            .{ .k = "value", .v = o.v },
+            .{ .k = "label", .v = o.l },
+            .{ .k = "selected", .v = if (std.mem.eql(u8, current, o.v)) " selected" else "" },
+        });
     }
-    out.appendSlice(allocator, "</select></label>") catch {};
+    appendFrag(allocator, out, "components/mount-cap-close.html", &.{});
 }
 
 fn appendAffChecks(allocator: std.mem.Allocator, out: *std.ArrayList(u8), idx: []const u8, aff: []const u8) void {
-    const ep = koru_media.koru_catalog.hasAffordance(aff, "episode_graph");
-    const extras = koru_media.koru_catalog.hasAffordance(aff, "extras");
-    const audio_ex = koru_media.koru_catalog.hasAffordance(aff, "audio_as_extra");
-    out.appendSlice(allocator, "<fieldset class=\"mount-aff\"><legend>Affordances</legend>") catch {};
-    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ep_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"1\"") catch {};
-    if (ep) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Episode graph</label>") catch {};
-    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ex_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"1\"") catch {};
-    if (extras) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Extras folders</label>") catch {};
-    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"checkbox\" name=\"aff_ae_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"1\"") catch {};
-    if (audio_ex) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Audio as extra</label></fieldset>") catch {};
+    appendFrag(allocator, out, "components/mount-aff.html", &.{
+        .{ .k = "idx", .v = idx },
+        .{ .k = "ep_checked", .v = if (koru_media.koru_catalog.hasAffordance(aff, "episode_graph")) " checked" else "" },
+        .{ .k = "ex_checked", .v = if (koru_media.koru_catalog.hasAffordance(aff, "extras")) " checked" else "" },
+        .{ .k = "ae_checked", .v = if (koru_media.koru_catalog.hasAffordance(aff, "audio_as_extra")) " checked" else "" },
+    });
 }
 
 fn appendMountCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), i: usize, root: ?koru_media.koru_graph.LibraryRoot, media: []const u8, add_slot: bool) void {
@@ -731,40 +841,39 @@ fn appendMountCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), i: usi
     defer if (path_esc.ptr != path.ptr) allocator.free(path_esc);
     var idx_buf: [4]u8 = undefined;
     const idx = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch "0";
-    out.appendSlice(allocator, "<li class=\"mount-card") catch {};
-    if (add_slot) out.appendSlice(allocator, " mount-add") catch {};
-    out.appendSlice(allocator, "\"><label class=\"mount-on\"><input type=\"checkbox\" name=\"on_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"1\"") catch {};
-    if (enabled) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Enabled</label><label>Name <input type=\"text\" name=\"name_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"") catch {};
-    out.appendSlice(allocator, name_esc) catch {};
-    out.appendSlice(allocator, "\" maxlength=\"80\" placeholder=\"Display name\"></label><label>Path <input type=\"text\" name=\"path_") catch {};
-    out.appendSlice(allocator, idx) catch {};
-    out.appendSlice(allocator, "\" value=\"") catch {};
-    out.appendSlice(allocator, path_esc) catch {};
-    out.appendSlice(allocator, "\" maxlength=\"200\" spellcheck=\"false\" autocomplete=\"off\" placeholder=\"folder under /media\"></label>") catch {};
-    appendCapSelect(allocator, out, idx, cap);
-    if (!add_slot) {
-        out.appendSlice(allocator, "<label class=\"mount-drop\"><input type=\"checkbox\" name=\"drop_") catch {};
-        out.appendSlice(allocator, idx) catch {};
-        out.appendSlice(allocator, "\" value=\"1\"> Remove</label>") catch {};
-    }
-    appendAffChecks(allocator, out, idx, aff);
-    if (path.len > 0) {
-        out.appendSlice(allocator, "<p class=\"hint\"><code>") catch {};
+    var cap_html: std.ArrayList(u8) = .empty;
+    appendCapSelect(allocator, &cap_html, idx, cap);
+    const cap_owned = cap_html.toOwnedSlice(allocator) catch "";
+    defer if (cap_owned.len > 0) allocator.free(cap_owned);
+    const drop = if (!add_slot) fragOwned(allocator, "components/mount-drop.html", &.{.{ .k = "idx", .v = idx }}) else "";
+    defer if (drop.len > 0) allocator.free(drop);
+    var aff_html: std.ArrayList(u8) = .empty;
+    appendAffChecks(allocator, &aff_html, idx, aff);
+    const aff_owned = aff_html.toOwnedSlice(allocator) catch "";
+    defer if (aff_owned.len > 0) allocator.free(aff_owned);
+    const hint = if (path.len > 0) blk: {
         const m_esc = htmlEscaped(allocator, media);
         defer if (m_esc.ptr != media.ptr) allocator.free(m_esc);
-        out.appendSlice(allocator, m_esc) catch {};
-        out.appendSlice(allocator, "/") catch {};
-        out.appendSlice(allocator, path_esc) catch {};
-        out.appendSlice(allocator, "</code> must be a Compose host bind — this page cannot mount Synology volumes.</p>") catch {};
-    } else if (add_slot) {
-        out.appendSlice(allocator, "<p class=\"hint\">Add a folder already bind-mounted under the media root, then tag how the indexer should treat it.</p>") catch {};
-    }
-    out.appendSlice(allocator, "</li>") catch {};
+        break :blk fragOwned(allocator, "components/mount-bind-hint.html", &.{
+            .{ .k = "media", .v = m_esc },
+            .{ .k = "path", .v = path_esc },
+        });
+    } else if (add_slot)
+        fragOwned(allocator, "components/mount-add-hint.html", &.{})
+    else
+        "";
+    defer if (hint.len > 0) allocator.free(hint);
+    appendFrag(allocator, out, "components/mount-card.html", &.{
+        .{ .k = "add_class", .v = if (add_slot) " mount-add" else "" },
+        .{ .k = "idx", .v = idx },
+        .{ .k = "on_checked", .v = if (enabled) " checked" else "" },
+        .{ .k = "name", .v = name_esc },
+        .{ .k = "path", .v = path_esc },
+        .{ .k = "cap", .v = cap_owned },
+        .{ .k = "drop", .v = drop },
+        .{ .k = "aff", .v = aff_owned },
+        .{ .k = "hint", .v = hint },
+    });
 }
 
 fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), notice: []const u8) void {
@@ -772,23 +881,14 @@ fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), not
     const roots = koru_media.koru_graph.listLibraryRoots(&roots_buf);
     const media = koru_media.koru_graph.mediaRoot();
     const max = koru_media.koru_catalog.MAX_LIBRARY_ROOTS;
-    out.appendSlice(allocator, "<div id=\"settings-page\" class=\"settings-page\"><h1>Settings</h1>") catch {};
-    if (notice.len > 0) {
-        out.appendSlice(allocator, "<p class=\"notice\" role=\"status\">") catch {};
+    const notice_html = if (notice.len > 0) blk: {
         const n_esc = htmlEscaped(allocator, notice);
         defer if (n_esc.ptr != notice.ptr) allocator.free(n_esc);
-        out.appendSlice(allocator, n_esc) catch {};
-        out.appendSlice(allocator, "</p>") catch {};
-    }
-    out.appendSlice(allocator, "<form method=\"post\" action=\"") catch {};
-    appendAppPath(allocator, out, "/settings");
-    out.appendSlice(allocator, "\" class=\"settings-form\" hx-post=\"") catch {};
-    appendAppPath(allocator, out, "/settings");
-    out.appendSlice(allocator, "\">") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Libraries</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">Enabled folders under the media root that the binary indexer walks. Tag each entry by capability (what the library is) and affordances (episode graph, extras, audio-as-extra). Compose still has to bind the DSM share into <code>/media/…</code> — adding a row here does not mount a volume.</p>") catch {};
-    out.appendSlice(allocator, "<ul class=\"mount-list\">") catch {};
+        break :blk fragOwned(allocator, "components/notice.html", &.{.{ .k = "text", .v = n_esc }});
+    } else "";
+    defer if (notice_html.len > 0) allocator.free(notice_html);
+    appendFrag(allocator, out, "pages/settings-open.html", &.{.{ .k = "notice", .v = notice_html }});
+    appendFrag(allocator, out, "pages/settings-libraries.html", &.{});
     var i: usize = 0;
     while (i < roots.len and i < max) : (i += 1) {
         appendMountCard(allocator, out, i, roots[i], media, false);
@@ -796,126 +896,79 @@ fn appendSettingsPage(allocator: std.mem.Allocator, out: *std.ArrayList(u8), not
     if (i < max) {
         appendMountCard(allocator, out, i, null, media, true);
     }
-    out.appendSlice(allocator, "</ul></section>") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Indexer</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">Reindex walks enabled folders into the catalog on the next idle request so a playing stream is not interrupted. The walker is this app’s binary, not a host script. A walk that finds 0 files against a non-empty catalog is rolled back.</p>") catch {};
-    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"hidden\" name=\"walk_on_empty\" value=\"0\"><input type=\"checkbox\" name=\"walk_on_empty\" value=\"1\"") catch {};
-    if (koru_media.koru_graph.walkOnEmpty()) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Reindex automatically when the catalog is empty and media binds have files</label>") catch {};
-    out.appendSlice(allocator, "<p class=\"hint\">Same flag as <code>reindex.requested</code> next to the catalog file. <code>KORU_REINDEX=1</code> still forces a walk on boot.</p></section>") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Catalog store</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">SQLite is the linked driver. An external SQL DSN can be stored for a later build; this process will not pretend to open Postgres or MySQL.</p>") catch {};
+    appendFrag(allocator, out, "pages/settings-libraries-end.html", &.{});
+    appendFrag(allocator, out, "pages/settings-indexer.html", &.{
+        .{ .k = "walk_checked", .v = if (koru_media.koru_graph.walkOnEmpty()) " checked" else "" },
+    });
     const drv = koru_media.koru_graph.catalogDriver();
-    out.appendSlice(allocator, "<label>Driver <select name=\"catalog_driver\"><option value=\"sqlite\"") catch {};
-    if (std.ascii.eqlIgnoreCase(drv, "sqlite")) out.appendSlice(allocator, " selected") catch {};
-    out.appendSlice(allocator, ">SQLite (linked)</option><option value=\"postgres\"") catch {};
-    if (std.ascii.eqlIgnoreCase(drv, "postgres")) out.appendSlice(allocator, " selected") catch {};
-    out.appendSlice(allocator, ">PostgreSQL (not linked)</option><option value=\"mysql\"") catch {};
-    if (std.ascii.eqlIgnoreCase(drv, "mysql")) out.appendSlice(allocator, " selected") catch {};
-    out.appendSlice(allocator, ">MySQL (not linked)</option></select></label>") catch {};
     const dsn = koru_media.koru_graph.catalogDsn();
     const dsn_esc = htmlEscaped(allocator, dsn);
     defer if (dsn_esc.ptr != dsn.ptr) allocator.free(dsn_esc);
-    out.appendSlice(allocator, "<label>DSN / SQLite path <input type=\"text\" name=\"catalog_dsn\" value=\"") catch {};
-    out.appendSlice(allocator, dsn_esc) catch {};
-    out.appendSlice(allocator, "\" maxlength=\"400\" spellcheck=\"false\" autocomplete=\"off\"></label>") catch {};
-    if (!koru_media.koru_graph.catalogDriverLinked()) {
-        out.appendSlice(allocator, "<p class=\"notice\" role=\"status\">This driver is not linked. The catalog stays on SQLite until a later build opens external SQL.</p>") catch {};
-    } else {
-        out.appendSlice(allocator, "<p class=\"hint\">SQLite file must live on the <code>/data</code> host bind so it survives Container Manager / Watchtower recreates. Changing the path applies on the next process start.</p>") catch {};
-    }
-    out.appendSlice(allocator, "</section>") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Base path</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">WebStation alias / reverse-proxy prefix. Saved under <code>") catch {};
+    const driver_note = if (!koru_media.koru_graph.catalogDriverLinked())
+        fragOwned(allocator, "pages/settings-driver-unlinked.html", &.{})
+    else
+        fragOwned(allocator, "pages/settings-driver-linked.html", &.{});
+    defer allocator.free(driver_note);
+    appendFrag(allocator, out, "pages/settings-catalog.html", &.{
+        .{ .k = "sel_sqlite", .v = if (std.ascii.eqlIgnoreCase(drv, "sqlite")) " selected" else "" },
+        .{ .k = "sel_postgres", .v = if (std.ascii.eqlIgnoreCase(drv, "postgres")) " selected" else "" },
+        .{ .k = "sel_mysql", .v = if (std.ascii.eqlIgnoreCase(drv, "mysql")) " selected" else "" },
+        .{ .k = "dsn", .v = dsn_esc },
+        .{ .k = "driver_note", .v = driver_note },
+    });
     const cfg = koru_media.koru_graph.configPath();
     const cfg_esc = htmlEscaped(allocator, cfg);
     defer if (cfg_esc.ptr != cfg.ptr) allocator.free(cfg_esc);
-    out.appendSlice(allocator, cfg_esc) catch {};
-    out.appendSlice(allocator, "</code>. Compose env <code>KORU_BASE_PATH</code> is the fallback when this field is empty. Do not use <code>/media</code> — that name is the byte-stream route.</p>") catch {};
     const alias = bp();
     const alias_esc = htmlEscaped(allocator, alias);
     defer if (alias_esc.ptr != alias.ptr) allocator.free(alias_esc);
-    out.appendSlice(allocator, "<label>Base path <input type=\"text\" name=\"base_path\" value=\"") catch {};
-    out.appendSlice(allocator, alias_esc) catch {};
-    out.appendSlice(allocator, "\" maxlength=\"80\" spellcheck=\"false\" placeholder=\"/korisha\"></label></section>") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Catalogue keys</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">TMDB and TVDB credentials live in this settings file on the config bind. The binary hydrate client reads them; they are never baked into the image. Empty token fields leave the saved value unchanged.</p>") catch {};
-    out.appendSlice(allocator, "<label>TMDB access token <input type=\"password\" name=\"tmdb_token\" value=\"\" maxlength=\"240\" autocomplete=\"off\" placeholder=\"") catch {};
-    if (koru_media.koru_graph.tmdbToken().len > 0) {
-        out.appendSlice(allocator, "unchanged") catch {};
-    } else {
-        out.appendSlice(allocator, "TMDB read token") catch {};
-    }
-    out.appendSlice(allocator, "\"></label>") catch {};
-    out.appendSlice(allocator, "<label>TMDB API key <input type=\"password\" name=\"tmdb_api_key\" value=\"\" maxlength=\"80\" autocomplete=\"off\" placeholder=\"") catch {};
-    if (koru_media.koru_graph.tmdbApiKey().len > 0) {
-        out.appendSlice(allocator, "unchanged") catch {};
-    } else {
-        out.appendSlice(allocator, "optional if token is set") catch {};
-    }
-    out.appendSlice(allocator, "\"></label>") catch {};
-    out.appendSlice(allocator, "<label>TVDB API key <input type=\"password\" name=\"tvdb_api_key\" value=\"\" maxlength=\"80\" autocomplete=\"off\" placeholder=\"") catch {};
-    if (koru_media.koru_graph.tvdbApiKey().len > 0) {
-        out.appendSlice(allocator, "unchanged") catch {};
-    } else {
-        out.appendSlice(allocator, "optional") catch {};
-    }
-    out.appendSlice(allocator, "\"></label>") catch {};
-    out.appendSlice(allocator, "<label>TVDB PIN <input type=\"password\" name=\"tvdb_pin\" value=\"\" maxlength=\"40\" autocomplete=\"off\" placeholder=\"") catch {};
-    if (koru_media.koru_graph.tvdbPin().len > 0) {
-        out.appendSlice(allocator, "unchanged") catch {};
-    } else {
-        out.appendSlice(allocator, "optional") catch {};
-    }
-    out.appendSlice(allocator, "\"></label></section>") catch {};
-
-    out.appendSlice(allocator, "<section class=\"settings-section\"><h2>Sign-in</h2>") catch {};
-    out.appendSlice(allocator, "<p class=\"lede\">Household password becomes a session cookie. Leave the field blank to keep the current hash. DSM reverse-proxy users can pass a forwarded-user header instead.</p>") catch {};
-    out.appendSlice(allocator, "<label>Password <input type=\"password\" name=\"login_password\" value=\"\" maxlength=\"120\" autocomplete=\"new-password\" placeholder=\"") catch {};
-    if (koru_media.koru_graph.hasLoginPassword()) {
-        out.appendSlice(allocator, "unchanged") catch {};
-    } else {
-        out.appendSlice(allocator, "set a password") catch {};
-    }
-    out.appendSlice(allocator, "\"></label>") catch {};
-    out.appendSlice(allocator, "<label class=\"mount-check\"><input type=\"hidden\" name=\"trust_proxy_user\" value=\"0\"><input type=\"checkbox\" name=\"trust_proxy_user\" value=\"1\"") catch {};
-    if (koru_media.koru_graph.trustProxyUser()) out.appendSlice(allocator, " checked") catch {};
-    out.appendSlice(allocator, "> Trust proxy user header</label>") catch {};
+    appendFrag(allocator, out, "pages/settings-base.html", &.{
+        .{ .k = "config", .v = cfg_esc },
+        .{ .k = "alias", .v = alias_esc },
+    });
+    appendFrag(allocator, out, "pages/settings-keys.html", &.{
+        .{ .k = "ph_tmdb_token", .v = if (koru_media.koru_graph.tmdbToken().len > 0) "unchanged" else "TMDB read token" },
+        .{ .k = "ph_tmdb_key", .v = if (koru_media.koru_graph.tmdbApiKey().len > 0) "unchanged" else "optional if token is set" },
+        .{ .k = "ph_tvdb_key", .v = if (koru_media.koru_graph.tvdbApiKey().len > 0) "unchanged" else "optional" },
+        .{ .k = "ph_tvdb_pin", .v = if (koru_media.koru_graph.tvdbPin().len > 0) "unchanged" else "optional" },
+    });
+    appendFrag(allocator, out, "pages/settings-hydrate.html", &.{});
     const hdr = koru_media.koru_graph.proxyUserHeader();
     const hdr_esc = htmlEscaped(allocator, hdr);
     defer if (hdr_esc.ptr != hdr.ptr) allocator.free(hdr_esc);
-    out.appendSlice(allocator, "<label>Proxy user header <input type=\"text\" name=\"proxy_user_header\" value=\"") catch {};
-    out.appendSlice(allocator, hdr_esc) catch {};
-    out.appendSlice(allocator, "\" maxlength=\"60\" spellcheck=\"false\" placeholder=\"X-Forwarded-User\"></label></section>") catch {};
-
-    out.appendSlice(allocator, "<p class=\"hint\">Host capabilities: <code>") catch {};
-    out.appendSlice(allocator, koru_media.koru_graph.hostRegisterText()) catch {};
-    out.appendSlice(allocator, "</code></p>") catch {};
-
-    out.appendSlice(allocator, "<p class=\"settings-actions\"><button type=\"submit\" name=\"action\" value=\"save\" class=\"primary\">Save</button>") catch {};
-    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"reindex\" class=\"secondary\">Reindex</button>") catch {};
-    out.appendSlice(allocator, "<button type=\"submit\" name=\"action\" value=\"hydrate\" class=\"secondary\">Hydrate now</button></p></form></div>") catch {};
+    appendFrag(allocator, out, "pages/settings-signin.html", &.{
+        .{ .k = "ph_password", .v = if (koru_media.koru_graph.hasLoginPassword()) "unchanged" else "set a password" },
+        .{ .k = "trust_checked", .v = if (koru_media.koru_graph.trustProxyUser()) " checked" else "" },
+        .{ .k = "proxy_hdr", .v = hdr_esc },
+    });
+    appendFrag(allocator, out, "pages/settings-close.html", &.{
+        .{ .k = "caps", .v = koru_media.koru_graph.hostRegisterText() },
+    });
 }
 
 pub fn settingsHtml(allocator: std.mem.Allocator, notice: []const u8) []const u8 {
     var html: std.ArrayList(u8) = .empty;
-    html.appendSlice(allocator, "<!doctype html>") catch {};
-    appendHtmlOpen(allocator, &html);
-    html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Settings · Koru Media</title>") catch {};
-    appendStylesheet(allocator, &html);
-    appendScriptEnhance(allocator, &html);
-    html.appendSlice(allocator, "</head><body>") catch {};
+    var title_buf: [96]u8 = undefined;
+    const page_title = std.fmt.bufPrint(&title_buf, "Settings · {s}", .{brandName()}) catch "Settings";
+    appendPageOpen(allocator, &html, page_title, "");
     appendAppChrome(allocator, &html, null, null, "settings");
     appendSettingsPage(allocator, &html, notice);
     appendAppChromeEnd(allocator, &html);
-    html.appendSlice(allocator, "</body></html>") catch {};
+    appendPageClose(allocator, &html);
     const body = html.toOwnedSlice(allocator) catch "settings error";
     var link_buf: [256]u8 = undefined;
     const link = std.fmt.bufPrint(&link_buf, "<{s}/settings>; rel=\"self\", <{s}>; rel=\"home\"", .{ bp(), homeAbs() }) catch "</settings>; rel=\"self\"";
+    return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
+}
+
+pub fn settingsFragment(allocator: std.mem.Allocator, notice: []const u8) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    appendFrag(allocator, &html, "layout/region-open.html", &.{});
+    appendSettingsPage(allocator, &html, notice);
+    appendFrag(allocator, &html, "layout/region-close.html", &.{});
+    const body = html.toOwnedSlice(allocator) catch "settings fragment error";
+    var link_buf: [160]u8 = undefined;
+    const link = std.fmt.bufPrint(&link_buf, "<{s}/settings>; rel=\"self\"", .{bp()}) catch "</settings>; rel=\"self\"";
     return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
 }
 
@@ -1046,14 +1099,14 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     const linked = std.ascii.eqlIgnoreCase(drv_trim, "sqlite");
     if (std.mem.eql(u8, action, "hydrate")) {
         koru_media.koru_graph.requestHydrate();
-        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next idle request encodes catalogue JSON into the graph.");
+        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next accept tick encodes the catalogue, including while something is playing.");
     }
     if (std.mem.eql(u8, action, "reindex")) {
         koru_media.koru_graph.requestReindex();
         if (!linked) {
-            return settingsHtml(allocator, "Saved. Reindex is flagged — the next idle request walks enabled folders into the SQLite catalog. The selected SQL driver is not linked.");
+            return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the SQLite catalog, including while something is playing. The selected SQL driver is not linked.");
         }
-        return settingsHtml(allocator, "Saved. Reindex is flagged — the next idle request walks enabled folders into the catalog.");
+        return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the catalog, including while something is playing.");
     }
     if (!linked) {
         return settingsHtml(allocator, "Saved library mounts and settings. The selected SQL driver is not linked; the catalog stays on SQLite.");
@@ -1063,7 +1116,10 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
 
 pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
     var html: std.ArrayList(u8) = .empty;
+    appendFrag(allocator, &html, "layout/region-open.html", &.{});
+    appendLibraryHeading(allocator, &html, kind_filter);
     appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset, true, false);
+    appendFrag(allocator, &html, "layout/region-close.html", &.{});
     const body = html.toOwnedSlice(allocator) catch "fragment error";
     if (kind_filter) |k| {
         const k_esc = htmlEscaped(allocator, k);
@@ -1098,56 +1154,56 @@ fn entryHasProbe(e: koru_media.koru_graph.Entry) bool {
 }
 
 /// Honest indexer facts only — no invented stream/codec matrix.
-fn formatProbeNote(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry, out: []u8) []const u8 {
-    if (!entryHasProbe(e)) return "";
+fn appendProbeNote(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
+    if (!entryHasProbe(e)) return;
     const brand = htmlEscaped(allocator, e.video_brand);
     defer if (brand.ptr != e.video_brand.ptr) allocator.free(brand);
     const vcodec = htmlEscaped(allocator, e.video_codec);
     defer if (vcodec.ptr != e.video_codec.ptr) allocator.free(vcodec);
     const acodec = htmlEscaped(allocator, e.audio_codec);
     defer if (acodec.ptr != e.audio_codec.ptr) allocator.free(acodec);
-
-    var joined: [320]u8 = undefined;
-    var w: usize = 0;
-    const append = struct {
-        fn go(dest: []u8, wp: *usize, piece: []const u8) void {
-            if (wp.* > 0) {
-                const sep = " · ";
-                if (wp.* + sep.len > dest.len) return;
-                @memcpy(dest[wp.* .. wp.* + sep.len], sep);
-                wp.* += sep.len;
-            }
-            if (wp.* + piece.len > dest.len) return;
-            @memcpy(dest[wp.* .. wp.* + piece.len], piece);
-            wp.* += piece.len;
+    var joined: std.ArrayList(u8) = .empty;
+    defer joined.deinit(allocator);
+    const add = struct {
+        fn go(alloc: std.mem.Allocator, dest: *std.ArrayList(u8), piece: []const u8) void {
+            if (dest.items.len > 0) dest.appendSlice(alloc, " · ") catch {};
+            dest.appendSlice(alloc, piece) catch {};
         }
     }.go;
-
     if (e.video_brand.len > 0) {
-        var piece: [128]u8 = undefined;
-        const s = std.fmt.bufPrint(&piece, "brand <code>{s}</code>", .{brand}) catch "brand";
-        append(&joined, &w, s);
+        const s = fragOwned(allocator, "components/probe-code.html", &.{
+            .{ .k = "label", .v = "brand" },
+            .{ .k = "value", .v = brand },
+        });
+        defer allocator.free(s);
+        add(allocator, &joined, s);
     }
     if (e.video_codec.len > 0) {
         if (std.mem.eql(u8, e.video_codec, "unknown")) {
-            append(&joined, &w, "video codec not probed");
+            add(allocator, &joined, "video codec not probed");
         } else {
-            var piece: [128]u8 = undefined;
-            const s = std.fmt.bufPrint(&piece, "video <code>{s}</code>", .{vcodec}) catch "video";
-            append(&joined, &w, s);
+            const s = fragOwned(allocator, "components/probe-code.html", &.{
+                .{ .k = "label", .v = "video" },
+                .{ .k = "value", .v = vcodec },
+            });
+            defer allocator.free(s);
+            add(allocator, &joined, s);
         }
     }
     if (e.audio_codec.len > 0) {
         if (std.mem.eql(u8, e.audio_codec, "unknown")) {
-            append(&joined, &w, "audio codec not probed");
+            add(allocator, &joined, "audio codec not probed");
         } else {
-            var piece: [128]u8 = undefined;
-            const s = std.fmt.bufPrint(&piece, "audio <code>{s}</code>", .{acodec}) catch "audio";
-            append(&joined, &w, s);
+            const s = fragOwned(allocator, "components/probe-code.html", &.{
+                .{ .k = "label", .v = "audio" },
+                .{ .k = "value", .v = acodec },
+            });
+            defer allocator.free(s);
+            add(allocator, &joined, s);
         }
     }
-    if (w == 0) return "";
-    return std.fmt.bufPrint(out, "<p class=\"probe\" role=\"status\">Indexed: {s}</p>", .{joined[0..w]}) catch "";
+    if (joined.items.len == 0) return;
+    appendFrag(allocator, html, "components/probe.html", &.{.{ .k = "text", .v = joined.items }});
 }
 
 fn queryValue(query: ?[]const u8, name: []const u8) ?[]const u8 {
@@ -1408,15 +1464,16 @@ fn resolveItemJsonLd(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entr
 
 fn appendJsonLdScript(allocator: std.mem.Allocator, html: *std.ArrayList(u8), json: []const u8) void {
     if (json.len == 0) return;
-    html.appendSlice(allocator, "<script type=\"application/ld+json\">") catch {};
+    var escaped: std.ArrayList(u8) = .empty;
+    defer escaped.deinit(allocator);
     for (json) |ch| {
         if (ch == '<') {
-            html.appendSlice(allocator, "\\u003c") catch {};
+            escaped.appendSlice(allocator, "\\u003c") catch {};
         } else {
-            html.append(allocator, ch) catch {};
+            escaped.append(allocator, ch) catch {};
         }
     }
-    html.appendSlice(allocator, "</script>") catch {};
+    appendFrag(allocator, html, "layout/jsonld.html", &.{.{ .k = "json", .v = escaped.items }});
 }
 
 pub fn wantsJsonLd(query: ?[]const u8, accept: ?[]const u8) bool {
@@ -1466,68 +1523,67 @@ fn appendHydrateOverlay(allocator: std.mem.Allocator, html: *std.ArrayList(u8), 
     if (include_plot and h.plot.len > 0) {
         const desc = htmlEscaped(allocator, h.plot);
         defer if (desc.ptr != h.plot.ptr) allocator.free(desc);
-        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
-        html.appendSlice(allocator, desc) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/overview.html", &.{.{ .k = "text", .v = desc }});
     }
     if (h.actors.len == 0) return;
-    html.appendSlice(allocator, "<ul class=\"cast\">") catch {};
+    appendFrag(allocator, html, "components/cast-open.html", &.{});
     var it = std.mem.splitScalar(u8, h.actors, '|');
     while (it.next()) |name| {
         if (name.len == 0) continue;
         const n = htmlEscaped(allocator, name);
         defer if (n.ptr != name.ptr) allocator.free(n);
-        html.appendSlice(allocator, "<li>") catch {};
-        html.appendSlice(allocator, n) catch {};
-        html.appendSlice(allocator, "</li>") catch {};
+        appendFrag(allocator, html, "components/cast-item.html", &.{.{ .k = "text", .v = n }});
     }
-    html.appendSlice(allocator, "</ul>") catch {};
+    appendFrag(allocator, html, "components/cast-close.html", &.{});
 }
 
 fn appendNfoOverlay(allocator: std.mem.Allocator, html: *std.ArrayList(u8), nfo: koru_media.koru_graph.NfoMeta, include_plot: bool) void {
     if (include_plot and nfo.plot.len > 0) {
         const desc = htmlEscaped(allocator, nfo.plot);
         defer if (desc.ptr != nfo.plot.ptr) allocator.free(desc);
-        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
-        html.appendSlice(allocator, desc) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/overview.html", &.{.{ .k = "text", .v = desc }});
     }
     if (nfo.aired.len > 0) {
         const aired = htmlEscaped(allocator, nfo.aired);
         defer if (aired.ptr != nfo.aired.ptr) allocator.free(aired);
-        html.appendSlice(allocator, "<p class=\"meta-line nfo-aired\">aired ") catch {};
-        html.appendSlice(allocator, aired) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/meta-aired.html", &.{.{ .k = "text", .v = aired }});
     }
     if (nfo.rating.len > 0) {
         const rating = htmlEscaped(allocator, nfo.rating);
         defer if (rating.ptr != nfo.rating.ptr) allocator.free(rating);
-        html.appendSlice(allocator, "<p class=\"meta-line nfo-rating\">rating ") catch {};
-        html.appendSlice(allocator, rating) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/meta-rating.html", &.{.{ .k = "text", .v = rating }});
     }
 }
 
-fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
+fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry, youtube: []const u8) void {
     var n: usize = 0;
     for (files) |f| {
         if (!entryIsExtra(f)) continue;
         if (!koru_media.koru_graph.pathIsTrailer(f.path)) continue;
         const id_esc = htmlEscaped(allocator, f.id);
         defer if (id_esc.ptr != f.id.ptr) allocator.free(id_esc);
-        html.appendSlice(allocator, " <a class=\"chip trailer\" href=\"") catch {};
-        appendAppPath(allocator, html, "/play/");
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "\">") catch {};
         if (n == 0) {
-            html.appendSlice(allocator, "Trailer</a>") catch {};
+            appendFrag(allocator, html, "components/chip-trailer.html", &.{
+                .{ .k = "id", .v = id_esc },
+                .{ .k = "label", .v = "Trailer" },
+            });
         } else {
             const t = htmlEscaped(allocator, f.title);
             defer if (t.ptr != f.title.ptr) allocator.free(t);
-            html.appendSlice(allocator, t) catch {};
-            html.appendSlice(allocator, "</a>") catch {};
+            appendFrag(allocator, html, "components/chip-trailer.html", &.{
+                .{ .k = "id", .v = id_esc },
+                .{ .k = "label", .v = t },
+            });
         }
         n += 1;
+    }
+    if (youtube.len == 11) {
+        var href_buf: [64]u8 = undefined;
+        const href = std.fmt.bufPrint(&href_buf, "https://www.youtube.com/watch?v={s}", .{youtube}) catch return;
+        appendFrag(allocator, html, "components/chip.html", &.{
+            .{ .k = "href", .v = href },
+            .{ .k = "label", .v = "YouTube trailer" },
+        });
     }
 }
 
@@ -1535,87 +1591,71 @@ fn appendSemanticBlock(allocator: std.mem.Allocator, html: *std.ArrayList(u8), j
     if (include_overview and join.display_description.len > 0) {
         const desc = htmlEscaped(allocator, join.display_description);
         defer if (desc.ptr != join.display_description.ptr) allocator.free(desc);
-        html.appendSlice(allocator, "<p class=\"overview\">") catch {};
-        html.appendSlice(allocator, desc) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/overview.html", &.{.{ .k = "text", .v = desc }});
     }
     if (join.tmdb_url.len > 0 or join.imdb_url.len > 0) {
-        html.appendSlice(allocator, "<p class=\"provider-links\">") catch {};
+        appendFrag(allocator, html, "components/provider-open.html", &.{});
         if (join.tmdb_url.len > 0) {
             const u = htmlEscaped(allocator, join.tmdb_url);
             defer if (u.ptr != join.tmdb_url.ptr) allocator.free(u);
-            html.appendSlice(allocator, "<a class=\"chip\" rel=\"related\" href=\"") catch {};
-            html.appendSlice(allocator, u) catch {};
-            html.appendSlice(allocator, "\">TMDB</a>") catch {};
+            appendFrag(allocator, html, "components/chip.html", &.{
+                .{ .k = "href", .v = u },
+                .{ .k = "label", .v = "TMDB" },
+            });
         }
         if (join.imdb_url.len > 0) {
             const u = htmlEscaped(allocator, join.imdb_url);
             defer if (u.ptr != join.imdb_url.ptr) allocator.free(u);
-            html.appendSlice(allocator, "<a class=\"chip\" rel=\"related\" href=\"") catch {};
-            html.appendSlice(allocator, u) catch {};
-            html.appendSlice(allocator, "\">IMDb</a>") catch {};
+            appendFrag(allocator, html, "components/chip.html", &.{
+                .{ .k = "href", .v = u },
+                .{ .k = "label", .v = "IMDb" },
+            });
         }
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/provider-close.html", &.{});
     }
 }
 
 fn appendCatalogueBlock(allocator: std.mem.Allocator, html: *std.ArrayList(u8), join: koru_media.koru_graph.SemanticJoin, include_overview: bool) void {
-    html.appendSlice(allocator, "<section class=\"catalogue\"><h2 class=\"pane-label\">Catalogue</h2>") catch {};
+    appendFrag(allocator, html, "components/catalogue-open.html", &.{});
     appendSemanticBlock(allocator, html, join, include_overview);
-    html.appendSlice(allocator, "</section>") catch {};
+    appendFrag(allocator, html, "components/catalogue-close.html", &.{});
 }
 
 fn appendArchiveFacts(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, container: []const u8, include_path: bool) void {
-    html.appendSlice(allocator, "<section class=\"archive\"><h2 class=\"pane-label\">Local archive</h2>") catch {};
+    appendFrag(allocator, html, "components/archive-open.html", &.{});
     {
         const file_title = htmlEscaped(allocator, e.title);
         defer if (file_title.ptr != e.title.ptr) allocator.free(file_title);
-        html.appendSlice(allocator, "<p class=\"meta-line file-title\">file ") catch {};
-        html.appendSlice(allocator, file_title) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
+        appendFrag(allocator, html, "components/meta-file.html", &.{.{ .k = "text", .v = file_title }});
     }
     if (include_path and e.path.len > 0) {
         const path_esc = htmlEscaped(allocator, e.path);
         defer if (path_esc.ptr != e.path.ptr) allocator.free(path_esc);
-        html.appendSlice(allocator, "<p class=\"meta-line file-path\">path <code>") catch {};
-        html.appendSlice(allocator, path_esc) catch {};
-        html.appendSlice(allocator, "</code></p>") catch {};
+        appendFrag(allocator, html, "components/meta-path.html", &.{.{ .k = "text", .v = path_esc }});
     }
     if (e.year >= 1000) {
-        var year_buf: [64]u8 = undefined;
-        const year_line = std.fmt.bufPrint(&year_buf, "<p class=\"meta-line\">year {d}</p>", .{e.year}) catch "";
-        html.appendSlice(allocator, year_line) catch {};
+        var year_buf: [16]u8 = undefined;
+        const year_s = std.fmt.bufPrint(&year_buf, "{d}", .{e.year}) catch "";
+        appendFrag(allocator, html, "components/meta-year.html", &.{.{ .k = "text", .v = year_s }});
     }
+    appendFrag(allocator, html, "components/meta-container.html", &.{.{ .k = "text", .v = container }});
     {
-        var cbuf: [128]u8 = undefined;
-        const cline = std.fmt.bufPrint(&cbuf, "<p class=\"meta-line\">container <code>{s}</code></p>", .{container}) catch "";
-        html.appendSlice(allocator, cline) catch {};
+        var bbuf: [24]u8 = undefined;
+        const bytes_s = std.fmt.bufPrint(&bbuf, "{d}", .{e.bytes}) catch "";
+        appendFrag(allocator, html, "components/meta-bytes.html", &.{.{ .k = "text", .v = bytes_s }});
     }
-    {
-        var bbuf: [80]u8 = undefined;
-        const bline = std.fmt.bufPrint(&bbuf, "<p class=\"meta-line file-bytes\">size {d} bytes</p>", .{e.bytes}) catch "";
-        html.appendSlice(allocator, bline) catch {};
-    }
-    var probe_buf: [512]u8 = undefined;
-    const probe = formatProbeNote(allocator, e, &probe_buf);
-    if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
-    html.appendSlice(allocator, "</section>") catch {};
+    appendProbeNote(allocator, html, e);
+    appendFrag(allocator, html, "components/archive-close.html", &.{});
 }
 
 fn appendPhysicalPlain(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, container: []const u8) void {
     if (e.year >= 1000) {
-        var year_buf: [64]u8 = undefined;
-        const year_line = std.fmt.bufPrint(&year_buf, "<p class=\"meta-line\">year {d}</p>", .{e.year}) catch "";
-        html.appendSlice(allocator, year_line) catch {};
+        var year_buf: [16]u8 = undefined;
+        const year_s = std.fmt.bufPrint(&year_buf, "{d}", .{e.year}) catch "";
+        appendFrag(allocator, html, "components/meta-year.html", &.{.{ .k = "text", .v = year_s }});
     }
-    {
-        var cbuf: [128]u8 = undefined;
-        const cline = std.fmt.bufPrint(&cbuf, "<p class=\"meta-line\">container <code>{s}</code></p>", .{container}) catch "";
-        html.appendSlice(allocator, cline) catch {};
-    }
-    var probe_buf: [512]u8 = undefined;
-    const probe = formatProbeNote(allocator, e, &probe_buf);
-    if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
+    appendFrag(allocator, html, "components/meta-container.html", &.{.{ .k = "text", .v = container }});
+    appendProbeNote(allocator, html, e);
 }
 
 fn appendProviderLinkHeader(out: *std.ArrayList(u8), allocator: std.mem.Allocator, join: ?koru_media.koru_graph.SemanticJoin) void {
@@ -1663,53 +1703,150 @@ fn filesAreSeries(kind: []const u8, files: []const koru_media.koru_graph.Entry) 
     return false;
 }
 
-fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
-    var any_ep = false;
+fn neighborFromFilename(files: []const koru_media.koru_graph.Entry, current: koru_media.koru_graph.Entry, want_next: bool) []const u8 {
+    const se = if (current.season > 0 or current.episode > 0)
+        koru_media.koru_graph.SeasonEpisode{ .season = current.season, .episode = current.episode }
+    else
+        koru_media.koru_graph.parseSeasonEpisode(current.path);
+    if (se.season == 0 and se.episode == 0) return "";
+    const cur_rank = (@as(u64, se.season) << 16) | @as(u64, se.episode);
+    var best_id: []const u8 = "";
+    var best_rank: u64 = if (want_next) ~@as(u64, 0) else 0;
     for (files) |f| {
-        if (!entryIsExtra(f)) {
-            any_ep = true;
-            break;
+        if (entryIsExtra(f)) continue;
+        if (std.mem.eql(u8, f.id, current.id)) continue;
+        const fe = if (f.season > 0 or f.episode > 0)
+            koru_media.koru_graph.SeasonEpisode{ .season = f.season, .episode = f.episode }
+        else
+            koru_media.koru_graph.parseSeasonEpisode(f.path);
+        if (fe.season == 0 and fe.episode == 0) continue;
+        const rank = (@as(u64, fe.season) << 16) | @as(u64, fe.episode);
+        if (want_next) {
+            if (rank > cur_rank and rank < best_rank) {
+                best_rank = rank;
+                best_id = f.id;
+            }
+        } else if (rank < cur_rank and rank >= best_rank) {
+            best_rank = rank;
+            best_id = f.id;
         }
     }
+    return best_id;
+}
+
+fn copyId(dst: *[192]u8, src: []const u8) []const u8 {
+    if (src.len == 0 or src.len > dst.len) return "";
+    @memcpy(dst[0..src.len], src);
+    return dst[0..src.len];
+}
+
+const EpisodeNeighbors = struct {
+    prev: []const u8 = "",
+    next: []const u8 = "",
+};
+
+fn episodeNeighbors(e: koru_media.koru_graph.Entry, files: []const koru_media.koru_graph.Entry, prev_buf: *[192]u8, next_buf: *[192]u8) EpisodeNeighbors {
+    var out = EpisodeNeighbors{};
+    if (!filesAreSeries(e.kind, files)) return out;
+    const ent_raw = koru_media.koru_graph.entityForAsset(e.id);
+    var ent_copy: [192]u8 = undefined;
+    if (ent_raw.len > 0 and ent_raw.len <= ent_copy.len) {
+        @memcpy(ent_copy[0..ent_raw.len], ent_raw);
+        const ent = ent_copy[0..ent_raw.len];
+        var rel_buf: [8]koru_media.koru_graph.Related = undefined;
+        const nxt = koru_media.koru_graph.relate(ent, "next", &rel_buf);
+        if (nxt.len > 0 and nxt[0].id.len > 0) {
+            var obj_copy: [192]u8 = undefined;
+            if (nxt[0].id.len <= obj_copy.len) {
+                @memcpy(obj_copy[0..nxt[0].id.len], nxt[0].id);
+                out.next = copyId(next_buf, koru_media.koru_graph.assetForEntity(obj_copy[0..nxt[0].id.len]));
+            }
+        }
+        const prv = koru_media.koru_graph.relate(ent, "previous", &rel_buf);
+        if (prv.len > 0 and prv[0].id.len > 0) {
+            var obj_copy: [192]u8 = undefined;
+            if (prv[0].id.len <= obj_copy.len) {
+                @memcpy(obj_copy[0..prv[0].id.len], prv[0].id);
+                out.prev = copyId(prev_buf, koru_media.koru_graph.assetForEntity(obj_copy[0..prv[0].id.len]));
+            }
+        }
+    }
+    if (out.next.len == 0) out.next = copyId(next_buf, neighborFromFilename(files, e, true));
+    if (out.prev.len == 0) out.prev = copyId(prev_buf, neighborFromFilename(files, e, false));
+    return out;
+}
+
+fn appendPlayerBar(allocator: std.mem.Allocator, html: *std.ArrayList(u8), id_esc: []const u8, prev_id: []const u8, next_id: []const u8, has_subtitles: bool) void {
+    const prev = if (prev_id.len > 0) blk: {
+        const pesc = htmlEscaped(allocator, prev_id);
+        defer if (pesc.ptr != prev_id.ptr) allocator.free(pesc);
+        break :blk fragOwned(allocator, "components/player-prev.html", &.{.{ .k = "id", .v = pesc }});
+    } else "";
+    defer if (prev.len > 0) allocator.free(prev);
+    const next = if (next_id.len > 0) blk: {
+        const nesc = htmlEscaped(allocator, next_id);
+        defer if (nesc.ptr != next_id.ptr) allocator.free(nesc);
+        break :blk fragOwned(allocator, "components/player-next.html", &.{.{ .k = "id", .v = nesc }});
+    } else "";
+    defer if (next.len > 0) allocator.free(next);
+    const subs = if (has_subtitles) fragOwned(allocator, "components/player-subs.html", &.{.{ .k = "id", .v = id_esc }}) else "";
+    defer if (subs.len > 0) allocator.free(subs);
+    appendFrag(allocator, html, "components/player-bar.html", &.{
+        .{ .k = "id", .v = id_esc },
+        .{ .k = "prev", .v = prev },
+        .{ .k = "next", .v = next },
+        .{ .k = "subs", .v = subs },
+    });
+}
+
+fn appendSeasons(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry, current_id: []const u8) void {
+    var any_ep = false;
+    var open_season: u32 = 0xFFFFFFFF;
+    for (files) |f| {
+        if (entryIsExtra(f)) continue;
+        any_ep = true;
+        if (current_id.len > 0 and std.mem.eql(u8, f.id, current_id)) open_season = f.season;
+    }
     if (!any_ep) return;
-    html.appendSlice(allocator, "<section class=\"seasons\">") catch {};
+    appendFrag(allocator, html, "components/seasons-open.html", &.{});
     var current_season: u32 = 0xFFFFFFFF;
     var list_open = false;
+    var details_open = false;
     for (files) |f| {
         if (entryIsExtra(f)) continue;
         if (f.season != current_season) {
-            if (list_open) html.appendSlice(allocator, "</ol>") catch {};
+            if (list_open or details_open) appendFrag(allocator, html, "components/season-close.html", &.{});
             current_season = f.season;
-            if (f.season == 0) {
-                html.appendSlice(allocator, "<h2>Episodes</h2>") catch {};
-            } else {
-                var hbuf: [48]u8 = undefined;
-                const h = std.fmt.bufPrint(&hbuf, "<h2>Season {d}</h2>", .{f.season}) catch "<h2>Season</h2>";
-                html.appendSlice(allocator, h) catch {};
-            }
-            html.appendSlice(allocator, "<ol class=\"episode-list\">") catch {};
+            const opened = current_season == open_season;
+            appendFrag(allocator, html, "components/season-open.html", &.{.{ .k = "open_attr", .v = if (opened) " open" else "" }});
+            details_open = true;
+            var heading_buf: [32]u8 = undefined;
+            const heading: []const u8 = if (f.season == 0)
+                "Episodes"
+            else
+                (std.fmt.bufPrint(&heading_buf, "Season {d}", .{f.season}) catch "Season");
+            appendFrag(allocator, html, "components/season-heading.html", &.{.{ .k = "title", .v = heading }});
             list_open = true;
         }
         const ep_title = htmlEscaped(allocator, f.title);
         defer if (ep_title.ptr != f.title.ptr) allocator.free(ep_title);
         const ep_id = htmlEscaped(allocator, f.id);
         defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
-        html.appendSlice(allocator, "<li><a href=\"") catch {};
-        appendAppPath(allocator, html, "/play/");
-        html.appendSlice(allocator, ep_id) catch {};
-        html.appendSlice(allocator, "\">") catch {};
-        if (f.episode > 0) {
+        var label_buf: [384]u8 = undefined;
+        const label: []const u8 = if (f.episode > 0) blk: {
             var num: [2]u8 = undefined;
             two(&num, f.episode);
-            html.appendSlice(allocator, "E") catch {};
-            html.appendSlice(allocator, &num) catch {};
-            html.appendSlice(allocator, " · ") catch {};
-        }
-        html.appendSlice(allocator, ep_title) catch {};
-        html.appendSlice(allocator, "</a></li>") catch {};
+            break :blk std.fmt.bufPrint(&label_buf, "E{s} · {s}", .{ &num, ep_title }) catch ep_title;
+        } else ep_title;
+        appendFrag(allocator, html, "components/episode-item.html", &.{
+            .{ .k = "id", .v = ep_id },
+            .{ .k = "label", .v = label },
+            .{ .k = "current", .v = if (std.mem.eql(u8, f.id, current_id)) " is-current" else "" },
+            .{ .k = "aria", .v = if (std.mem.eql(u8, f.id, current_id)) " aria-current=\"page\"" else "" },
+        });
     }
-    if (list_open) html.appendSlice(allocator, "</ol>") catch {};
-    html.appendSlice(allocator, "</section>") catch {};
+    if (list_open or details_open) appendFrag(allocator, html, "components/season-close.html", &.{});
+    appendFrag(allocator, html, "components/seasons-close.html", &.{});
 }
 
 fn appendEditions(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry, current_id: []const u8) void {
@@ -1721,7 +1858,7 @@ fn appendEditions(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files:
         if (koru_media.koru_graph.editionLooks3d(f.path)) any_3d = true;
     }
     if (n < 2) return;
-    html.appendSlice(allocator, "<section class=\"editions\"><h2>Editions</h2><ul class=\"edition-list\">") catch {};
+    appendFrag(allocator, html, "components/editions-open.html", &.{});
     for (files) |f| {
         if (entryIsExtra(f)) continue;
         const cap = editionCaption(f.path, any_3d);
@@ -1729,47 +1866,37 @@ fn appendEditions(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files:
         defer if (cap_esc.ptr != cap.ptr) allocator.free(cap_esc);
         const fid = htmlEscaped(allocator, f.id);
         defer if (fid.ptr != f.id.ptr) allocator.free(fid);
-        html.appendSlice(allocator, "<li>") catch {};
-        if (std.mem.eql(u8, f.id, current_id)) {
-            html.appendSlice(allocator, "<strong>") catch {};
-            html.appendSlice(allocator, cap_esc) catch {};
-            html.appendSlice(allocator, "</strong>") catch {};
-        } else {
-            html.appendSlice(allocator, "<a href=\"") catch {};
-            appendAppPath(allocator, html, "/play/");
-            html.appendSlice(allocator, fid) catch {};
-            html.appendSlice(allocator, "\">") catch {};
-            html.appendSlice(allocator, cap_esc) catch {};
-            html.appendSlice(allocator, "</a>") catch {};
-        }
-        html.appendSlice(allocator, " · <a href=\"") catch {};
-        appendAppPath(allocator, html, "/media/");
-        html.appendSlice(allocator, fid) catch {};
-        html.appendSlice(allocator, "?download=1\">download</a></li>") catch {};
+        appendFrag(allocator, html, "components/edition-option.html", &.{
+            .{ .k = "id", .v = fid },
+            .{ .k = "cap", .v = cap_esc },
+            .{ .k = "selected", .v = if (std.mem.eql(u8, f.id, current_id)) " selected" else "" },
+        });
     }
-    html.appendSlice(allocator, "</ul></section>") catch {};
+    appendFrag(allocator, html, "components/editions-close.html", &.{});
 }
 
-fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry) void {
+fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), files: []const koru_media.koru_graph.Entry, current_id: []const u8) void {
     const roles = [_][]const u8{ "soundtrack", "featurette", "document", "trailer", "extra" };
     var opened = false;
     for (roles) |role| {
         var any = false;
+        var has_current = false;
         for (files) |f| {
             if (!entryIsExtra(f)) continue;
             if (std.mem.eql(u8, koru_media.koru_graph.extraRole(f.path, f.mime), role)) {
                 any = true;
-                break;
+                if (current_id.len > 0 and std.mem.eql(u8, f.id, current_id)) has_current = true;
             }
         }
         if (!any) continue;
         if (!opened) {
-            html.appendSlice(allocator, "<section class=\"extras\">") catch {};
+            appendFrag(allocator, html, "components/extras-open.html", &.{});
             opened = true;
         }
-        html.appendSlice(allocator, "<h2>") catch {};
-        html.appendSlice(allocator, extraHeading(role)) catch {};
-        html.appendSlice(allocator, "</h2><ol class=\"episode-list extra-list\">") catch {};
+        appendFrag(allocator, html, "components/extra-block-open.html", &.{
+            .{ .k = "title", .v = extraHeading(role) },
+            .{ .k = "open_attr", .v = if (has_current) " open" else "" },
+        });
         for (files) |f| {
             if (!entryIsExtra(f)) continue;
             if (!std.mem.eql(u8, koru_media.koru_graph.extraRole(f.path, f.mime), role)) continue;
@@ -1777,16 +1904,16 @@ fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), file
             defer if (ep_title.ptr != f.title.ptr) allocator.free(ep_title);
             const ep_id = htmlEscaped(allocator, f.id);
             defer if (ep_id.ptr != f.id.ptr) allocator.free(ep_id);
-            html.appendSlice(allocator, "<li><a href=\"") catch {};
-            appendAppPath(allocator, html, "/play/");
-            html.appendSlice(allocator, ep_id) catch {};
-            html.appendSlice(allocator, "\">") catch {};
-            html.appendSlice(allocator, ep_title) catch {};
-            html.appendSlice(allocator, "</a></li>") catch {};
+            appendFrag(allocator, html, "components/episode-item.html", &.{
+                .{ .k = "id", .v = ep_id },
+                .{ .k = "label", .v = ep_title },
+                .{ .k = "current", .v = if (std.mem.eql(u8, f.id, current_id)) " is-current" else "" },
+                .{ .k = "aria", .v = if (std.mem.eql(u8, f.id, current_id)) " aria-current=\"page\"" else "" },
+            });
         }
-        html.appendSlice(allocator, "</ol>") catch {};
+        appendFrag(allocator, html, "components/extra-block-close.html", &.{});
     }
-    if (opened) html.appendSlice(allocator, "</section>") catch {};
+    if (opened) appendFrag(allocator, html, "components/extras-close.html", &.{});
 }
 
 pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
@@ -1808,79 +1935,61 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         defer if (jsonld.owned and jsonld.text.len > 0) allocator.free(jsonld.text);
         const series_work = jsonLdIsSeriesWork(e, files);
         const nfo = koru_media.koru_graph.findNfoOverlay(e.path, e.season, e.episode, series_work);
-        const hydrate = koru_media.koru_graph.findHydrateOverlay(workImdbOf(e, files));
-        const skip_nfo_plot = if (join) |s| s.display_description.len > 0 else false;
+        const hydrate = koru_media.koru_graph.findHydrateForAsset(e.id, workImdbOf(e, files));
+        const have_nfo_plot = nfo.plot.len > 0;
         var html: std.ArrayList(u8) = .empty;
-        html.appendSlice(allocator, "<!doctype html>") catch {};
-        appendHtmlOpen(allocator, &html);
-        html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, " · Koru Media</title>") catch {};
-        appendStylesheet(allocator, &html);
-        appendScriptEnhance(allocator, &html);
-        appendJsonLdScript(allocator, &html, jsonld.text);
-        html.appendSlice(allocator, "</head><body>") catch {};
+        var title_buf: [256]u8 = undefined;
+        const page_title = std.fmt.bufPrint(&title_buf, "{s} · {s}", .{ title, brandName() }) catch title;
+        var extra: std.ArrayList(u8) = .empty;
+        appendJsonLdScript(allocator, &extra, jsonld.text);
+        const head_extra = extra.toOwnedSlice(allocator) catch "";
+        defer if (head_extra.len > 0) allocator.free(head_extra);
+        appendPageOpenExtra(allocator, &html, page_title, "", head_extra);
         appendAppChrome(allocator, &html, e.kind, null, "item-page");
-        html.appendSlice(allocator, "<article class=\"item\">") catch {};
+        appendFrag(allocator, &html, "components/item-heading.html", &.{
+            .{ .k = "title", .v = title },
+            .{ .k = "kind", .v = kind_esc },
+            .{ .k = "label", .v = kindLabel(e.kind) },
+        });
+        appendFrag(allocator, &html, "components/item-open.html", &.{});
         if (e.poster.len > 0) {
-            html.appendSlice(allocator, "<div class=\"item-layout has-poster\"><div class=\"item-poster\"><img src=\"") catch {};
-            appendAppPath(allocator, &html, "/art/");
-            html.appendSlice(allocator, id_esc) catch {};
-            html.appendSlice(allocator, "\" alt=\"\" width=\"240\"/></div><div class=\"item-body\">") catch {};
+            var src_buf: [256]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch "";
+            appendFrag(allocator, &html, "components/item-poster.html", &.{.{ .k = "src", .v = src }});
         } else if (isRemotePoster(hydrate.poster_url)) {
             const u = htmlEscaped(allocator, hydrate.poster_url);
             defer if (u.ptr != hydrate.poster_url.ptr) allocator.free(u);
-            html.appendSlice(allocator, "<div class=\"item-layout has-poster\"><div class=\"item-poster\"><img src=\"") catch {};
-            html.appendSlice(allocator, u) catch {};
-            html.appendSlice(allocator, "\" alt=\"\" width=\"240\"/></div><div class=\"item-body\">") catch {};
+            appendFrag(allocator, &html, "components/item-poster.html", &.{.{ .k = "src", .v = u }});
         } else {
-            html.appendSlice(allocator, "<div class=\"item-layout\"><div class=\"item-body\">") catch {};
+            appendFrag(allocator, &html, "components/item-body-open.html", &.{});
         }
-        html.appendSlice(allocator, "<h1>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, "</h1>") catch {};
-        appendNfoOverlay(allocator, &html, nfo, !skip_nfo_plot);
-        appendHydrateOverlay(allocator, &html, hydrate, !skip_nfo_plot and nfo.plot.len == 0);
+        appendNfoOverlay(allocator, &html, nfo, true);
+        appendHydrateOverlay(allocator, &html, hydrate, !have_nfo_plot);
         const split = if (join) |s| joinHasCatalogue(s, e.title) else false;
         if (split) {
-            appendCatalogueBlock(allocator, &html, join.?, true);
+            appendCatalogueBlock(allocator, &html, join.?, !have_nfo_plot and hydrate.plot.len == 0);
             if (!series) appendArchiveFacts(allocator, &html, e, container, true);
         } else {
             if (join) |s| {
-                appendSemanticBlock(allocator, &html, s, true);
+                appendSemanticBlock(allocator, &html, s, !have_nfo_plot and hydrate.plot.len == 0);
             }
             if (!series) appendPhysicalPlain(allocator, &html, e, container);
         }
-        html.appendSlice(allocator, "<p class=\"item-actions\"><a class=\"primary play-now\" href=\"") catch {};
-        appendAppPath(allocator, &html, "/play/");
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "\" data-media-id=\"") catch {};
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "\">Play</a>") catch {};
-        appendTrailerChips(allocator, &html, files);
-        html.appendSlice(allocator, " <a href=\"") catch {};
-        appendAppPath(allocator, &html, "/media/");
-        html.appendSlice(allocator, id_esc) catch {};
-        html.appendSlice(allocator, "?download=1\">download</a>") catch {};
-        if (e.subtitle.len > 0) {
-            html.appendSlice(allocator, " <a href=\"") catch {};
-            appendAppPath(allocator, &html, "/subtitles/");
-            html.appendSlice(allocator, id_esc) catch {};
-            html.appendSlice(allocator, "\">subtitles</a>") catch {};
-        }
-        html.appendSlice(allocator, " <a href=\"") catch {};
-        appendAppPath(allocator, &html, "/library/");
-        html.appendSlice(allocator, kind_esc) catch {};
-        html.appendSlice(allocator, "\">more ") catch {};
-        html.appendSlice(allocator, kindLabel(e.kind)) catch {};
-        html.appendSlice(allocator, "</a> <a href=\"") catch {};
-        appendAppPath(allocator, &html, "/library");
-        html.appendSlice(allocator, "\">library</a></p>") catch {};
-        if (series) appendSeasons(allocator, &html, files) else appendEditions(allocator, &html, files, e.id);
-        appendExtrasFrom(allocator, &html, files);
-        html.appendSlice(allocator, "</div></div></article>") catch {};
+        appendFrag(allocator, &html, "components/item-actions-open.html", &.{});
+        appendFrag(allocator, &html, "components/item-play.html", &.{
+            .{ .k = "id", .v = id_esc },
+            .{ .k = "player", .v = koru_media.koru_graph.playerTag(e) },
+        });
+        const yt = if (nfo.youtube.len > 0) nfo.youtube else koru_media.koru_graph.trailerYoutubeFor(e.id);
+        appendTrailerChips(allocator, &html, files, yt);
+        appendFrag(allocator, &html, "components/item-download.html", &.{.{ .k = "id", .v = id_esc }});
+        if (e.subtitle.len > 0) appendFrag(allocator, &html, "components/item-subs.html", &.{.{ .k = "id", .v = id_esc }});
+        appendFrag(allocator, &html, "components/item-actions-close.html", &.{});
+        if (series) appendSeasons(allocator, &html, files, e.id) else appendEditions(allocator, &html, files, e.id);
+        appendExtrasFrom(allocator, &html, files, e.id);
+        appendFrag(allocator, &html, "components/item-close.html", &.{});
         appendAppChromeEnd(allocator, &html);
-        html.appendSlice(allocator, "</body></html>") catch {};
+        appendPageClose(allocator, &html);
         const body = html.toOwnedSlice(allocator) catch "item error";
         var link: std.ArrayList(u8) = .empty;
         link.appendSlice(allocator, "<") catch {};
@@ -1921,27 +2030,15 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         }
         return renderHttpHtml(allocator, link.toOwnedSlice(allocator) catch "</library>; rel=\"up\"", body);
     }
-    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
+    return htmlNotFound(allocator);
 }
 
 fn appendPlayExternal(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, id_esc: []const u8, container: []const u8, as_warning: bool) void {
     if (as_warning) {
-        html.appendSlice(allocator, "<p class=\"capability\" role=\"status\">This <code>") catch {};
-        html.appendSlice(allocator, container) catch {};
-        html.appendSlice(allocator, "</code> file may not play in the browser.</p>") catch {};
+        appendFrag(allocator, html, "components/play-capability.html", &.{.{ .k = "container", .v = container }});
     }
-    html.appendSlice(allocator, "<section class=\"play-external\" data-play=\"external\"><h2 class=\"pane-label\">Play on host</h2><p>") catch {};
-    html.appendSlice(allocator, "<a href=\"") catch {};
-    appendAppPath(allocator, html, "/media/");
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, "?download=1\">download</a> · <a href=\"") catch {};
-    appendAppPath(allocator, html, "/media/");
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, "\">stream URL</a> · <a rel=\"dlna\" href=\"") catch {};
-    appendAppPath(allocator, html, "/play/");
-    html.appendSlice(allocator, id_esc) catch {};
-    html.appendSlice(allocator, ".m3u\">playlist</a></p></section>") catch {};
     _ = e;
+    _ = id_esc;
 }
 
 pub fn playM3u(allocator: std.mem.Allocator, id: []const u8, host: ?[]const u8) []const u8 {
@@ -1975,25 +2072,17 @@ pub fn playM3u(allocator: std.mem.Allocator, id: []const u8, host: ?[]const u8) 
 
 pub fn loginHtml(allocator: std.mem.Allocator, notice: []const u8, status: u16) []const u8 {
     var html: std.ArrayList(u8) = .empty;
-    html.appendSlice(allocator, "<!doctype html>") catch {};
-    appendHtmlOpen(allocator, &html);
-    html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in · Koru Media</title>") catch {};
-    appendStylesheet(allocator, &html);
-    appendScriptEnhance(allocator, &html);
-    html.appendSlice(allocator, "</head><body class=\"login-body\"><div class=\"login-card\"><h1>Sign in</h1>") catch {};
-    if (notice.len > 0) {
-        html.appendSlice(allocator, "<p class=\"notice\" role=\"status\">") catch {};
+    var title_buf: [96]u8 = undefined;
+    const page_title = std.fmt.bufPrint(&title_buf, "Sign in · {s}", .{brandName()}) catch "Sign in";
+    appendPageOpen(allocator, &html, page_title, " class=\"login-body\"");
+    const notice_html = if (notice.len > 0) blk: {
         const n_esc = htmlEscaped(allocator, notice);
         defer if (n_esc.ptr != notice.ptr) allocator.free(n_esc);
-        html.appendSlice(allocator, n_esc) catch {};
-        html.appendSlice(allocator, "</p>") catch {};
-    }
-    html.appendSlice(allocator, "<form method=\"post\" action=\"") catch {};
-    appendAppPath(allocator, &html, "/login");
-    html.appendSlice(allocator, "\" class=\"settings-form\" hx-post=\"") catch {};
-    appendAppPath(allocator, &html, "/login");
-    html.appendSlice(allocator, "\"><label>Password <input type=\"password\" name=\"password\" required autocomplete=\"current-password\"></label>") catch {};
-    html.appendSlice(allocator, "<p class=\"settings-actions\"><button type=\"submit\" class=\"primary\">Sign in</button></p></form></div></body></html>") catch {};
+        break :blk fragOwned(allocator, "components/notice.html", &.{.{ .k = "text", .v = n_esc }});
+    } else "";
+    defer if (notice_html.len > 0) allocator.free(notice_html);
+    appendFrag(allocator, &html, "pages/login.html", &.{.{ .k = "notice", .v = notice_html }});
+    appendPageClose(allocator, &html);
     const body = html.toOwnedSlice(allocator) catch "login error";
     var out: std.ArrayList(u8) = .empty;
     const line: []const u8 = if (status == 401) "HTTP/1.1 401 Unauthorized\r\n" else "HTTP/1.1 200 OK\r\n";
@@ -2046,19 +2135,17 @@ pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         const kind_esc = htmlEscaped(allocator, e.kind);
         defer if (kind_esc.ptr != e.kind.ptr) allocator.free(kind_esc);
         var html: std.ArrayList(u8) = .empty;
-        html.appendSlice(allocator, "<!doctype html>") catch {};
-        appendHtmlOpen(allocator, &html);
-        html.appendSlice(allocator, "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Play ") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, " · Koru Media</title>") catch {};
-        appendStylesheet(allocator, &html);
-        appendScriptEnhance(allocator, &html);
-        html.appendSlice(allocator, "</head><body>") catch {};
+        var title_buf: [256]u8 = undefined;
+        const page_title = std.fmt.bufPrint(&title_buf, "Play {s} · {s}", .{ title, brandName() }) catch title;
+        appendPageOpen(allocator, &html, page_title, "");
         const kino = std.mem.eql(u8, tag, "video");
         appendAppChrome(allocator, &html, e.kind, null, if (kino) "play kino" else "play");
-        html.appendSlice(allocator, "<h1>") catch {};
-        html.appendSlice(allocator, title) catch {};
-        html.appendSlice(allocator, "</h1>") catch {};
+        appendFrag(allocator, &html, "components/play-heading.html", &.{
+            .{ .k = "title", .v = title },
+            .{ .k = "id", .v = id_esc },
+            .{ .k = "kind", .v = kind_esc },
+            .{ .k = "label", .v = kindLabel(e.kind) },
+        });
         const split = if (join) |s| joinHasCatalogue(s, e.title) else false;
         if (split) {
             appendCatalogueBlock(allocator, &html, join.?, false);
@@ -2069,78 +2156,49 @@ pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         if (!likelyBrowserPlayable(e) and (std.mem.eql(u8, tag, "video") or std.mem.eql(u8, tag, "audio"))) {
             appendPlayExternal(allocator, &html, e, id_esc, container, true);
         }
-        if (!split) {
-            var probe_buf: [512]u8 = undefined;
-            const probe = formatProbeNote(allocator, e, &probe_buf);
-            if (probe.len > 0) html.appendSlice(allocator, probe) catch {};
-        }
-        html.appendSlice(allocator, "<div class=\"play-stage watch-stage\">") catch {};
-        // Player owns identity outside any hx-target / #library-region.
+        if (!split) appendProbeNote(allocator, &html, e);
+        var work_files: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+        const files = koru_media.koru_graph.collectWorkFiles(e.path, &work_files);
+        var prev_buf: [192]u8 = undefined;
+        var next_buf: [192]u8 = undefined;
+        const neighbors = episodeNeighbors(e, files, &prev_buf, &next_buf);
+        appendFrag(allocator, &html, "components/play-stage-open.html", &.{});
+        // Player owns identity outside any hx-target / #library-region after pop-out.
         // Native <audio>/<video> when the browser can; otherwise a plugin slot.
         if (std.mem.eql(u8, tag, "audio")) {
-            var player_buf: [448]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<audio id=\"player\" data-player=\"audio\" data-media-id=\"{s}\" controls src=\"{s}/media/{s}\"></audio>", .{ id_esc, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
+            appendFrag(allocator, &html, "components/player-audio.html", &.{.{ .k = "id", .v = id_esc }});
         } else if (std.mem.eql(u8, tag, "video") and e.subtitle.len > 0) {
-            var player_buf: [768]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<video id=\"player\" data-player=\"video\" data-media-id=\"{s}\" controls src=\"{s}/media/{s}\"><track kind=\"subtitles\" src=\"{s}/subtitles/{s}\" srclang=\"en\" label=\"English\" default></video>", .{ id_esc, bp(), id_esc, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
+            appendFrag(allocator, &html, "components/player-video-subs.html", &.{.{ .k = "id", .v = id_esc }});
         } else if (std.mem.eql(u8, tag, "video")) {
-            var player_buf: [448]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<video id=\"player\" data-player=\"video\" data-media-id=\"{s}\" controls src=\"{s}/media/{s}\"></video>", .{ id_esc, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
+            appendFrag(allocator, &html, "components/player-video.html", &.{.{ .k = "id", .v = id_esc }});
         } else if (std.mem.eql(u8, tag, "pdf")) {
-            var player_buf: [576]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<iframe id=\"player\" data-player=\"pdf\" data-media-id=\"{s}\" src=\"{s}/media/{s}\" title=\"PDF\"></iframe>", .{ id_esc, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
+            appendFrag(allocator, &html, "components/player-pdf.html", &.{.{ .k = "id", .v = id_esc }});
         } else {
-            var player_buf: [768]u8 = undefined;
-            const player = std.fmt.bufPrint(&player_buf, "<div id=\"player\" data-player=\"{s}\" data-media-id=\"{s}\" data-mime=\"{s}\" class=\"player-fallback\"><p>This title is not a browser-native stream. <a href=\"{s}/media/{s}?download=1\">Download</a> or attach a player plugin.</p></div>", .{ e.kind, id_esc, e.mime, bp(), id_esc }) catch "";
-            html.appendSlice(allocator, player) catch {};
+            const kind_player = htmlEscaped(allocator, e.kind);
+            defer if (kind_player.ptr != e.kind.ptr) allocator.free(kind_player);
+            const mime_esc = htmlEscaped(allocator, e.mime);
+            defer if (mime_esc.ptr != e.mime.ptr) allocator.free(mime_esc);
+            appendFrag(allocator, &html, "components/player-fallback.html", &.{
+                .{ .k = "kind", .v = kind_player },
+                .{ .k = "id", .v = id_esc },
+                .{ .k = "mime", .v = mime_esc },
+            });
         }
-        html.appendSlice(allocator, "</div>") catch {};
-        // Filled by enhance.js when a saved resume position exists; never replaces #player.
-        html.appendSlice(allocator, "<p id=\"resume-ui\" class=\"resume\" role=\"status\" hidden></p>") catch {};
-        var nav_buf: [640]u8 = undefined;
-        const nav = if (e.subtitle.len > 0)
-            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"{s}/item/{s}\">item</a> · <a href=\"{s}/media/{s}?download=1\">download</a> · <a href=\"{s}/subtitles/{s}\">subtitles</a> · <a href=\"{s}/library/{s}\">more {s}</a></p>", .{ bp(), id_esc, bp(), id_esc, bp(), id_esc, bp(), kind_esc, kind_esc }) catch ""
-        else
-            std.fmt.bufPrint(&nav_buf, "<p class=\"watch-nav\"><a href=\"{s}/item/{s}\">item</a> · <a href=\"{s}/media/{s}?download=1\">download</a> · <a href=\"{s}/library/{s}\">more {s}</a></p>", .{ bp(), id_esc, bp(), id_esc, bp(), kind_esc, kind_esc }) catch "";
-        html.appendSlice(allocator, nav) catch {};
-        {
-            var work_files: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
-            const files = koru_media.koru_graph.collectWorkFiles(e.path, &work_files);
-            if (!filesAreSeries(e.kind, files)) appendEditions(allocator, &html, files, e.id);
-            appendExtrasFrom(allocator, &html, files);
-            const ent_raw = koru_media.koru_graph.entityForAsset(e.id);
-            var ent_copy: [192]u8 = undefined;
-            if (ent_raw.len > 0 and ent_raw.len <= ent_copy.len) {
-                @memcpy(ent_copy[0..ent_raw.len], ent_raw);
-                const ent = ent_copy[0..ent_raw.len];
-                var nxt_buf: [8]koru_media.koru_graph.Related = undefined;
-                const nxt = koru_media.koru_graph.relate(ent, "next", &nxt_buf);
-                if (nxt.len > 0 and nxt[0].id.len > 0) {
-                    var obj_copy: [192]u8 = undefined;
-                    if (nxt[0].id.len <= obj_copy.len) {
-                        @memcpy(obj_copy[0..nxt[0].id.len], nxt[0].id);
-                        const nid = koru_media.koru_graph.assetForEntity(obj_copy[0..nxt[0].id.len]);
-                        if (nid.len > 0) {
-                            const nesc = htmlEscaped(allocator, nid);
-                            defer if (nesc.ptr != nid.ptr) allocator.free(nesc);
-                            html.appendSlice(allocator, "<p class=\"play-next\" data-rel=\"next\"><a href=\"") catch {};
-                            appendAppPath(allocator, &html, "/play/");
-                            html.appendSlice(allocator, nesc) catch {};
-                            html.appendSlice(allocator, "\">Next episode</a></p>") catch {};
-                        }
-                    }
-                }
-            }
+        appendFrag(allocator, &html, "components/play-frame-close.html", &.{});
+        appendFrag(allocator, &html, "components/play-stage-close.html", &.{});
+        appendPlayerBar(allocator, &html, id_esc, neighbors.prev, neighbors.next, e.subtitle.len > 0);
+        appendFrag(allocator, &html, "components/resume-ui.html", &.{});
+        if (filesAreSeries(e.kind, files)) {
+            appendSeasons(allocator, &html, files, e.id);
+        } else {
+            appendEditions(allocator, &html, files, e.id);
         }
-        html.appendSlice(allocator, "<section class=\"related\" aria-label=\"Related in collection\"><h2>More in collection</h2>") catch {};
+        appendExtrasFrom(allocator, &html, files, e.id);
+        appendFrag(allocator, &html, "components/related-open.html", &.{});
         appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0, true, true);
-        html.appendSlice(allocator, "</section>") catch {};
+        appendFrag(allocator, &html, "components/related-close.html", &.{});
         appendAppChromeEnd(allocator, &html);
-        html.appendSlice(allocator, "</body></html>") catch {};
+        appendPageClose(allocator, &html);
         const body = html.toOwnedSlice(allocator) catch "watch error";
         var link: std.ArrayList(u8) = .empty;
         link.appendSlice(allocator, "<") catch {};
@@ -2172,7 +2230,7 @@ pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         }
         return renderHttpHtml(allocator, link.toOwnedSlice(allocator) catch "</library>; rel=\"up\"", body);
     }
-    return "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 58\r\nConnection: close\r\n\r\n<!doctype html><html><body><h1>Not Found</h1></body></html>";
+    return htmlNotFound(allocator);
 }
 
 // ============================================================================
@@ -2380,6 +2438,30 @@ pub fn staticFallback(method: []const u8, path: []const u8, if_none_match: ?[]co
     }
     if (std.mem.eql(u8, path, "/enhance-demo.html") or std.mem.eql(u8, path, "/enhance-demo")) {
         return readPublicFile("public/enhance-demo.html", "text/html; charset=utf-8", 64 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/favicon.svg")) {
+        return readPublicFile("public/favicon.svg", "image/svg+xml", 8 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/favicon.ico") or std.mem.eql(u8, path, "/icon-32.png")) {
+        return readPublicFile("public/icon-32.png", "image/png", 16 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-48.png")) {
+        return readPublicFile("public/icon-48.png", "image/png", 16 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-180.png")) {
+        return readPublicFile("public/icon-180.png", "image/png", 96 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-192.png")) {
+        return readPublicFile("public/icon-192.png", "image/png", 96 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-512.png")) {
+        return readPublicFile("public/icon-512.png", "image/png", 512 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-1024.png")) {
+        return readPublicFile("public/icon-1024.png", "image/png", 3 * 1024 * 1024);
+    }
+    if (std.mem.eql(u8, path, "/icon-maskable.png")) {
+        return readPublicFile("public/icon-maskable.png", "image/png", 3 * 1024 * 1024);
     }
     return null;
 }

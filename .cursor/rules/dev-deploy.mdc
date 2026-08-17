@@ -1,0 +1,15 @@
+---
+description: WSL dev, Docker image, and NAS deploy routines for Medushu.
+alwaysApply: true
+---
+
+# Dev / container / NAS
+
+Repo is on Windows; **compile and Docker via WSL bash**. Network git (`push`/`pull`) via native Windows git.
+
+- Fast UI loop: `bash scripts/dev-wsl.sh` → http://127.0.0.1:3090/ (fixtures + `.pw/dev/catalog.sqlite`). Later: `SKIP_COMPILE=1 bash scripts/dev-wsl.sh`.
+- CSS `public/app.css` is live. Fragments are live **paths**; new/renamed fragment files need a binary rebuild. `host.kjs` → `bash scripts/build-frontend.sh`. Koru/Zig → `bash scripts/build.sh`.
+- Stop the listener with `pkill -x media-server` (not `-f` the path). `consumers.kz` must stay **LF** or koruc emits a nested `const std` and Zig fails.
+- Local image: `bash scripts/build-image.sh` then `docker compose up` (`compose.yaml`, port 3090, binds `/media` `/data` `/config`). Runtime is `FROM scratch` + `public/` — no koruc in the image.
+- NAS: `bash scripts/nas-deploy.sh` (build-image → registry push → ssh compose recreate). Do not recopy `compose.yml` on updates. Reindex is Settings or `reindex.requested`; hydrate is the accept-pump `! hydrate` arm, not host Python on the NAS.
+- Do not edit `vendor/http` without `bash scripts/koruc.sh main.k vendor sync`.

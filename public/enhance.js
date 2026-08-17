@@ -128,7 +128,12 @@ function playerSnapshot() {
     };
 }
 function playerIdentityOk(before) {
+    if (typeof window !== "undefined" && typeof window.enhanceAfterSwap === "function") {
+        window.enhanceAfterSwap();
+    }
     if (!before) return true;
+    const persist = document.getElementById("persist");
+    if (persist && before.node && persist.contains(before.node)) return true;
     const after = document.getElementById("player");
     return !!(
         after &&
@@ -224,19 +229,15 @@ const main_module = {
       note.setAttribute("data-play", "external");
       const base = appBase();
       note.innerHTML =
-      "<p>This file did not play in the browser. <a href=\"" +
+      "<p>This file did not play in the browser.</p><p class=\"player-bar\"><a class=\"btn\" href=\"" +
       base +
       "/media/" +
       id +
-      "?download=1\">download</a> · <a href=\"" +
-      base +
-      "/media/" +
-      id +
-      "\">stream URL</a> · <a rel=\"dlna\" href=\"" +
+      "?download=1\">Download</a> <a class=\"btn\" rel=\"dlna\" href=\"" +
       base +
       "/play/" +
       id +
-      ".m3u\">playlist</a></p>";
+      ".m3u\">Playlist</a></p>";
       player.parentNode && player.parentNode.insertBefore(note, player.nextSibling);
       }
 
@@ -252,6 +253,148 @@ const main_module = {
       });
       }
 
+      function setNowPlaying(id, title) {
+      const btn = document.getElementById("persist-max");
+      const persist = document.getElementById("persist");
+      if (!btn || !id) return;
+      const href = withAppBase("/play/" + id);
+      btn.setAttribute("data-play", href);
+      if (persist) persist.setAttribute("data-play-href", href);
+      btn.setAttribute("aria-label", title ? "Open full player: " + title : "Open full player");
+      }
+
+      function openFullPlayer() {
+      const persist = document.getElementById("persist");
+      const btn = document.getElementById("persist-max");
+      const href = (btn && btn.getAttribute("data-play")) || (persist && persist.getAttribute("data-play-href"));
+      if (!href) return;
+      fetch(href, {
+      headers: { Accept: "text/html", "HX-Request": "true", Prefer: "return=minimal" },
+      })
+      .then(function (r) {
+      return r.text();
+      })
+      .then(function (html) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      const next = tmp.querySelector("#library-region");
+      const cur = document.querySelector("#library-region");
+      if (!next || !cur) {
+      location.href = href;
+      return;
+      }
+      cur.replaceWith(next);
+      history.pushState({ koruHx: true }, "", href);
+      if (typeof window.enhanceAfterSwap === "function") window.enhanceAfterSwap();
+      })
+      .catch(function () {
+      location.href = href;
+      });
+      }
+
+      function playingNow() {
+      const player = document.getElementById("player");
+      if (!player) return false;
+      const persist = document.getElementById("persist");
+      if (persist && persist.contains(player)) {
+      return !persist.hidden && persist.getAttribute("data-dismissed") !== "1";
+      }
+      return true;
+      }
+
+      function clearPlayingHighlight() {
+      document.querySelectorAll(".episode-list a.is-current, .episode-list a[aria-current='page']").forEach(function (el) {
+      el.classList.remove("is-current");
+      el.removeAttribute("aria-current");
+      });
+      }
+
+      function dismissPersist() {
+      const persist = document.getElementById("persist");
+      if (!persist) return;
+      const player = persist.querySelector("#player, video, audio");
+      if (player && player.pause) player.pause();
+      const inner = persist.querySelector(".persist-inner");
+      if (inner) inner.textContent = "";
+      persist.hidden = true;
+      persist.classList.remove("persist-open");
+      persist.setAttribute("data-dismissed", "1");
+      clearPlayingHighlight();
+      }
+
+      function reclaimPlayer() {
+      const persist = document.getElementById("persist");
+      if (!persist || persist.hidden) return;
+      const live = persist.querySelector("video, audio, #player");
+      const frame = document.querySelector("#library-region .player-frame");
+      if (!live || !frame) return;
+      const stub = frame.querySelector("video, audio, #player");
+      if (stub && stub !== live) stub.replaceWith(live);
+      else if (!stub) frame.appendChild(live);
+      persist.hidden = true;
+      persist.classList.remove("persist-open");
+      persist.removeAttribute("data-dismissed");
+      const inner = persist.querySelector(".persist-inner");
+      if (inner) inner.textContent = "";
+      }
+
+      function bindPersistChrome() {
+      const close = document.getElementById("persist-close");
+      if (close && close.getAttribute("data-bound") !== "1") {
+      close.setAttribute("data-bound", "1");
+      close.addEventListener("click", function () {
+      dismissPersist();
+      });
+      }
+      const max = document.getElementById("persist-max");
+      if (max && max.getAttribute("data-bound") !== "1") {
+      max.setAttribute("data-bound", "1");
+      max.addEventListener("click", function () {
+      openFullPlayer();
+      });
+      }
+      }
+
+      function currentTitle() {
+      const h = document.querySelector(".content h1, h1");
+      return h ? h.textContent.trim() : "";
+      }
+
+      function setKino(on) {
+      const layout = document.querySelector(".layout");
+      document.documentElement.classList.toggle("kino", !!on);
+      if (layout) layout.classList.toggle("kino", !!on);
+      const btn = document.getElementById("kino-toggle");
+      if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+
+      function popOutToPersist() {
+      const persist = document.getElementById("persist");
+      const player = document.getElementById("player");
+      if (!persist || !player) return;
+      if (persist.getAttribute("data-dismissed") === "1") return;
+      const id = player.getAttribute("data-media-id");
+      const title = currentTitle();
+      if (persist.contains(player)) {
+      persist.hidden = false;
+      persist.classList.add("persist-open");
+      setKino(false);
+      const layout = document.querySelector(".layout");
+      if (layout) layout.classList.remove("home", "play");
+      setNowPlaying(id, title);
+      return;
+      }
+      const inner = persist.querySelector(".persist-inner") || persist;
+      inner.textContent = "";
+      inner.appendChild(player);
+      persist.hidden = false;
+      persist.classList.add("persist-open");
+      setKino(false);
+      const layout = document.querySelector(".layout");
+      if (layout) layout.classList.remove("home", "play");
+      setNowPlaying(id, title);
+      }
+
       function popPersist(id, kind) {
       const persist = document.getElementById("persist");
       if (!persist) {
@@ -260,6 +403,16 @@ const main_module = {
       }
       persist.hidden = false;
       persist.classList.add("persist-open");
+      const existing = document.getElementById("player");
+      if (existing && existing.getAttribute("data-media-id") === id) {
+      if (!persist.contains(existing)) popOutToPersist();
+      if (existing.play) existing.play().catch(function () {
+      showExternal(existing);
+      });
+      setKino(false);
+      setNowPlaying(id, currentTitle());
+      return;
+      }
       const inner = persist.querySelector(".persist-inner") || persist;
       const tag = kind === "audio" ? "audio" : "video";
       inner.innerHTML =
@@ -282,27 +435,154 @@ const main_module = {
       if (player && player.play) player.play().catch(function () {
       showExternal(player);
       });
-      document.documentElement.classList.remove("kino");
+      setKino(false);
+      setNowPlaying(id, currentTitle());
+      }
+
+      function bindEditionSelect() {
+      document.querySelectorAll("select.edition-select").forEach(function (sel) {
+      if (sel.getAttribute("data-bound") === "1") return;
+      sel.setAttribute("data-bound", "1");
+      sel.addEventListener("change", function () {
+      if (sel.value) location.href = sel.value;
+      });
+      });
+      }
+
+      function inPageVideoPlayer() {
+      const persist = document.getElementById("persist");
+      const player = document.getElementById("player");
+      return !!(player && player.tagName === "VIDEO" && persist && !persist.contains(player));
+      }
+
+      function bindKinoToggle() {
+      const btn = document.getElementById("kino-toggle");
+      if (!btn || btn.getAttribute("data-bound") === "1") return;
+      btn.setAttribute("data-bound", "1");
+      btn.addEventListener("click", function () {
       const layout = document.querySelector(".layout");
-      if (layout) layout.classList.remove("kino");
+      const on = !(layout && layout.classList.contains("kino"));
+      setKino(on);
+      });
       }
 
       function enhanceHero() {
-      const teaser = document.querySelector(".hero-teaser[data-src]");
-      if (!teaser) return;
-      const src = teaser.getAttribute("data-src");
-      if (!src) return;
-      teaser.setAttribute("src", src);
-      const io = typeof IntersectionObserver === "function"
-      ? new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) {
-      if (en.isIntersecting) teaser.play && teaser.play().catch(function () {});
-      else teaser.pause && teaser.pause();
+      const carousel = document.querySelector(".hero-carousel");
+      const slides = carousel ? carousel.querySelectorAll("[data-hero-slide]") : [];
+      if (carousel && slides.length && carousel.getAttribute("data-bound") !== "1") {
+      carousel.setAttribute("data-bound", "1");
+      let i = 0;
+      function show(n) {
+      i = (n + slides.length) % slides.length;
+      slides.forEach(function (s, idx) {
+      s.classList.toggle("hero-active", idx === i);
+      const v = s.querySelector("video.hero-teaser");
+      if (v) {
+      if (idx === i) {
+      window.setTimeout(function () {
+      if (s.classList.contains("hero-active") && v.play) v.play().catch(function () {});
+      }, 700);
+      } else if (v.pause) v.pause();
+      }
       });
-      })
-      : null;
-      if (io) io.observe(teaser);
-      else teaser.play && teaser.play().catch(function () {});
+      }
+      show(0);
+      const prev = carousel.querySelector(".hero-prev");
+      const next = carousel.querySelector(".hero-next");
+      if (prev) prev.addEventListener("click", function () { show(i - 1); });
+      if (next) next.addEventListener("click", function () { show(i + 1); });
+      }
+      document.querySelectorAll(".hero-teaser[data-src]").forEach(function (teaser) {
+      if (teaser.getAttribute("src")) return;
+      const src = teaser.getAttribute("data-src");
+      if (src) teaser.setAttribute("src", src);
+      });
+      document.querySelectorAll(".hero-teaser[data-youtube]").forEach(function (box) {
+      if (box.getAttribute("data-bound") === "1") return;
+      box.setAttribute("data-bound", "1");
+      const key = box.getAttribute("data-youtube");
+      if (!key) return;
+      const iframe = document.createElement("iframe");
+      iframe.className = "hero-teaser";
+      iframe.setAttribute("src", "https://www.youtube.com/embed/" + key + "?autoplay=1&mute=1&controls=0&loop=1&playlist=" + key);
+      iframe.setAttribute("allow", "autoplay; encrypted-media");
+      iframe.setAttribute("title", "Trailer");
+      box.appendChild(iframe);
+      });
+      }
+
+      function pathOnly(href) {
+      const base = appBase();
+      let p = href || "";
+      try {
+      p = new URL(href, location.href).pathname;
+      } catch (_) {}
+      if (base && p.indexOf(base) === 0) p = p.slice(base.length) || "/";
+      if (p.length > 1 && p.charAt(p.length - 1) === "/") p = p.slice(0, -1);
+      return p || "/";
+      }
+
+      function syncNav() {
+      const p = pathOnly(location.pathname);
+      let kindHint = "";
+      const more = document.querySelector("#library-region a[href*='/library/']");
+      if (more && (p.indexOf("/item/") === 0 || p.indexOf("/play/") === 0)) {
+      kindHint = pathOnly(more.getAttribute("href"));
+      }
+      document.querySelectorAll(".sidebar-nav .nav-item").forEach(function (a) {
+      const href = pathOnly(a.getAttribute("href"));
+      let on = false;
+      if (href === "/") on = p === "/";
+      else if (href === "/settings") on = p.indexOf("/settings") === 0;
+      else if (href === "/library") on = p === "/library";
+      else if (href.indexOf("/library/") === 0) {
+      on = p === href || p.indexOf(href + "/") === 0 || kindHint === href;
+      }
+      a.classList.toggle("active", !!on);
+      });
+      }
+
+      function enhanceAfterSwap() {
+      reclaimPlayer();
+      enhanceHero();
+      bindKinoToggle();
+      bindEditionSelect();
+      bindPersistChrome();
+      syncNav();
+      const layout = document.querySelector(".layout");
+      const content = document.querySelector(".content");
+      const home = !!document.querySelector(".hero-carousel");
+      const watching = inPageVideoPlayer();
+      if (layout) {
+      if (home) layout.classList.add("home");
+      else layout.classList.remove("home");
+      if (watching) layout.classList.add("play");
+      else {
+      layout.classList.remove("play");
+      setKino(false);
+      }
+      }
+      if (content) content.classList.toggle("content-home", home);
+      const persist = document.getElementById("persist");
+      if (watching && persist) persist.removeAttribute("data-dismissed");
+      const docked = persist && persist.querySelector("#player");
+      if (docked && persist && !persist.hidden) {
+      setNowPlaying(docked.getAttribute("data-media-id"), currentTitle());
+      }
+      if (!playingNow()) clearPlayingHighlight();
+      }
+      window.enhanceAfterSwap = enhanceAfterSwap;
+      window.popOutToPersist = popOutToPersist;
+
+      function browsePath(pathname) {
+      const base = appBase();
+      let p = pathname || "";
+      if (base && p.indexOf(base) === 0) p = p.slice(base.length) || "/";
+      if (p === "" || p === "/") return true;
+      if (p.indexOf("/library") === 0) return true;
+      if (p.indexOf("/item/") === 0) return true;
+      if (p.indexOf("/settings") === 0) return true;
+      return false;
       }
 
       function enhancePlayer() {
@@ -318,16 +598,25 @@ const main_module = {
       bindCanPlay(player);
       }
       }
-      enhanceHero();
-      document.addEventListener("click", function (ev) {
-      const a = ev.target.closest && ev.target.closest("a.play-now");
-      if (!a) return;
-      const id = a.getAttribute("data-media-id");
-      if (!id) return;
-      ev.preventDefault();
-      const kind = a.getAttribute("data-player") || "video";
-      popPersist(id, kind);
+      enhanceAfterSwap();
+      window.addEventListener("popstate", function () {
+      enhanceAfterSwap();
       });
+      document.addEventListener(
+      "click",
+      function (ev) {
+      const a = ev.target.closest && ev.target.closest("a[hx-get], a.nav-item, a.poster-link, a.hero-item-link");
+      if (!a || a.id === "persist-max" || a.classList.contains("persist-max")) return;
+      let path = "";
+      try {
+      path = new URL(a.href, location.href).pathname;
+      } catch (_) {
+      return;
+      }
+      if (browsePath(path)) popOutToPersist();
+      },
+      true
+      );
       }
 
       if (document.readyState === "loading") {

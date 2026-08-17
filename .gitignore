@@ -19,6 +19,9 @@ scripts/.pw/
 # Local compose library mount (see compose.yaml). Keep fixtures/media tracked.
 /media/
 
+# Local WSL/NAS scratch (dev-wsl.sh catalog, nas hydrate logs)
+/.pw/
+
 # Accidental DSM / sidecar identity files next to fixtures
 *.mp4.id
 *.mkv.id

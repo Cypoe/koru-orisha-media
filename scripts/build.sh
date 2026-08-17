@@ -54,7 +54,45 @@ cat > "$BUILD/koru.json" <<EOF
 EOF
 
 cd "$BUILD"
+set +e
 "$KORUC" main.k
+kc=$?
+set -e
+if [[ ! -f output_emitted.zig ]]; then
+  echo "koruc failed before emit (exit $kc)" >&2
+  exit 1
+fi
+# A failed koruc (vendor pin, analysis) must not copy a leftover a.out over bin/.
+# Sqlite-link failures still emit Zig; deleting a.out forces the relink below.
+if [[ "$kc" -ne 0 ]]; then
+  rm -f a.out
+fi
+
+link_sqlite() {
+  local sqlitedir="${HOME}/src/sqlite-amalgamation-3490100"
+  if [[ ! -f "$sqlitedir/sqlite3.c" ]]; then
+    echo "fetching sqlite amalgamation…"
+    mkdir -p "$HOME/src"
+    curl -fsSL https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip -o /tmp/sqlite.zip
+    python3 -c "import zipfile; zipfile.ZipFile('/tmp/sqlite.zip').extractall('${HOME}/src')"
+  fi
+  echo "relinking with sqlite amalgamation…"
+  zig cc -O2 -c "$sqlitedir/sqlite3.c" -o /tmp/sqlite3.o \
+    -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=0 -DSQLITE_DEFAULT_MEMSTATUS=0
+  zig build-exe output_emitted.zig /tmp/sqlite3.o -lc -femit-bin=a.out
+}
+
+if [[ ! -f a.out ]]; then
+  if [[ "$kc" -ne 0 ]]; then
+    echo "koruc native link skipped sqlite (exit $kc); relinking"
+  fi
+  if [[ -f /usr/lib/x86_64-linux-gnu/libsqlite3.so ]]; then
+    zig build-exe output_emitted.zig -lc -lsqlite3 -femit-bin=a.out
+  else
+    link_sqlite
+  fi
+fi
+
 mkdir -p "$ROOT/bin"
 cp -f a.out "$ROOT/a.out"
 cp -f a.out "$ROOT/bin/media-server"

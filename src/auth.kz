@@ -132,6 +132,9 @@ pub fn needsLogin(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".css") or std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".html")) {
         return false;
     }
+    if (std.mem.endsWith(u8, path, ".svg") or std.mem.endsWith(u8, path, ".png") or std.mem.endsWith(u8, path, ".ico") or std.mem.endsWith(u8, path, ".webp")) {
+        return false;
+    }
     return true;
 }
 
