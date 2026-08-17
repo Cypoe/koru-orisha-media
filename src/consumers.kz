@@ -84,34 +84,50 @@ fn four(dst: *[4]u8, v: u32) void {
     dst[2] = '0' + @as(u8, @intCast((v / 10) % 10));
     dst[3] = '0' + @as(u8, @intCast(v % 10));
 }
-pub fn parseQueryString(query: ?[]const u8) struct { sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32 } {
+pub fn parseQueryString(query: ?[]const u8) struct { sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, filter: []const u8, role: []const u8 } {
     var sort: koru_media.koru_graph.SortMode = .title;
     var q: ?[]const u8 = null;
     var limit: u32 = 0;
     var offset: u32 = 0;
-    const qs = query orelse return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
+    var filter: []const u8 = "";
+    var role: []const u8 = "";
+    const qs = query orelse return .{ .sort = sort, .q = q, .limit = limit, .offset = offset, .filter = filter, .role = role };
     var it = std.mem.splitScalar(u8, qs, '&');
     while (it.next()) |pair| {
         if (std.mem.startsWith(u8, pair, "sort=")) {
             const v = pair["sort=".len..];
             if (std.mem.eql(u8, v, "id")) sort = .id;
             if (std.mem.eql(u8, v, "recent")) sort = .recent;
+            if (std.mem.eql(u8, v, "shuffle")) sort = .shuffle;
         } else if (std.mem.startsWith(u8, pair, "q=")) {
             q = pair["q=".len..];
         } else if (std.mem.startsWith(u8, pair, "limit=")) {
             limit = std.fmt.parseInt(u32, pair["limit=".len..], 10) catch 0;
         } else if (std.mem.startsWith(u8, pair, "offset=")) {
             offset = std.fmt.parseInt(u32, pair["offset=".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, pair, "filter=")) {
+            filter = pair["filter=".len..];
+        } else if (std.mem.startsWith(u8, pair, "role=")) {
+            role = pair["role=".len..];
         }
     }
-    return .{ .sort = sort, .q = q, .limit = limit, .offset = offset };
+    return .{ .sort = sort, .q = q, .limit = limit, .offset = offset, .filter = filter, .role = role };
 }
-fn formatLibraryQuery(buf: []u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+fn formatLibraryQuery(buf: []u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, filter: []const u8) []const u8 {
     const sort_s: []const u8 = switch (sort) {
         .title => "title",
         .id => "id",
         .recent => "recent",
+        .shuffle => "shuffle",
     };
+    if (filter.len > 0) {
+        if (q) |qv| {
+            if (qv.len > 0) {
+                return std.fmt.bufPrint(buf, "?sort={s}&q={s}&limit={d}&offset={d}&filter={s}", .{ sort_s, qv, limit, offset, filter }) catch "?";
+            }
+        }
+        return std.fmt.bufPrint(buf, "?sort={s}&limit={d}&offset={d}&filter={s}", .{ sort_s, limit, offset, filter }) catch "?";
+    }
     if (q) |qv| {
         if (qv.len > 0) {
             return std.fmt.bufPrint(buf, "?sort={s}&q={s}&limit={d}&offset={d}", .{ sort_s, qv, limit, offset }) catch "?";
@@ -267,15 +283,6 @@ fn kindLabel(kind: []const u8) []const u8 {
     return kind;
 }
 
-fn capabilityKind(capability: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, capability, "movies")) return "movie";
-    if (std.mem.eql(u8, capability, "series")) return "tv";
-    if (std.mem.eql(u8, capability, "music")) return "audio";
-    if (std.mem.eql(u8, capability, "books")) return "book";
-    if (std.mem.eql(u8, capability, "music_videos")) return "musicVideo";
-    return null;
-}
-
 fn kindBadge(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "movie")) return "MOVIE";
     if (std.mem.eql(u8, kind, "tv")) return "SERIES";
@@ -284,17 +291,6 @@ fn kindBadge(kind: []const u8) []const u8 {
     if (std.mem.eql(u8, kind, "book")) return "BOOK";
     if (std.mem.eql(u8, kind, "extra")) return "EXTRA";
     return "FILE";
-}
-
-fn searchPlaceholder(kind_filter: ?[]const u8) []const u8 {
-    const k = kind_filter orelse return "Search library";
-    if (std.mem.eql(u8, k, "movie")) return "Search movies";
-    if (std.mem.eql(u8, k, "tv")) return "Search series";
-    if (std.mem.eql(u8, k, "audio")) return "Search music";
-    if (std.mem.eql(u8, k, "musicVideo")) return "Search music videos";
-    if (std.mem.eql(u8, k, "book")) return "Search books";
-    if (std.mem.eql(u8, k, "extra")) return "Search extras";
-    return "Search library";
 }
 
 fn cardTitle(e: koru_media.koru_graph.Entry) []const u8 {
@@ -358,6 +354,28 @@ fn qualityPillsHtml(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry
     return tmp.toOwnedSlice(allocator) catch "";
 }
 
+fn musicArtist(path: []const u8) []const u8 {
+    const work = koru_media.koru_graph.workKey(path);
+    var start: usize = 0;
+    var seg: usize = 0;
+    var artist: []const u8 = "";
+    while (start < work.len) {
+        var end = start;
+        while (end < work.len and work[end] != '/') : (end += 1) {}
+        if (seg == 1) artist = work[start..end];
+        if (end >= work.len) break;
+        start = end + 1;
+        seg += 1;
+    }
+    return if (seg >= 2) artist else "";
+}
+
+fn yearCaption(e: koru_media.koru_graph.Entry, buf: []u8) []const u8 {
+    const y = if (e.year >= 1000) e.year else koru_media.koru_graph.findHydrateForAsset(e.id, e.imdb_id).year;
+    if (y < 1000) return "";
+    return std.fmt.bufPrint(buf, "{d}", .{y}) catch "";
+}
+
 fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
     const shown = cardTitle(e);
     const title = htmlEscaped(allocator, shown);
@@ -390,6 +408,8 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
         });
     };
     defer allocator.free(art);
+    var year_buf: [8]u8 = undefined;
+    const year_s = yearCaption(e, &year_buf);
     appendFrag(allocator, out, "components/poster-card.html", &.{
         .{ .k = "id", .v = id_esc },
         .{ .k = "title", .v = title },
@@ -397,34 +417,141 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
         .{ .k = "badge", .v = badge },
         .{ .k = "art", .v = art },
         .{ .k = "tags", .v = tags },
+        .{ .k = "year", .v = year_s },
     });
 }
 
-fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, with_region: bool, as_row: bool) void {
+fn appendMusicRow(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
+    const shown = cardTitle(e);
+    const title = htmlEscaped(allocator, shown);
+    defer if (title.ptr != shown.ptr) allocator.free(title);
+    const id_esc = htmlEscaped(allocator, e.id);
+    defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+    const artist_raw = musicArtist(e.path);
+    const artist = if (artist_raw.len > 0) htmlEscaped(allocator, artist_raw) else "";
+    defer if (artist.len > 0 and artist.ptr != artist_raw.ptr) allocator.free(artist);
+    var src_buf: [256]u8 = undefined;
+    const art = blk: {
+        if (e.poster.len > 0) {
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+            break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        const h = koru_media.koru_graph.findHydrateForAsset(e.id, e.imdb_id);
+        if (!isRemotePoster(h.poster_url)) {
+            break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+        }
+        const u = htmlEscaped(allocator, h.poster_url);
+        defer if (u.ptr != h.poster_url.ptr) allocator.free(u);
+        break :blk fragOwned(allocator, "components/poster-art.html", &.{
+            .{ .k = "src", .v = u },
+            .{ .k = "title", .v = title },
+        });
+    };
+    defer allocator.free(art);
+    const heart = fragOwned(allocator, "components/heart-btn.html", &.{.{ .k = "id", .v = id_esc }});
+    defer if (heart.len > 0) allocator.free(heart);
+    appendFrag(allocator, out, "components/music-row.html", &.{
+        .{ .k = "id", .v = id_esc },
+        .{ .k = "title", .v = title },
+        .{ .k = "artist", .v = artist },
+        .{ .k = "art", .v = art },
+        .{ .k = "heart", .v = heart },
+    });
+}
+
+fn appendKindToolbar(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, filter: []const u8, start: usize, end: usize, total: usize) void {
+    var href_buf: [192]u8 = undefined;
+    const kind_href = if (kind_filter) |k|
+        (std.fmt.bufPrint(&href_buf, "{s}/library/{s}", .{ bp(), k }) catch "/library")
+    else
+        (std.fmt.bufPrint(&href_buf, "{s}/library", .{bp()}) catch "/library");
+    const kind_label: []const u8 = if (kind_filter) |k| kindLabel(k) else "All";
+    var count_buf: [48]u8 = undefined;
+    const count = if (total == 0)
+        (std.fmt.bufPrint(&count_buf, "0 of 0", .{}) catch "0 of 0")
+    else if (end == 0)
+        (std.fmt.bufPrint(&count_buf, "0 of {d}", .{total}) catch "0")
+    else
+        (std.fmt.bufPrint(&count_buf, "{d}–{d} of {d}", .{ start + 1, end, total }) catch "");
+    var qb: [192]u8 = undefined;
+    const shuffle_href = formatLibraryQuery(&qb, .shuffle, q, DEFAULT_PAGE, 0, filter);
+    var shuffle_owned: [192]u8 = undefined;
+    const shuffle_s = std.fmt.bufPrint(&shuffle_owned, "{s}{s}", .{ kind_href, shuffle_href }) catch kind_href;
+    var tb: [192]u8 = undefined;
+    const title_q = formatLibraryQuery(&tb, .title, q, DEFAULT_PAGE, 0, filter);
+    var title_owned: [192]u8 = undefined;
+    const title_s = std.fmt.bufPrint(&title_owned, "{s}{s}", .{ kind_href, title_q }) catch kind_href;
+    var rb: [192]u8 = undefined;
+    const recent_q = formatLibraryQuery(&rb, .recent, q, DEFAULT_PAGE, 0, filter);
+    var recent_owned: [192]u8 = undefined;
+    const recent_s = std.fmt.bufPrint(&recent_owned, "{s}{s}", .{ kind_href, recent_q }) catch kind_href;
+    var cb: [192]u8 = undefined;
+    const clear_q = formatLibraryQuery(&cb, sort, q, DEFAULT_PAGE, 0, "");
+    var clear_owned: [192]u8 = undefined;
+    const clear_s = std.fmt.bufPrint(&clear_owned, "{s}{s}", .{ kind_href, clear_q }) catch kind_href;
+    var ub: [192]u8 = undefined;
+    const uhd_q = formatLibraryQuery(&ub, sort, q, DEFAULT_PAGE, 0, "uhd");
+    var uhd_owned: [192]u8 = undefined;
+    const uhd_s = std.fmt.bufPrint(&uhd_owned, "{s}{s}", .{ kind_href, uhd_q }) catch kind_href;
+    var ab: [192]u8 = undefined;
+    const atmos_q = formatLibraryQuery(&ab, sort, q, DEFAULT_PAGE, 0, "atmos");
+    var atmos_owned: [192]u8 = undefined;
+    const atmos_s = std.fmt.bufPrint(&atmos_owned, "{s}{s}", .{ kind_href, atmos_q }) catch kind_href;
+    var db: [192]u8 = undefined;
+    const d3_q = formatLibraryQuery(&db, sort, q, DEFAULT_PAGE, 0, "3d");
+    var d3_owned: [192]u8 = undefined;
+    const d3_s = std.fmt.bufPrint(&d3_owned, "{s}{s}", .{ kind_href, d3_q }) catch kind_href;
+    appendFrag(allocator, out, "components/kind-toolbar.html", &.{
+        .{ .k = "kind_href", .v = kind_href },
+        .{ .k = "kind_label", .v = kind_label },
+        .{ .k = "count", .v = count },
+        .{ .k = "shuffle_href", .v = shuffle_s },
+        .{ .k = "sort_title", .v = title_s },
+        .{ .k = "sort_recent", .v = recent_s },
+        .{ .k = "filter_clear", .v = clear_s },
+        .{ .k = "filter_uhd", .v = uhd_s },
+        .{ .k = "filter_atmos", .v = atmos_s },
+        .{ .k = "filter_3d", .v = d3_s },
+    });
+}
+
+fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, with_region: bool, as_row: bool, filter: []const u8) void {
     var tmp: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
     const page_limit: u32 = if (limit == 0) DEFAULT_PAGE else limit;
-    const page = koru_media.koru_graph.collectPage(kind_filter, q, sort, @as(usize, offset), @as(usize, page_limit), &tmp);
+    const page = koru_media.koru_graph.collectPageFilter(kind_filter, q, sort, @as(usize, offset), @as(usize, page_limit), filter, &tmp);
     const items = page.items;
     const start: usize = offset;
     const end: usize = start + items.len;
     const row = as_row;
-    // List + pagination live inside page-level #library-region (chrome / fragments).
+    const is_audio = if (kind_filter) |k| std.mem.eql(u8, k, "audio") else false;
     appendFrag(allocator, out, "components/list-wrap-open.html", &.{.{ .k = "class", .v = if (with_region) "library-region" else "shelf-region" }});
+    if (with_region and !row) {
+        const skip = if (kind_filter) |k| std.mem.eql(u8, k, "extra") else false;
+        if (!skip) appendKindToolbar(allocator, out, kind_filter, sort, q, filter, start, end, page.total);
+    }
     if (items.len == 0) {
         appendLibraryEmpty(allocator, out, kind_filter, q, page.total);
     } else {
+        const layout: []const u8 = if (row) "poster-row" else if (is_audio) "music-list" else "poster-grid";
         appendFrag(allocator, out, "components/list-ul-open.html", &.{
             .{ .k = "id_attr", .v = if (with_region) " id=\"library-list\"" else "" },
-            .{ .k = "layout", .v = if (row) "poster-row" else "poster-grid" },
+            .{ .k = "layout", .v = layout },
         });
         for (items) |e| {
-            appendPosterCard(allocator, out, e);
+            if (is_audio and !row) {
+                appendMusicRow(allocator, out, e);
+            } else {
+                appendPosterCard(allocator, out, e);
+            }
         }
         appendFrag(allocator, out, "components/list-ul-close.html", &.{});
     }
     if (!row and page.total > end) {
         var qb: [192]u8 = undefined;
-        const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(end)));
+        const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(end)), filter);
         appendFrag(allocator, out, "components/pagination.html", &.{
             .{ .k = "href", .v = qs },
             .{ .k = "label", .v = "next" },
@@ -433,7 +560,7 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
     if (!row and start > 0) {
         const prev_off = if (start > page_limit) start - page_limit else 0;
         var qb: [192]u8 = undefined;
-        const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(prev_off)));
+        const qs = formatLibraryQuery(&qb, sort, q, page_limit, @as(u32, @intCast(prev_off)), filter);
         appendFrag(allocator, out, "components/pagination.html", &.{
             .{ .k = "href", .v = qs },
             .{ .k = "label", .v = "prev" },
@@ -444,30 +571,6 @@ fn appendLibraryList(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind
 
 // ============================================================================
 // ============================================================================
-
-fn libraryAffordances(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, swap: bool) void {
-    const q_val: []const u8 = if (q) |qv| qv else "";
-    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
-    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
-    var base_buf: [160]u8 = undefined;
-    const action = libraryBasePath(&base_buf, kind_filter);
-    const placeholder = searchPlaceholder(kind_filter);
-
-    const hx = if (swap) fragOwned(allocator, "layout/hx-get.html", &.{.{ .k = "action", .v = action }}) else "";
-    defer if (hx.len > 0) allocator.free(hx);
-    const clear = if (q_val.len > 0)
-        fragOwned(allocator, "layout/search-clear.html", &.{.{ .k = "action", .v = action }})
-    else
-        "";
-    defer if (clear.len > 0) allocator.free(clear);
-    appendFrag(allocator, out, "layout/search.html", &.{
-        .{ .k = "action", .v = action },
-        .{ .k = "hx", .v = hx },
-        .{ .k = "q", .v = q_esc },
-        .{ .k = "placeholder", .v = placeholder },
-        .{ .k = "clear", .v = clear },
-    });
-}
 
 const KIND_NAV = [_]struct { id: []const u8, cap: []const u8 }{
     .{ .id = "movie", .cap = "play.video" },
@@ -511,6 +614,29 @@ fn appendKindNav(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_fil
     appendFrag(allocator, out, "layout/nav-close.html", &.{});
 }
 
+fn appendTopbarBack(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, extra_class: []const u8) void {
+    const want = std.mem.eql(u8, extra_class, "item-page") or std.mem.indexOf(u8, extra_class, "play") != null;
+    const kind = if (want) kind_filter else null;
+    if (kind) |k| {
+        var href_buf: [192]u8 = undefined;
+        const href = std.fmt.bufPrint(&href_buf, "{s}/library/{s}", .{ bp(), k }) catch "/library";
+        const inner = fragOwned(allocator, "layout/topbar-back-link.html", &.{
+            .{ .k = "href", .v = href },
+            .{ .k = "label", .v = kindLabel(k) },
+        });
+        defer if (inner.len > 0) allocator.free(inner);
+        appendFrag(allocator, out, "layout/topbar-back.html", &.{
+            .{ .k = "hidden", .v = "" },
+            .{ .k = "inner", .v = inner },
+        });
+        return;
+    }
+    appendFrag(allocator, out, "layout/topbar-back.html", &.{
+        .{ .k = "hidden", .v = " hidden" },
+        .{ .k = "inner", .v = "" },
+    });
+}
+
 fn appendAppChrome(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_filter: ?[]const u8, q: ?[]const u8, extra_class: []const u8) void {
     var class_buf: [64]u8 = undefined;
     const layout_class: []const u8 = if (extra_class.len == 0)
@@ -518,11 +644,32 @@ fn appendAppChrome(allocator: std.mem.Allocator, out: *std.ArrayList(u8), kind_f
     else
         (std.fmt.bufPrint(&class_buf, " {s}", .{extra_class}) catch extra_class);
     appendFrag(allocator, out, "layout/chrome-start.html", &.{.{ .k = "layout_class", .v = layout_class }});
+    appendFrag(allocator, out, "layout/hamburger.html", &.{});
+    appendFrag(allocator, out, "layout/sidebar-head-close.html", &.{});
     appendKindNav(allocator, out, kind_filter, extra_class);
     appendFrag(allocator, out, "layout/chrome-foot.html", &.{});
-    const swap = !std.mem.eql(u8, extra_class, "settings");
-    libraryAffordances(allocator, out, kind_filter, q, swap);
-    const content_class: []const u8 = if (std.mem.eql(u8, extra_class, "home")) " content-home" else "";
+    appendFrag(allocator, out, "layout/topbar-logo.html", &.{});
+    appendFrag(allocator, out, "layout/topbar-tools-open.html", &.{});
+    appendTopbarBack(allocator, out, kind_filter, extra_class);
+    const q_raw = q orelse "";
+    const q_val = if (q_raw.len > 0) formUnescape(allocator, q_raw) else "";
+    defer if (q_val.len > 0 and q_val.ptr != q_raw.ptr) allocator.free(q_val);
+    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
+    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
+    const on_search = std.mem.eql(u8, extra_class, "search");
+    appendFrag(allocator, out, "layout/topbar-search.html", &.{
+        .{ .k = "q", .v = q_esc },
+        .{ .k = "focus", .v = if (on_search) " autofocus" else "" },
+    });
+    const on_home = std.mem.eql(u8, extra_class, "home");
+    const content_class: []const u8 = if (on_home)
+        " content-home"
+    else if (on_search)
+        " content-search"
+    else if (std.mem.eql(u8, extra_class, "item-page"))
+        " content-item"
+    else
+        "";
     const kino_on = std.mem.indexOf(u8, extra_class, "kino") != null;
     const kino_html = fragOwned(allocator, "components/player-kino.html", &.{
         .{ .k = "pressed", .v = if (kino_on) "true" else "false" },
@@ -579,31 +726,51 @@ fn htmlNotFound(allocator: std.mem.Allocator) []const u8 {
     return out.toOwnedSlice(allocator) catch "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
 }
 
+fn heroArtSrc(allocator: std.mem.Allocator, hero: koru_media.koru_graph.HeroInfo, id_esc: []const u8) []const u8 {
+    if (hero.has_backdrop and hero.backdrop_url.len > 0) {
+        const u = htmlEscaped(allocator, hero.backdrop_url);
+        defer if (u.ptr != hero.backdrop_url.ptr) allocator.free(u);
+        return fragOwned(allocator, "components/hero-poster.html", &.{
+            .{ .k = "src", .v = u },
+            .{ .k = "title", .v = "" },
+        });
+    }
+    if (hero.has_backdrop) {
+        var src_buf: [280]u8 = undefined;
+        const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}?role=backdrop", .{ bp(), id_esc }) catch
+            return fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+        return fragOwned(allocator, "components/hero-poster.html", &.{
+            .{ .k = "src", .v = src },
+            .{ .k = "title", .v = "" },
+        });
+    }
+    if (hero.has_poster and hero.poster_url.len > 0) {
+        const u = htmlEscaped(allocator, hero.poster_url);
+        defer if (u.ptr != hero.poster_url.ptr) allocator.free(u);
+        return fragOwned(allocator, "components/hero-poster.html", &.{
+            .{ .k = "src", .v = u },
+            .{ .k = "title", .v = "" },
+        });
+    }
+    if (hero.has_poster) {
+        var src_buf: [256]u8 = undefined;
+        const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch
+            return fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+        return fragOwned(allocator, "components/hero-poster.html", &.{
+            .{ .k = "src", .v = src },
+            .{ .k = "title", .v = "" },
+        });
+    }
+    return fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+}
+
 fn appendHeroSlide(allocator: std.mem.Allocator, html: *std.ArrayList(u8), hero: koru_media.koru_graph.HeroInfo) void {
     if (hero.asset_id.len == 0) return;
     const id_esc = htmlEscaped(allocator, hero.asset_id);
     defer if (id_esc.ptr != hero.asset_id.ptr) allocator.free(id_esc);
     const title = htmlEscaped(allocator, hero.title);
     defer if (title.ptr != hero.title.ptr) allocator.free(title);
-    const art = blk: {
-        if (hero.has_poster and hero.poster_url.len > 0) {
-            const u = htmlEscaped(allocator, hero.poster_url);
-            defer if (u.ptr != hero.poster_url.ptr) allocator.free(u);
-            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
-                .{ .k = "src", .v = u },
-                .{ .k = "title", .v = title },
-            });
-        }
-        if (hero.has_poster) {
-            var src_buf: [256]u8 = undefined;
-            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
-            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
-                .{ .k = "src", .v = src },
-                .{ .k = "title", .v = title },
-            });
-        }
-        break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
-    };
+    const art = heroArtSrc(allocator, hero, id_esc);
     defer allocator.free(art);
     const teaser = blk: {
         if (hero.trailer_id.len > 0) {
@@ -619,19 +786,121 @@ fn appendHeroSlide(allocator: std.mem.Allocator, html: *std.ArrayList(u8), hero:
         break :blk "";
     };
     defer if (teaser.len > 0) allocator.free(teaser);
+    const logo = blk: {
+        if (hero.has_logo and hero.logo_url.len > 0) {
+            const u = htmlEscaped(allocator, hero.logo_url);
+            defer if (u.ptr != hero.logo_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/hero-logo.html", &.{
+                .{ .k = "src", .v = u },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (hero.has_logo) {
+            var src_buf: [280]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}?role=logo", .{ bp(), id_esc }) catch
+                break :blk fragOwned(allocator, "components/hero-title.html", &.{.{ .k = "title", .v = title }});
+            break :blk fragOwned(allocator, "components/hero-logo.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        break :blk fragOwned(allocator, "components/hero-title.html", &.{.{ .k = "title", .v = title }});
+    };
+    defer if (logo.len > 0) allocator.free(logo);
+    var year_buf: [8]u8 = undefined;
+    const year_s: []const u8 = if (hero.year >= 1000) (std.fmt.bufPrint(&year_buf, "{d}", .{hero.year}) catch "") else "";
     const plot = if (hero.plot.len > 0) blk: {
         const p = htmlEscaped(allocator, hero.plot);
         defer if (p.ptr != hero.plot.ptr) allocator.free(p);
         break :blk fragOwned(allocator, "components/overview.html", &.{.{ .k = "text", .v = p }});
     } else "";
     defer if (plot.len > 0) allocator.free(plot);
+    const heart = fragOwned(allocator, "components/heart-btn.html", &.{.{ .k = "id", .v = id_esc }});
+    defer if (heart.len > 0) allocator.free(heart);
     appendFrag(allocator, html, "components/hero-slide.html", &.{
         .{ .k = "id", .v = id_esc },
         .{ .k = "title", .v = title },
         .{ .k = "art", .v = art },
         .{ .k = "teaser", .v = teaser },
+        .{ .k = "logo", .v = logo },
+        .{ .k = "year", .v = year_s },
         .{ .k = "plot", .v = plot },
+        .{ .k = "heart", .v = heart },
     });
+}
+
+fn appendMyMediaTiles(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) void {
+    var present: [16][]const u8 = undefined;
+    const kinds = koru_media.koru_graph.listPresentKinds(&present);
+    var any = false;
+    for (KIND_NAV) |item| {
+        var found = false;
+        for (kinds) |k| {
+            if (std.mem.eql(u8, k, item.id)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) continue;
+        if (!any) {
+            appendFrag(allocator, html, "components/my-media-open.html", &.{});
+            any = true;
+        }
+        var href_buf: [192]u8 = undefined;
+        const href = std.fmt.bufPrint(&href_buf, "{s}/library/{s}", .{ bp(), item.id }) catch continue;
+        var tmp: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+        const page = koru_media.koru_graph.collectPage(item.id, null, .recent, 0, 1, &tmp);
+        const art = blk: {
+            if (page.items.len == 0) break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+            const e = page.items[0];
+            const id_esc = htmlEscaped(allocator, e.id);
+            defer if (id_esc.ptr != e.id.ptr) allocator.free(id_esc);
+            if (e.backdrop.len > 0) {
+                var src_buf: [280]u8 = undefined;
+                const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}?role=backdrop", .{ bp(), id_esc }) catch
+                    break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+                break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                    .{ .k = "src", .v = src },
+                    .{ .k = "title", .v = kindLabel(item.id) },
+                });
+            }
+            const h = koru_media.koru_graph.findHydrateForAsset(e.id, e.imdb_id);
+            if (isRemotePoster(h.backdrop_url)) {
+                const u = htmlEscaped(allocator, h.backdrop_url);
+                defer if (u.ptr != h.backdrop_url.ptr) allocator.free(u);
+                break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                    .{ .k = "src", .v = u },
+                    .{ .k = "title", .v = kindLabel(item.id) },
+                });
+            }
+            if (e.poster.len > 0) {
+                var src_buf: [256]u8 = undefined;
+                const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch
+                    break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+                break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                    .{ .k = "src", .v = src },
+                    .{ .k = "title", .v = kindLabel(item.id) },
+                });
+            }
+            if (isRemotePoster(h.poster_url)) {
+                const u = htmlEscaped(allocator, h.poster_url);
+                defer if (u.ptr != h.poster_url.ptr) allocator.free(u);
+                break :blk fragOwned(allocator, "components/poster-art.html", &.{
+                    .{ .k = "src", .v = u },
+                    .{ .k = "title", .v = kindLabel(item.id) },
+                });
+            }
+            break :blk fragOwned(allocator, "components/poster-fallback.html", &.{});
+        };
+        defer allocator.free(art);
+        appendFrag(allocator, html, "components/my-media-tile.html", &.{
+            .{ .k = "href", .v = href },
+            .{ .k = "kind", .v = item.id },
+            .{ .k = "label", .v = kindLabel(item.id) },
+            .{ .k = "art", .v = art },
+        });
+    }
+    if (any) appendFrag(allocator, html, "components/my-media-close.html", &.{});
 }
 
 fn appendHeroCarousel(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) void {
@@ -643,22 +912,33 @@ fn appendHeroCarousel(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) vo
             heroes = buf[0..1];
         }
     }
-    if (heroes.len == 0) return;
+    if (heroes.len == 0) {
+        appendMyMediaTiles(allocator, html);
+        return;
+    }
     appendFrag(allocator, html, "components/hero-open.html", &.{});
     for (heroes) |hero| {
         appendHeroSlide(allocator, html, hero);
     }
     appendFrag(allocator, html, "components/hero-track-close.html", &.{});
-    if (heroes.len > 1) appendFrag(allocator, html, "components/hero-controls.html", &.{});
-    appendFrag(allocator, html, "components/hero-close.html", &.{});
-}
-
-fn appendArchiveStatus(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    if (koru_media.koru_graph.hasProjectionIndex()) {
-        appendFrag(allocator, out, "pages/archive-catalogue.html", &.{});
-    } else {
-        appendFrag(allocator, out, "pages/archive-local.html", &.{});
+    if (heroes.len > 1) {
+        appendFrag(allocator, html, "components/hero-dots-open.html", &.{});
+        var i: usize = 0;
+        while (i < heroes.len) : (i += 1) {
+            var ib: [8]u8 = undefined;
+            var nb: [8]u8 = undefined;
+            const is = std.fmt.bufPrint(&ib, "{d}", .{i}) catch "0";
+            const ns = std.fmt.bufPrint(&nb, "{d}", .{i + 1}) catch "1";
+            appendFrag(allocator, html, "components/hero-dot.html", &.{
+                .{ .k = "i", .v = is },
+                .{ .k = "n", .v = ns },
+                .{ .k = "active", .v = if (i == 0) " is-active" else "" },
+            });
+        }
+        appendFrag(allocator, html, "components/hero-dots-close.html", &.{});
     }
+    appendMyMediaTiles(allocator, html);
+    appendFrag(allocator, html, "components/hero-close.html", &.{});
 }
 
 fn appendHomeShelf(allocator: std.mem.Allocator, html: *std.ArrayList(u8), title: []const u8, kind_filter: ?[]const u8) void {
@@ -668,22 +948,15 @@ fn appendHomeShelf(allocator: std.mem.Allocator, html: *std.ArrayList(u8), title
     const title_esc = htmlEscaped(allocator, title);
     defer if (title_esc.ptr != title.ptr) allocator.free(title_esc);
     appendFrag(allocator, html, "pages/shelf-open.html", &.{.{ .k = "title", .v = title_esc }});
-    appendLibraryList(allocator, html, kind_filter, .recent, null, 12, 0, false, true);
+    appendLibraryList(allocator, html, kind_filter, .recent, null, 12, 0, false, true, "");
     appendFrag(allocator, html, "pages/shelf-close.html", &.{});
 }
 
 fn appendHomeBody(allocator: std.mem.Allocator, html: *std.ArrayList(u8)) void {
+    appendFrag(allocator, html, "pages/home-views.html", &.{});
     appendHeroCarousel(allocator, html);
+    appendFrag(allocator, html, "pages/home-continue.html", &.{});
     appendHomeShelf(allocator, html, "Recently added", null);
-    var roots_buf: [koru_media.koru_catalog.MAX_LIBRARY_ROOTS]koru_media.koru_graph.LibraryRoot = undefined;
-    const roots = koru_media.koru_graph.listLibraryRoots(&roots_buf);
-    for (roots) |root| {
-        if (!root.enabled) continue;
-        const cap = if (root.capability.len > 0) root.capability else koru_media.koru_catalog.inferCapability(root.rel_path);
-        const kind = capabilityKind(cap) orelse continue;
-        const title = if (root.display_name.len > 0) root.display_name else kindLabel(kind);
-        appendHomeShelf(allocator, html, title, kind);
-    }
 }
 
 pub fn homeHtml(allocator: std.mem.Allocator) []const u8 {
@@ -713,10 +986,9 @@ pub fn homeFragment(allocator: std.mem.Allocator) []const u8 {
 fn appendLibraryHeading(allocator: std.mem.Allocator, html: *std.ArrayList(u8), kind_filter: ?[]const u8) void {
     const title: []const u8 = if (kind_filter) |k| kindLabel(k) else "Library";
     appendFrag(allocator, html, "layout/heading.html", &.{.{ .k = "title", .v = title }});
-    appendArchiveStatus(allocator, html);
 }
 
-pub fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+pub fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, filter: []const u8) []const u8 {
     const page_sz: u32 = if (limit == 0) DEFAULT_PAGE else limit;
     var html: std.ArrayList(u8) = .empty;
     var title_buf: [96]u8 = undefined;
@@ -725,7 +997,7 @@ pub fn libraryHtml(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort:
     const chrome: []const u8 = if (kind_filter == null) "library" else "";
     appendAppChrome(allocator, &html, kind_filter, q, chrome);
     appendLibraryHeading(allocator, &html, kind_filter);
-    appendLibraryList(allocator, &html, kind_filter, sort, q, page_sz, offset, true, false);
+    appendLibraryList(allocator, &html, kind_filter, sort, q, page_sz, offset, true, false, filter);
     appendAppChromeEnd(allocator, &html);
     appendPageClose(allocator, &html);
     const body = html.toOwnedSlice(allocator) catch "library error";
@@ -1099,14 +1371,14 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     const linked = std.ascii.eqlIgnoreCase(drv_trim, "sqlite");
     if (std.mem.eql(u8, action, "hydrate")) {
         koru_media.koru_graph.requestHydrate();
-        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next accept tick encodes the catalogue, including while something is playing.");
+        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next accept tick encodes the catalogue.");
     }
     if (std.mem.eql(u8, action, "reindex")) {
         koru_media.koru_graph.requestReindex();
         if (!linked) {
-            return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the SQLite catalog, including while something is playing. The selected SQL driver is not linked.");
+            return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the SQLite catalog. The selected SQL driver is not linked.");
         }
-        return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the catalog, including while something is playing.");
+        return settingsHtml(allocator, "Saved. Reindex is flagged — the next accept tick walks enabled folders into the catalog.");
     }
     if (!linked) {
         return settingsHtml(allocator, "Saved library mounts and settings. The selected SQL driver is not linked; the catalog stays on SQLite.");
@@ -1114,11 +1386,11 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     return settingsHtml(allocator, "Saved library mounts.");
 }
 
-pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32) []const u8 {
+pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, sort: koru_media.koru_graph.SortMode, q: ?[]const u8, limit: u32, offset: u32, filter: []const u8) []const u8 {
     var html: std.ArrayList(u8) = .empty;
     appendFrag(allocator, &html, "layout/region-open.html", &.{});
     appendLibraryHeading(allocator, &html, kind_filter);
-    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset, true, false);
+    appendLibraryList(allocator, &html, kind_filter, sort, q, limit, offset, true, false, filter);
     appendFrag(allocator, &html, "layout/region-close.html", &.{});
     const body = html.toOwnedSlice(allocator) catch "fragment error";
     if (kind_filter) |k| {
@@ -1131,6 +1403,106 @@ pub fn libraryFragment(allocator: std.mem.Allocator, kind_filter: ?[]const u8, s
     var frag_link: [160]u8 = undefined;
     const frag_l = std.fmt.bufPrint(&frag_link, "<{s}/library>; rel=\"up\"", .{bp()}) catch "</library>; rel=\"up\"";
     return renderHttpHtml(allocator, allocator.dupe(u8, frag_l) catch frag_l, body);
+}
+
+fn appendSearchKindGroup(allocator: std.mem.Allocator, html: *std.ArrayList(u8), title: []const u8, kind: []const u8, q: []const u8) bool {
+    var tmp: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
+    const page = koru_media.koru_graph.collectPage(kind, q, .title, 0, 24, &tmp);
+    if (page.items.len == 0) return false;
+    appendFrag(allocator, html, "pages/search-group-open.html", &.{.{ .k = "title", .v = title }});
+    const layout: []const u8 = if (std.mem.eql(u8, kind, "audio")) "music-list" else "poster-grid";
+    appendFrag(allocator, html, "components/list-ul-open.html", &.{
+        .{ .k = "id_attr", .v = "" },
+        .{ .k = "layout", .v = layout },
+    });
+    for (page.items) |e| {
+        if (std.mem.eql(u8, kind, "audio")) {
+            appendMusicRow(allocator, html, e);
+        } else {
+            appendPosterCard(allocator, html, e);
+        }
+    }
+    appendFrag(allocator, html, "components/list-ul-close.html", &.{});
+    appendFrag(allocator, html, "pages/search-group-close.html", &.{});
+    return true;
+}
+
+fn appendSearchBody(allocator: std.mem.Allocator, html: *std.ArrayList(u8), q_raw: ?[]const u8) void {
+    const q_enc: []const u8 = q_raw orelse "";
+    const q_val = if (q_enc.len > 0) formUnescape(allocator, q_enc) else "";
+    defer if (q_val.len > 0 and q_val.ptr != q_enc.ptr) allocator.free(q_val);
+    const q_esc = if (q_val.len > 0) htmlEscaped(allocator, q_val) else "";
+    defer if (q_esc.len > 0 and q_esc.ptr != q_val.ptr) allocator.free(q_esc);
+    var action_buf: [160]u8 = undefined;
+    const action = std.fmt.bufPrint(&action_buf, "{s}/search", .{bp()}) catch "/search";
+    appendFrag(allocator, html, "pages/search-open.html", &.{});
+    if (q_val.len == 0) {
+        appendFrag(allocator, html, "pages/search-idle.html", &.{});
+        appendFrag(allocator, html, "pages/search-close.html", &.{});
+        return;
+    }
+    var any = false;
+    if (appendSearchKindGroup(allocator, html, "Movies", "movie", q_val)) any = true;
+    if (appendSearchKindGroup(allocator, html, "Series", "tv", q_val)) any = true;
+    if (appendSearchKindGroup(allocator, html, "Music", "audio", q_val)) any = true;
+    var people: [16][]const u8 = undefined;
+    const actors = koru_media.koru_graph.searchActors(q_val, &people);
+    if (actors.len > 0) {
+        any = true;
+        appendFrag(allocator, html, "pages/search-group-open.html", &.{.{ .k = "title", .v = "People" }});
+        appendFrag(allocator, html, "components/list-ul-open.html", &.{
+            .{ .k = "id_attr", .v = "" },
+            .{ .k = "layout", .v = "people-list" },
+        });
+        for (actors) |name| {
+            const n = htmlEscaped(allocator, name);
+            defer if (n.ptr != name.ptr) allocator.free(n);
+            appendFrag(allocator, html, "components/search-person.html", &.{.{ .k = "text", .v = n }});
+        }
+        appendFrag(allocator, html, "components/list-ul-close.html", &.{});
+        appendFrag(allocator, html, "pages/search-group-close.html", &.{});
+    }
+    if (!any) {
+        appendFrag(allocator, html, "pages/empty-search.html", &.{
+            .{ .k = "q", .v = q_esc },
+            .{ .k = "action", .v = action },
+        });
+    }
+    appendFrag(allocator, html, "pages/search-close.html", &.{});
+}
+
+pub fn searchHtml(allocator: std.mem.Allocator, q: ?[]const u8) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    var title_buf: [96]u8 = undefined;
+    const page_title = std.fmt.bufPrint(&title_buf, "Search · {s}", .{brandName()}) catch "Search";
+    appendPageOpen(allocator, &html, page_title, " class=\"search-body\"");
+    appendAppChrome(allocator, &html, null, q, "search");
+    appendSearchBody(allocator, &html, q);
+    appendAppChromeEnd(allocator, &html);
+    appendPageClose(allocator, &html);
+    const body = html.toOwnedSlice(allocator) catch "search error";
+    var link_buf: [160]u8 = undefined;
+    const link = std.fmt.bufPrint(&link_buf, "<{s}/search>; rel=\"self\", <{s}>; rel=\"home\"", .{ bp(), homeAbs() }) catch "</search>; rel=\"self\"";
+    return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
+}
+
+pub fn searchFragment(allocator: std.mem.Allocator, q: ?[]const u8) []const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    appendFrag(allocator, &html, "layout/region-open.html", &.{});
+    appendSearchBody(allocator, &html, q);
+    appendFrag(allocator, &html, "layout/region-close.html", &.{});
+    const body = html.toOwnedSlice(allocator) catch "search fragment error";
+    var link_buf: [160]u8 = undefined;
+    const link = std.fmt.bufPrint(&link_buf, "<{s}/search>; rel=\"self\"", .{bp()}) catch "</search>; rel=\"self\"";
+    return renderHttpHtml(allocator, allocator.dupe(u8, link) catch link, body);
+}
+
+pub fn favouritesHtml(allocator: std.mem.Allocator) []const u8 {
+    return libraryHtml(allocator, null, .title, null, 0, 0, "");
+}
+
+pub fn favouritesFragment(allocator: std.mem.Allocator) []const u8 {
+    return libraryFragment(allocator, null, .title, null, 0, 0, "");
 }
 
 fn likelyBrowserPlayable(e: koru_media.koru_graph.Entry) bool {
@@ -1916,6 +2288,126 @@ fn appendExtrasFrom(allocator: std.mem.Allocator, html: *std.ArrayList(u8), file
     if (opened) appendFrag(allocator, html, "components/extras-close.html", &.{});
 }
 
+fn appendItemHero(allocator: std.mem.Allocator, html: *std.ArrayList(u8), e: koru_media.koru_graph.Entry, hydrate: koru_media.koru_graph.HydrateMeta, nfo: koru_media.koru_graph.NfoMeta, files: []const koru_media.koru_graph.Entry, title: []const u8, id_esc: []const u8) void {
+    const art = blk: {
+        if (e.backdrop.len > 0) {
+            var src_buf: [280]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}?role=backdrop", .{ bp(), id_esc }) catch
+                break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (isRemotePoster(hydrate.backdrop_url)) {
+            const u = htmlEscaped(allocator, hydrate.backdrop_url);
+            defer if (u.ptr != hydrate.backdrop_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = u },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (e.poster.len > 0) {
+            var src_buf: [256]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch
+                break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (isRemotePoster(hydrate.poster_url)) {
+            const u = htmlEscaped(allocator, hydrate.poster_url);
+            defer if (u.ptr != hydrate.poster_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/hero-poster.html", &.{
+                .{ .k = "src", .v = u },
+                .{ .k = "title", .v = title },
+            });
+        }
+        break :blk fragOwned(allocator, "components/hero-poster-fallback.html", &.{});
+    };
+    defer allocator.free(art);
+    const logo = blk: {
+        if (e.logo.len > 0) {
+            var src_buf: [280]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}?role=logo", .{ bp(), id_esc }) catch
+                break :blk fragOwned(allocator, "components/item-faded-title.html", &.{.{ .k = "title", .v = title }});
+            break :blk fragOwned(allocator, "components/item-logo.html", &.{
+                .{ .k = "src", .v = src },
+                .{ .k = "title", .v = title },
+            });
+        }
+        if (isRemotePoster(hydrate.logo_url)) {
+            const u = htmlEscaped(allocator, hydrate.logo_url);
+            defer if (u.ptr != hydrate.logo_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/item-logo.html", &.{
+                .{ .k = "src", .v = u },
+                .{ .k = "title", .v = title },
+            });
+        }
+        break :blk fragOwned(allocator, "components/item-faded-title.html", &.{.{ .k = "title", .v = title }});
+    };
+    defer if (logo.len > 0) allocator.free(logo);
+    const poster = blk: {
+        if (e.poster.len > 0) {
+            var src_buf: [256]u8 = undefined;
+            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch
+                break :blk "";
+            break :blk fragOwned(allocator, "components/item-poster.html", &.{.{ .k = "src", .v = src }});
+        }
+        if (isRemotePoster(hydrate.poster_url)) {
+            const u = htmlEscaped(allocator, hydrate.poster_url);
+            defer if (u.ptr != hydrate.poster_url.ptr) allocator.free(u);
+            break :blk fragOwned(allocator, "components/item-poster.html", &.{.{ .k = "src", .v = u }});
+        }
+        break :blk "";
+    };
+    defer if (poster.len > 0) allocator.free(poster);
+    var meta: std.ArrayList(u8) = .empty;
+    const year = if (e.year >= 1000) e.year else hydrate.year;
+    if (year >= 1000) {
+        var yb: [8]u8 = undefined;
+        const ys = std.fmt.bufPrint(&yb, "{d}", .{year}) catch "";
+        meta.appendSlice(allocator, ys) catch {};
+    }
+    if (hydrate.runtime > 0) {
+        if (meta.items.len > 0) meta.appendSlice(allocator, " · ") catch {};
+        var rb: [24]u8 = undefined;
+        const rs = std.fmt.bufPrint(&rb, "{d} min", .{hydrate.runtime}) catch "";
+        meta.appendSlice(allocator, rs) catch {};
+    }
+    const rating = if (nfo.rating.len > 0) nfo.rating else hydrate.rating;
+    if (rating.len > 0) {
+        if (meta.items.len > 0) meta.appendSlice(allocator, " · ") catch {};
+        const r = htmlEscaped(allocator, rating);
+        defer if (r.ptr != rating.ptr) allocator.free(r);
+        meta.appendSlice(allocator, r) catch {};
+    }
+    const meta_s = meta.toOwnedSlice(allocator) catch "";
+    defer if (meta_s.len > 0) allocator.free(meta_s);
+    var icons: std.ArrayList(u8) = .empty;
+    const yt = if (nfo.youtube.len > 0) nfo.youtube else koru_media.koru_graph.trailerYoutubeFor(e.id);
+    appendTrailerChips(allocator, &icons, files, yt);
+    const heart = fragOwned(allocator, "components/heart-btn.html", &.{.{ .k = "id", .v = id_esc }});
+    defer if (heart.len > 0) allocator.free(heart);
+    icons.appendSlice(allocator, heart) catch {};
+    appendFrag(allocator, &icons, "components/item-download.html", &.{.{ .k = "id", .v = id_esc }});
+    if (e.subtitle.len > 0) appendFrag(allocator, &icons, "components/item-subs.html", &.{.{ .k = "id", .v = id_esc }});
+    const icon_html = icons.toOwnedSlice(allocator) catch "";
+    defer if (icon_html.len > 0) allocator.free(icon_html);
+    appendFrag(allocator, html, "components/item-hero.html", &.{
+        .{ .k = "art", .v = art },
+        .{ .k = "poster", .v = poster },
+        .{ .k = "logo", .v = logo },
+        .{ .k = "meta", .v = meta_s },
+        .{ .k = "id", .v = id_esc },
+        .{ .k = "player", .v = koru_media.koru_graph.playerTag(e) },
+        .{ .k = "trailer", .v = "" },
+        .{ .k = "heart", .v = "" },
+        .{ .k = "download", .v = icon_html },
+    });
+}
+
 pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     if (koru_media.koru_graph.findEntry(id)) |e| {
         const join = koru_media.koru_graph.findSemantic(id);
@@ -1952,39 +2444,65 @@ pub fn itemHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
             .{ .k = "label", .v = kindLabel(e.kind) },
         });
         appendFrag(allocator, &html, "components/item-open.html", &.{});
-        if (e.poster.len > 0) {
-            var src_buf: [256]u8 = undefined;
-            const src = std.fmt.bufPrint(&src_buf, "{s}/art/{s}", .{ bp(), id_esc }) catch "";
-            appendFrag(allocator, &html, "components/item-poster.html", &.{.{ .k = "src", .v = src }});
-        } else if (isRemotePoster(hydrate.poster_url)) {
-            const u = htmlEscaped(allocator, hydrate.poster_url);
-            defer if (u.ptr != hydrate.poster_url.ptr) allocator.free(u);
-            appendFrag(allocator, &html, "components/item-poster.html", &.{.{ .k = "src", .v = u }});
-        } else {
-            appendFrag(allocator, &html, "components/item-body-open.html", &.{});
+        appendItemHero(allocator, &html, e, hydrate, nfo, files, title, id_esc);
+        appendFrag(allocator, &html, "components/item-body-open.html", &.{});
+        if (hydrate.tagline.len > 0) {
+            const t = htmlEscaped(allocator, hydrate.tagline);
+            defer if (t.ptr != hydrate.tagline.ptr) allocator.free(t);
+            appendFrag(allocator, &html, "components/item-tagline.html", &.{.{ .k = "text", .v = t }});
         }
         appendNfoOverlay(allocator, &html, nfo, true);
         appendHydrateOverlay(allocator, &html, hydrate, !have_nfo_plot);
+        if (hydrate.genres.len > 0) {
+            const g = htmlEscaped(allocator, hydrate.genres);
+            defer if (g.ptr != hydrate.genres.ptr) allocator.free(g);
+            appendFrag(allocator, &html, "components/item-genres.html", &.{.{ .k = "text", .v = g }});
+        }
+        if (hydrate.director.len > 0) {
+            const d = htmlEscaped(allocator, hydrate.director);
+            defer if (d.ptr != hydrate.director.ptr) allocator.free(d);
+            appendFrag(allocator, &html, "components/item-crew.html", &.{
+                .{ .k = "label", .v = "Director" },
+                .{ .k = "text", .v = d },
+            });
+        }
+        if (hydrate.writers.len > 0) {
+            const w = htmlEscaped(allocator, hydrate.writers);
+            defer if (w.ptr != hydrate.writers.ptr) allocator.free(w);
+            appendFrag(allocator, &html, "components/item-crew.html", &.{
+                .{ .k = "label", .v = "Writers" },
+                .{ .k = "text", .v = w },
+            });
+        }
+        if (!series) {
+            var av: std.ArrayList(u8) = .empty;
+            av.appendSlice(allocator, container) catch {};
+            if (e.video_codec.len > 0) {
+                av.appendSlice(allocator, " · ") catch {};
+                av.appendSlice(allocator, e.video_codec) catch {};
+            }
+            const av_s = av.toOwnedSlice(allocator) catch container;
+            defer if (av_s.ptr != container.ptr and av_s.len > 0) allocator.free(av_s);
+            appendFrag(allocator, &html, "components/item-av.html", &.{
+                .{ .k = "label", .v = "Video" },
+                .{ .k = "text", .v = av_s },
+            });
+            if (e.audio_codec.len > 0) {
+                const a = htmlEscaped(allocator, e.audio_codec);
+                defer if (a.ptr != e.audio_codec.ptr) allocator.free(a);
+                appendFrag(allocator, &html, "components/item-av.html", &.{
+                    .{ .k = "label", .v = "Audio" },
+                    .{ .k = "text", .v = a },
+                });
+            }
+        }
         const split = if (join) |s| joinHasCatalogue(s, e.title) else false;
         if (split) {
             appendCatalogueBlock(allocator, &html, join.?, !have_nfo_plot and hydrate.plot.len == 0);
-            if (!series) appendArchiveFacts(allocator, &html, e, container, true);
-        } else {
-            if (join) |s| {
-                appendSemanticBlock(allocator, &html, s, !have_nfo_plot and hydrate.plot.len == 0);
-            }
-            if (!series) appendPhysicalPlain(allocator, &html, e, container);
+        } else if (join) |s| {
+            appendSemanticBlock(allocator, &html, s, !have_nfo_plot and hydrate.plot.len == 0);
         }
-        appendFrag(allocator, &html, "components/item-actions-open.html", &.{});
-        appendFrag(allocator, &html, "components/item-play.html", &.{
-            .{ .k = "id", .v = id_esc },
-            .{ .k = "player", .v = koru_media.koru_graph.playerTag(e) },
-        });
-        const yt = if (nfo.youtube.len > 0) nfo.youtube else koru_media.koru_graph.trailerYoutubeFor(e.id);
-        appendTrailerChips(allocator, &html, files, yt);
-        appendFrag(allocator, &html, "components/item-download.html", &.{.{ .k = "id", .v = id_esc }});
-        if (e.subtitle.len > 0) appendFrag(allocator, &html, "components/item-subs.html", &.{.{ .k = "id", .v = id_esc }});
-        appendFrag(allocator, &html, "components/item-actions-close.html", &.{});
+        if (!series) appendPhysicalPlain(allocator, &html, e, container);
         if (series) appendSeasons(allocator, &html, files, e.id) else appendEditions(allocator, &html, files, e.id);
         appendExtrasFrom(allocator, &html, files, e.id);
         appendFrag(allocator, &html, "components/item-close.html", &.{});
@@ -2195,7 +2713,7 @@ pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
         }
         appendExtrasFrom(allocator, &html, files, e.id);
         appendFrag(allocator, &html, "components/related-open.html", &.{});
-        appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0, true, true);
+        appendLibraryList(allocator, &html, e.kind, .title, null, 4, 0, true, true, "");
         appendFrag(allocator, &html, "components/related-close.html", &.{});
         appendAppChromeEnd(allocator, &html);
         appendPageClose(allocator, &html);
@@ -2236,16 +2754,22 @@ pub fn playHtml(allocator: std.mem.Allocator, id: []const u8) []const u8 {
 // ============================================================================
 // ============================================================================
 
-pub fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
+pub fn artHttp(allocator: std.mem.Allocator, id: []const u8, role: []const u8) []const u8 {
     koru_media.koru_graph.ensureConfig();
     const e = koru_media.koru_graph.findEntry(id) orelse {
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     };
-    if (e.poster.len == 0) {
+    const rel: []const u8 = if (std.mem.eql(u8, role, "backdrop"))
+        e.backdrop
+    else if (std.mem.eql(u8, role, "logo"))
+        e.logo
+    else
+        e.poster;
+    if (rel.len == 0) {
         return "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
     }
     var path_buf: [4096]u8 = undefined;
-    const full_path = koru_media.koru_graph.pathUnderRoot(e.poster, &path_buf) orelse {
+    const full_path = koru_media.koru_graph.pathUnderRoot(rel, &path_buf) orelse {
         return "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden";
     };
     const file = std.fs.cwd().openFile(full_path, .{}) catch {
@@ -2255,9 +2779,9 @@ pub fn artHttp(allocator: std.mem.Allocator, id: []const u8) []const u8 {
     const data = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch {
         return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nError";
     };
-    const ctype: []const u8 = if (std.mem.endsWith(u8, e.poster, ".webp"))
+    const ctype: []const u8 = if (std.mem.endsWith(u8, rel, ".webp"))
         "image/webp"
-    else if (std.mem.endsWith(u8, e.poster, ".png"))
+    else if (std.mem.endsWith(u8, rel, ".png"))
         "image/png"
     else
         "image/jpeg";

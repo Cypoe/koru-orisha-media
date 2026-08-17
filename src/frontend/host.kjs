@@ -108,6 +108,15 @@ function showResumeUi(player, id, t) {
             const save = function () {
                 try {
                     localStorage.setItem(resumeKey(id), String(player.currentTime || 0));
+                    const titleEl = document.querySelector(".play-title, .item-faded-title, h1");
+                    const artEl = document.querySelector(".item-hero-art img, .hero-poster, #player");
+                    saveContinueEntry(
+                        id,
+                        titleEl ? titleEl.textContent.trim() : "",
+                        artEl && artEl.getAttribute ? artEl.getAttribute("src") || artEl.getAttribute("poster") || "" : "",
+                        player.currentTime || 0,
+                        player.duration || 0
+                    );
                 } catch (_) {}
             };
             player.addEventListener("timeupdate", function () {
@@ -123,6 +132,7 @@ function showResumeUi(player, id, t) {
                 try {
                     localStorage.removeItem(resumeKey(id));
                 } catch (_) {}
+                dropContinue(id);
                 const ui = document.getElementById("resume-ui");
                 if (ui) {
                     ui.hidden = true;
@@ -313,12 +323,13 @@ function showResumeUi(player, id, t) {
         setNowPlaying(id, title);
     }
 
-    function popPersist(id, kind) {
+    function popPersist(id, kind, title) {
         const persist = document.getElementById("persist");
         if (!persist) {
             location.href = withAppBase("/play/" + id);
             return;
         }
+        persist.removeAttribute("data-dismissed");
         persist.hidden = false;
         persist.classList.add("persist-open");
         const existing = document.getElementById("player");
@@ -328,7 +339,7 @@ function showResumeUi(player, id, t) {
                 showExternal(existing);
             });
             setKino(false);
-            setNowPlaying(id, currentTitle());
+            setNowPlaying(id, title || currentTitle());
             return;
         }
         const inner = persist.querySelector(".persist-inner") || persist;
@@ -354,7 +365,25 @@ function showResumeUi(player, id, t) {
             showExternal(player);
         });
         setKino(false);
-        setNowPlaying(id, currentTitle());
+        setNowPlaying(id, title || currentTitle());
+        const max = document.getElementById("persist-max");
+        if (max) max.hidden = tag === "audio";
+    }
+
+    function bindMusicPlay() {
+        document.querySelectorAll("a.music-play").forEach(function (a) {
+            if (a.getAttribute("data-bound") === "1") return;
+            a.setAttribute("data-bound", "1");
+            a.addEventListener("click", function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const id = a.getAttribute("data-media-id");
+                if (!id) return;
+                const row = a.closest(".music-row");
+                const titleEl = row ? row.querySelector(".music-title") : null;
+                popPersist(id, a.getAttribute("data-player") || "audio", titleEl ? titleEl.textContent.trim() : "");
+            });
+        });
     }
 
     function bindEditionSelect() {
@@ -390,25 +419,56 @@ function showResumeUi(player, id, t) {
         if (carousel && slides.length && carousel.getAttribute("data-bound") !== "1") {
             carousel.setAttribute("data-bound", "1");
             let i = 0;
+            const dots = carousel.querySelectorAll("[data-hero-dot]");
+            let timer = 0;
+            function clearHeroTimer() {
+                if (timer) window.clearTimeout(timer);
+                timer = 0;
+            }
             function show(n) {
                 i = (n + slides.length) % slides.length;
+                clearHeroTimer();
                 slides.forEach(function (s, idx) {
                     s.classList.toggle("hero-active", idx === i);
                     const v = s.querySelector("video.hero-teaser");
                     if (v) {
+                        v.onended = null;
                         if (idx === i) {
                             window.setTimeout(function () {
                                 if (s.classList.contains("hero-active") && v.play) v.play().catch(function () {});
-                            }, 700);
-                        } else if (v.pause) v.pause();
+                            }, 400);
+                        } else if (v.pause) {
+                            v.pause();
+                            try {
+                                v.currentTime = 0;
+                            } catch (_) {}
+                        }
                     }
                 });
+                dots.forEach(function (d, idx) {
+                    d.classList.toggle("is-active", idx === i);
+                });
+                if (slides.length < 2) return;
+                const active = slides[i];
+                const teaser = active.querySelector("video.hero-teaser");
+                let waitMs = 7000;
+                if (teaser) {
+                    teaser.onended = function () {
+                        show(i + 1);
+                    };
+                    waitMs = 30000;
+                }
+                timer = window.setTimeout(function () {
+                    show(i + 1);
+                }, waitMs);
             }
             show(0);
-            const prev = carousel.querySelector(".hero-prev");
-            const next = carousel.querySelector(".hero-next");
-            if (prev) prev.addEventListener("click", function () { show(i - 1); });
-            if (next) next.addEventListener("click", function () { show(i + 1); });
+            dots.forEach(function (d) {
+                d.addEventListener("click", function () {
+                    const n = parseInt(d.getAttribute("data-hero-dot") || "0", 10);
+                    if (!isNaN(n)) show(n);
+                });
+            });
         }
         document.querySelectorAll(".hero-teaser[data-src]").forEach(function (teaser) {
             if (teaser.getAttribute("src")) return;
@@ -427,6 +487,364 @@ function showResumeUi(player, id, t) {
             iframe.setAttribute("title", "Trailer");
             box.appendChild(iframe);
         });
+    }
+
+    function heartKey() {
+        return "medushu-hearts";
+    }
+
+    function loadHearts() {
+        try {
+            const raw = localStorage.getItem(heartKey());
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function saveHearts(list) {
+        try {
+            localStorage.setItem(heartKey(), JSON.stringify(list));
+        } catch (_) {}
+    }
+
+    function isHearted(id) {
+        return loadHearts().some(function (h) {
+            return h && h.id === id;
+        });
+    }
+
+    function heartMeta(btn) {
+        const id = btn.getAttribute("data-heart");
+        if (!id) return null;
+        const slide = btn.closest("[data-hero-slide], .item, .music-row, .poster-card");
+        let title = "";
+        let art = "";
+        let kind = "";
+        let year = "";
+        if (slide) {
+            const t = slide.querySelector(".hero-faded-title, .item-faded-title, .music-title, .poster-title, h1");
+            if (t) title = t.textContent.trim();
+            const img = slide.querySelector(".hero-poster, .item-hero-art img, .music-art img, .poster-frame img");
+            if (img) art = img.getAttribute("src") || "";
+            const yearEl = slide.querySelector(".hero-meta, .poster-year");
+            if (yearEl) year = (yearEl.textContent || "").trim();
+        }
+        const card = btn.closest(".poster-card, .music-row");
+        if (card && card.getAttribute("data-heart-id")) {
+            /* keep */
+        }
+        return { id: id, title: title, art: art, kind: kind, year: year };
+    }
+
+    function syncHeartButtons() {
+        document.querySelectorAll("[data-heart]").forEach(function (btn) {
+            const on = isHearted(btn.getAttribute("data-heart"));
+            btn.setAttribute("aria-pressed", on ? "true" : "false");
+            const row = btn.closest(".poster-card, .music-row");
+            if (row) row.classList.toggle("is-fave", on);
+        });
+        document.querySelectorAll("[data-heart-id]").forEach(function (card) {
+            card.classList.toggle("is-fave", isHearted(card.getAttribute("data-heart-id")));
+        });
+    }
+
+    function bindHearts() {
+        document.querySelectorAll("[data-heart]").forEach(function (btn) {
+            if (btn.getAttribute("data-bound") === "1") return;
+            btn.setAttribute("data-bound", "1");
+            btn.addEventListener("click", function () {
+                const meta = heartMeta(btn);
+                if (!meta) return;
+                let list = loadHearts();
+                if (isHearted(meta.id)) {
+                    list = list.filter(function (h) {
+                        return h.id !== meta.id;
+                    });
+                } else {
+                    list.push(meta);
+                }
+                saveHearts(list);
+                syncHeartButtons();
+                renderFavourites();
+            });
+        });
+        syncHeartButtons();
+        document.querySelectorAll("[data-open-fav]").forEach(function (a) {
+            if (a.getAttribute("data-bound") === "1") return;
+            a.setAttribute("data-bound", "1");
+            a.addEventListener("click", function () {
+                try {
+                    sessionStorage.setItem("medushu-fav-only", "1");
+                } catch (_) {}
+            });
+        });
+        document.querySelectorAll(".kind-chip").forEach(function (chip) {
+            if (chip.getAttribute("data-fav-clear") === "1") return;
+            chip.setAttribute("data-fav-clear", "1");
+            chip.addEventListener("click", function () {
+                try {
+                    sessionStorage.setItem("medushu-fav-only", "0");
+                } catch (_) {}
+            });
+        });
+        document.querySelectorAll("[data-filter-fav]").forEach(function (chip) {
+            if (chip.getAttribute("data-bound") === "1") return;
+            chip.setAttribute("data-bound", "1");
+            chip.addEventListener("click", function () {
+                const list = document.getElementById("library-list");
+                if (!list) return;
+                const on = !list.classList.contains("fav-only");
+                setFavOnly(on);
+            });
+        });
+        applyFavFilter();
+    }
+
+    function favOnlyWanted() {
+        try {
+            const stored = sessionStorage.getItem("medushu-fav-only");
+            if (stored === "1") return true;
+            if (stored === "0") return false;
+        } catch (_) {}
+        try {
+            if (new URL(location.href).searchParams.get("fav") === "1") return true;
+            if (pathOnly(location.pathname) === "/favourites") return true;
+        } catch (_) {}
+        return false;
+    }
+
+    function setFavOnly(on) {
+        const list = document.getElementById("library-list");
+        const chip = document.querySelector("[data-filter-fav]");
+        const kind = chip && chip.closest(".kind-chips")
+            ? chip.closest(".kind-chips").querySelector(".kind-chip")
+            : null;
+        if (list) list.classList.toggle("fav-only", on);
+        if (chip) {
+            chip.setAttribute("aria-pressed", on ? "true" : "false");
+            chip.classList.toggle("is-active", on);
+        }
+        if (kind) kind.classList.toggle("is-active", !on);
+        try {
+            sessionStorage.setItem("medushu-fav-only", on ? "1" : "0");
+        } catch (_) {}
+    }
+
+    function applyFavFilter() {
+        if (!document.getElementById("library-list")) return;
+        if (!document.querySelector("[data-filter-fav]")) return;
+        setFavOnly(favOnlyWanted());
+    }
+
+    function renderFavourites() {
+        const list = document.getElementById("favourites-list");
+        if (!list) return;
+        const empty = document.querySelector(".favourites-empty");
+        const hearts = loadHearts();
+        list.textContent = "";
+        hearts.forEach(function (h) {
+            if (!h || !h.id) return;
+            const li = document.createElement("li");
+            li.className = "poster-card is-fave";
+            const a = document.createElement("a");
+            a.className = "poster-link";
+            a.href = withAppBase("/item/" + h.id);
+            a.setAttribute("hx-get", a.href);
+            a.setAttribute("hx-target", "#library-region");
+            a.setAttribute("hx-swap", "outerHTML");
+            a.setAttribute("hx-push-url", "true");
+            const frame = document.createElement("span");
+            frame.className = "poster-frame";
+            if (h.art) {
+                const img = document.createElement("img");
+                img.src = h.art;
+                img.alt = h.title || "";
+                frame.appendChild(img);
+            }
+            a.appendChild(frame);
+            const cap = document.createElement("span");
+            cap.className = "poster-caption";
+            const t = document.createElement("span");
+            t.className = "poster-title";
+            t.textContent = h.title || h.id;
+            cap.appendChild(t);
+            a.appendChild(cap);
+            li.appendChild(a);
+            list.appendChild(li);
+        });
+        if (empty) empty.hidden = hearts.length > 0;
+    }
+
+    function continueKey() {
+        return "medushu-continue";
+    }
+
+    function loadContinue() {
+        let list = [];
+        try {
+            const raw = localStorage.getItem(continueKey());
+            const parsed = raw ? JSON.parse(raw) : [];
+            if (Array.isArray(parsed)) list = parsed.filter(function (c) {
+                return c && c.id;
+            });
+        } catch (_) {}
+        try {
+            for (let n = 0; n < localStorage.length; n++) {
+                const k = localStorage.key(n);
+                if (!k || k.indexOf("koru-media-resume:") !== 0) continue;
+                const id = k.slice("koru-media-resume:".length);
+                const t = parseFloat(localStorage.getItem(k));
+                if (!id || !(t > 2)) continue;
+                if (!list.some(function (c) {
+                    return c.id === id;
+                })) {
+                    list.push({ id: id, title: "", art: "", t: t, duration: 0 });
+                }
+            }
+        } catch (_) {}
+        return list;
+    }
+
+    function saveContinueEntry(id, title, art, t, duration) {
+        if (!id || !(t > 2)) return;
+        let list = loadContinue().filter(function (c) {
+            return c && c.id !== id;
+        });
+        list.unshift({ id: id, title: title || "", art: art || "", t: t, duration: duration || 0 });
+        if (list.length > 12) list = list.slice(0, 12);
+        try {
+            localStorage.setItem(continueKey(), JSON.stringify(list));
+        } catch (_) {}
+    }
+
+    function dropContinue(id) {
+        if (!id) return;
+        const list = loadContinue().filter(function (c) {
+            return c && c.id !== id;
+        });
+        try {
+            localStorage.setItem(continueKey(), JSON.stringify(list));
+        } catch (_) {}
+    }
+
+    function renderContinue() {
+        const box = document.querySelector("[data-continue]");
+        const list = document.getElementById("continue-list");
+        if (!box || !list) return;
+        const items = loadContinue();
+        list.textContent = "";
+        if (!items.length) {
+            box.hidden = true;
+            return;
+        }
+        items.forEach(function (c) {
+            if (!c || !c.id) return;
+            const li = document.createElement("li");
+            li.className = "resume-card";
+            const a = document.createElement("a");
+            a.className = "resume-link";
+            a.href = withAppBase("/play/" + c.id);
+            const frame = document.createElement("span");
+            frame.className = "resume-frame";
+            if (c.art) {
+                const img = document.createElement("img");
+                img.src = c.art;
+                img.alt = c.title || "";
+                frame.appendChild(img);
+            }
+            const pct = c.duration > 0 ? Math.min(100, Math.round((c.t / c.duration) * 100)) : 8;
+            const bar = document.createElement("span");
+            bar.className = "resume-progress";
+            const fill = document.createElement("span");
+            fill.style.width = pct + "%";
+            bar.appendChild(fill);
+            frame.appendChild(bar);
+            const play = document.createElement("span");
+            play.className = "resume-play";
+            play.setAttribute("aria-hidden", "true");
+            frame.appendChild(play);
+            a.appendChild(frame);
+            const title = document.createElement("span");
+            title.className = "resume-title";
+            title.textContent = c.title || c.id;
+            a.appendChild(title);
+            li.appendChild(a);
+            list.appendChild(li);
+        });
+        box.hidden = false;
+    }
+
+    function bindNavDrawer() {
+        const btn = document.getElementById("nav-toggle");
+        const layout = document.querySelector(".layout");
+        const scrim = document.getElementById("nav-scrim");
+        if (!btn || !layout) return;
+        if (btn.getAttribute("data-bound") === "1") return;
+        btn.setAttribute("data-bound", "1");
+        function isNarrow() {
+            return window.matchMedia("(max-width: 60rem)").matches;
+        }
+        function sidebarVisible() {
+            if (isNarrow()) return layout.classList.contains("nav-open");
+            return !layout.classList.contains("nav-collapsed");
+        }
+        function placeNavToggle() {
+            const head = document.querySelector(".sidebar-head");
+            const topbar = document.querySelector(".topbar");
+            if (!btn || !head || !topbar) return;
+            if (sidebarVisible()) {
+                if (btn.parentElement !== head) head.appendChild(btn);
+                return;
+            }
+            const logo = topbar.querySelector(".topbar-logo");
+            if (logo) {
+                if (btn.parentElement !== topbar || btn.nextElementSibling !== logo) {
+                    topbar.insertBefore(btn, logo);
+                }
+            } else if (btn.parentElement !== topbar) {
+                topbar.insertBefore(btn, topbar.firstChild);
+            }
+        }
+        function setSidebar(on) {
+            if (isNarrow()) {
+                layout.classList.toggle("nav-open", on);
+                layout.classList.remove("nav-collapsed");
+                if (scrim) {
+                    scrim.hidden = !on;
+                    scrim.setAttribute("aria-hidden", on ? "false" : "true");
+                }
+            } else {
+                layout.classList.toggle("nav-collapsed", !on);
+                layout.classList.remove("nav-open");
+                if (scrim) {
+                    scrim.hidden = true;
+                    scrim.setAttribute("aria-hidden", "true");
+                }
+            }
+            btn.setAttribute("aria-expanded", on ? "true" : "false");
+            placeNavToggle();
+        }
+        setSidebar(sidebarVisible());
+        btn.addEventListener("click", function () {
+            setSidebar(!sidebarVisible());
+        });
+        if (scrim) {
+            scrim.addEventListener("click", function () {
+                setSidebar(false);
+            });
+        }
+        document.querySelectorAll(".sidebar-nav .nav-item").forEach(function (a) {
+            a.addEventListener("click", function () {
+                if (isNarrow()) setSidebar(false);
+            });
+        });
+        try {
+            window.matchMedia("(max-width: 60rem)").addEventListener("change", function () {
+                setSidebar(sidebarVisible());
+            });
+        } catch (_) {}
     }
 
     function pathOnly(href) {
@@ -452,12 +870,57 @@ function showResumeUi(player, id, t) {
             let on = false;
             if (href === "/") on = p === "/";
             else if (href === "/settings") on = p.indexOf("/settings") === 0;
-            else if (href === "/library") on = p === "/library";
+            else if (href === "/library") on = p === "/library" || p.indexOf("/favourites") === 0;
             else if (href.indexOf("/library/") === 0) {
                 on = p === href || p.indexOf(href + "/") === 0 || kindHint === href;
             }
             a.classList.toggle("active", !!on);
         });
+    }
+
+    function placeTopbarBack() {
+        const slot = document.getElementById("topbar-back");
+        if (!slot) return;
+        const src = document.querySelector("#library-region [data-topbar-back]");
+        slot.replaceChildren();
+        if (!src) {
+            slot.hidden = true;
+            return;
+        }
+        const link = src.cloneNode(true);
+        link.removeAttribute("data-topbar-back");
+        slot.appendChild(link);
+        slot.hidden = false;
+    }
+
+    function bindKindMenus() {
+        document.querySelectorAll("details.kind-menu").forEach(function (menu) {
+            if (menu.getAttribute("data-bound") === "1") return;
+            menu.setAttribute("data-bound", "1");
+            menu.addEventListener("toggle", function () {
+                if (!menu.open) return;
+                const root = menu.closest(".kind-actions") || document;
+                root.querySelectorAll("details.kind-menu").forEach(function (other) {
+                    if (other !== menu) other.open = false;
+                });
+            });
+        });
+    }
+
+    function syncTopbarSearch() {
+        const input = document.querySelector(".topbar-search input[type='search']");
+        if (!input) return;
+        const onSearch = !!document.querySelector("[data-search-page]");
+        let q = "";
+        try {
+            q = new URL(location.href).searchParams.get("q") || "";
+        } catch (_) {}
+        if (onSearch && document.activeElement !== input) input.value = q;
+        if (onSearch && document.querySelector(".search-idle")) {
+            try {
+                input.focus();
+            } catch (_) {}
+        }
     }
 
     function enhanceAfterSwap() {
@@ -466,21 +929,36 @@ function showResumeUi(player, id, t) {
         bindKinoToggle();
         bindEditionSelect();
         bindPersistChrome();
+        bindNavDrawer();
+        bindHearts();
+        bindKindMenus();
+        bindMusicPlay();
+        renderFavourites();
+        renderContinue();
         syncNav();
+        placeTopbarBack();
+        syncTopbarSearch();
         const layout = document.querySelector(".layout");
         const content = document.querySelector(".content");
         const home = !!document.querySelector(".hero-carousel");
+        const item = !!document.querySelector(".item-hero");
+        const searching = !!document.querySelector("[data-search-page]");
         const watching = inPageVideoPlayer();
         if (layout) {
-            if (home) layout.classList.add("home");
-            else layout.classList.remove("home");
+            layout.classList.toggle("home", home);
+            layout.classList.toggle("item-page", item);
+            layout.classList.toggle("search", searching);
             if (watching) layout.classList.add("play");
             else {
-                layout.classList.remove("play");
-                setKino(false);
+                if (layout && layout.classList.contains("play")) setKino(false);
+                if (layout) layout.classList.remove("play");
             }
         }
-        if (content) content.classList.toggle("content-home", home);
+        if (content) {
+            content.classList.toggle("content-home", home);
+            content.classList.toggle("content-item", item);
+            content.classList.toggle("content-search", searching);
+        }
         const persist = document.getElementById("persist");
         if (watching && persist) persist.removeAttribute("data-dismissed");
         const docked = persist && persist.querySelector("#player");
@@ -500,6 +978,8 @@ function showResumeUi(player, id, t) {
         if (p.indexOf("/library") === 0) return true;
         if (p.indexOf("/item/") === 0) return true;
         if (p.indexOf("/settings") === 0) return true;
+        if (p.indexOf("/search") === 0) return true;
+        if (p.indexOf("/favourites") === 0) return true;
         return false;
     }
 

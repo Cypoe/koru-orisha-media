@@ -92,8 +92,9 @@ JSON
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=media \
   -e KORU_MANIFEST=manifest.json \
-  -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$SEC:/app" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/public:/app/public:ro" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 for i in $(seq 1 50); do
   if curl -sf "http://127.0.0.1:${PORT}/" >/dev/null; then break; fi
@@ -124,8 +125,9 @@ JSON
 docker run -d --name "$CONTAINER" -p "${PORT}:3090" \
   -e KORU_MEDIA_ROOT=media \
   -e KORU_MANIFEST=manifest.json \
-  -v "$ROOT/bin/media-server:/app/media-server:ro" \
   -v "$OV:/app" \
+  -v "$ROOT/bin/media-server:/app/media-server:ro" \
+  -v "$ROOT/public:/app/public:ro" \
   -w /app debian:bookworm-slim /app/media-server >/dev/null
 for i in $(seq 1 50); do
   if curl -sf "http://127.0.0.1:${PORT}/" >/dev/null; then break; fi
