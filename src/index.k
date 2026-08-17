@@ -6,7 +6,7 @@
 //   catalog.k / catalog.kz SQLite index + filesystem walker + graph store
 //   consumers.k / consumers.kz  named constructions → HTML / JSON-LD / bytes
 //   auth.k / auth.kz            principal + cookie session
-//   hydrate.k / hydrate.kz      TMDB/TVDB client (pump `! hydrate`, not GET)
+//   hydrate.k / hydrate.kz      catalogue hydrate (pump `! hydrate`, not GET)
 // Routes include /settings (mounts, base path, catalog store, Reindex flag).
 // Handlers never call TMDB, TVDB, or ffmpeg. Reindex is catalog.kz via
 // `media:reindex` on the HTTP pump's `! walk`. Hydrate is hydrate.kz via

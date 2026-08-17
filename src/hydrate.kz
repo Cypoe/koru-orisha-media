@@ -1,6 +1,7 @@
 // media/hydrate — encode TMDB/TVDB JSON into the graph. Not on GET /library.
 // Fixture path uses recorded JSON (same files Python tests use). Live HTTPS
-// uses Settings keys. One hydrate at a time; no keys → no-op.
+// uses Cinemeta for `[tt…]` ids with no keys, then optional TMDB/TVDB Settings
+// keys. One hydrate at a time.
 
 const std = @import("std");
 
@@ -52,10 +53,62 @@ fn yearFromDate(obj: []const u8) u32 {
     return std.fmt.parseInt(u32, d[0..4], 10) catch 0;
 }
 
-fn posterUrl(obj: []const u8, buf: []u8) []const u8 {
-    const path = extractAfter(obj, "\"poster_path\"") orelse return "";
-    if (path.len == 0 or path[0] != '/') return "";
-    return std.fmt.bufPrint(buf, "https://image.tmdb.org/t/p/w500{s}", .{path}) catch "";
+fn yearFromReleaseInfo(obj: []const u8) u32 {
+    const d = extractAfter(obj, "\"releaseInfo\"") orelse return yearFromDate(obj);
+    var i: usize = 0;
+    while (i + 4 <= d.len) : (i += 1) {
+        if (d[i] >= '1' and d[i] <= '2' and d[i + 1] >= '0' and d[i + 1] <= '9' and d[i + 2] >= '0' and d[i + 2] <= '9' and d[i + 3] >= '0' and d[i + 3] <= '9') {
+            return std.fmt.parseInt(u32, d[i .. i + 4], 10) catch 0;
+        }
+    }
+    return yearFromDate(obj);
+}
+
+fn posterFromPayload(obj: []const u8, buf: []u8) []const u8 {
+    const path = extractAfter(obj, "\"poster_path\"");
+    if (path) |p| {
+        if (p.len > 0 and p[0] == '/') {
+            return std.fmt.bufPrint(buf, "https://image.tmdb.org/t/p/w500{s}", .{p}) catch "";
+        }
+    }
+    const poster = extractAfter(obj, "\"poster\"") orelse return "";
+    if (std.mem.startsWith(u8, poster, "https://") or std.mem.startsWith(u8, poster, "http://")) return poster;
+    return "";
+}
+
+fn youtubeFromPayload(obj: []const u8) []const u8 {
+    const yt = youtubeKey(obj);
+    if (yt.len > 0) return yt;
+    const trailers = std.mem.indexOf(u8, obj, "\"trailers\"") orelse return "";
+    return extractAfter(obj[trailers..], "\"source\"") orelse "";
+}
+
+fn extractCastPipes(obj: []const u8, out: []u8) []const u8 {
+    const at = std.mem.indexOf(u8, obj, "\"cast\"") orelse return "";
+    const bra = std.mem.indexOfPos(u8, obj, at, "[") orelse return "";
+    var i = bra + 1;
+    var w: usize = 0;
+    var n: usize = 0;
+    while (i < obj.len and obj[i] != ']' and n < 8) {
+        while (i < obj.len and obj[i] != '"' and obj[i] != ']') : (i += 1) {}
+        if (i >= obj.len or obj[i] == ']') break;
+        i += 1;
+        const start = i;
+        while (i < obj.len and obj[i] != '"') : (i += 1) {}
+        const name = obj[start..i];
+        if (i < obj.len and obj[i] == '"') i += 1;
+        if (name.len == 0) continue;
+        if (w > 0) {
+            if (w + 1 >= out.len) break;
+            out[w] = '|';
+            w += 1;
+        }
+        const take = @min(name.len, out.len - w);
+        @memcpy(out[w .. w + take], name[0..take]);
+        w += take;
+        n += 1;
+    }
+    return out[0..w];
 }
 
 fn youtubeKey(obj: []const u8) []const u8 {
@@ -151,17 +204,19 @@ fn fixturePayload(imdb: []const u8, tmdb_id: []const u8) ?[]const u8 {
     return null;
 }
 
-fn encodePayload(e: koru_media.koru_graph.Entry, payload: []const u8) void {
+fn encodePayload(e: koru_media.koru_graph.Entry, payload: []const u8, source: []const u8) void {
     const title = extractAfter(payload, "\"title\"") orelse extractAfter(payload, "\"name\"") orelse e.work_title;
-    const plot = extractAfter(payload, "\"overview\"") orelse "";
+    const plot = extractAfter(payload, "\"overview\"") orelse extractAfter(payload, "\"description\"") orelse "";
     var id_buf: [32]u8 = undefined;
     const tmdb_num = extractNumber(payload, "\"id\"") orelse 0;
     const tmdb_id = if (tmdb_num > 0) (std.fmt.bufPrint(&id_buf, "{d}", .{tmdb_num}) catch "") else "";
-    const imdb = extractAfter(payload, "\"imdb_id\"") orelse e.imdb_id;
-    const year = yearFromDate(payload);
-    var poster_buf: [160]u8 = undefined;
-    const poster = posterUrl(payload, &poster_buf);
-    const yt = youtubeKey(payload);
+    const imdb = extractAfter(payload, "\"imdb_id\"") orelse extractAfter(payload, "\"imdb\"") orelse e.imdb_id;
+    const year = yearFromReleaseInfo(payload);
+    var poster_buf: [256]u8 = undefined;
+    const poster = posterFromPayload(payload, &poster_buf);
+    const yt = youtubeFromPayload(payload);
+    var cast_buf: [512]u8 = undefined;
+    const actors = extractCastPipes(payload, &cast_buf);
     const is_tv = std.mem.eql(u8, e.kind, "tv") or e.season > 0;
     const work = koru_media.koru_graph.workKey(e.path);
     var slug_buf: [128]u8 = undefined;
@@ -174,30 +229,31 @@ fn encodePayload(e: koru_media.koru_graph.Entry, payload: []const u8) void {
         (std.fmt.bufPrint(&ent_buf, "work.movie.{s}", .{name}) catch return);
     const typ: []const u8 = if (is_tv) "TVSeries" else "Movie";
     koru_media.koru_catalog.upsertEntity(ent_id, typ);
-    if (title.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "name", title, "tmdb");
-    if (plot.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "description", plot, "tmdb");
+    if (title.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "name", title, source);
+    if (plot.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "description", plot, source);
     if (year > 0) {
         var yb: [8]u8 = undefined;
         const ys = std.fmt.bufPrint(&yb, "{d}", .{year}) catch "";
-        if (ys.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "datePublished", ys, "tmdb");
+        if (ys.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "datePublished", ys, source);
     }
-    if (poster.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "poster_url", poster, "tmdb");
-    if (yt.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "trailer_youtube", yt, "tmdb");
+    if (poster.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "poster_url", poster, source);
+    if (yt.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "trailer_youtube", yt, source);
+    if (actors.len > 0) koru_media.koru_catalog.upsertAssertion(ent_id, "actors", actors, source);
     if (imdb.len > 0) {
         var url_buf: [80]u8 = undefined;
         const url = std.fmt.bufPrint(&url_buf, "https://www.imdb.com/title/{s}/", .{imdb}) catch "";
         koru_media.koru_catalog.upsertProviderId(ent_id, "imdb", "title", imdb, url);
-        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", imdb, 0, "tmdb");
+        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", imdb, 0, source);
     }
     if (tmdb_id.len > 0) {
         var url_buf: [96]u8 = undefined;
         const path: []const u8 = if (is_tv) "tv" else "movie";
         const url = std.fmt.bufPrint(&url_buf, "https://www.themoviedb.org/{s}/{s}", .{ path, tmdb_id }) catch "";
         koru_media.koru_catalog.upsertProviderId(ent_id, "tmdb", path, tmdb_id, url);
-        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", tmdb_id, 0, "tmdb");
+        koru_media.koru_catalog.upsertRelation(ent_id, "same_as", tmdb_id, 0, source);
     }
     koru_media.koru_catalog.upsertAssetLink(e.id, ent_id, "main");
-    koru_media.koru_catalog.upsertRelation(ent_id, "has_asset", e.id, 0, "tmdb");
+    koru_media.koru_catalog.upsertRelation(ent_id, "has_asset", e.id, 0, source);
 }
 
 fn fetchLive(allocator: std.mem.Allocator, imdb: []const u8, hint: []const u8) ?[]const u8 {
@@ -224,25 +280,41 @@ fn fetchLive(allocator: std.mem.Allocator, imdb: []const u8, hint: []const u8) ?
     return httpsGet(allocator, detail_url, token);
 }
 
+fn fetchCinemeta(allocator: std.mem.Allocator, imdb: []const u8, hint: []const u8) ?[]const u8 {
+    if (imdb.len < 3) return null;
+    const first: []const u8 = if (std.mem.eql(u8, hint, "tv")) "series" else "movie";
+    const second: []const u8 = if (std.mem.eql(u8, first, "series")) "movie" else "series";
+    const kinds = [_][]const u8{ first, second };
+    var url_buf: [160]u8 = undefined;
+    for (kinds) |kind| {
+        const url = std.fmt.bufPrint(&url_buf, "https://v3-cinemeta.strem.io/meta/{s}/{s}.json", .{ kind, imdb }) catch continue;
+        const body = httpsGet(allocator, url, "") orelse continue;
+        if (std.mem.indexOf(u8, body, "\"meta\"") != null and std.mem.indexOf(u8, body, "\"name\"") != null) return body;
+    }
+    return null;
+}
+
 fn hydrateOne(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry) void {
     if (e.imdb_id.len < 3) return;
     const tmdb_id = "";
     if (fixturePayload(e.imdb_id, tmdb_id)) |body| {
-        encodePayload(e, body);
+        encodePayload(e, body, "tmdb");
         return;
     }
+    if (fetchCinemeta(allocator, e.imdb_id, e.kind)) |body| {
+        encodePayload(e, body, "cinemeta");
+    }
     if (fetchLive(allocator, e.imdb_id, e.kind)) |body| {
-        encodePayload(e, body);
+        encodePayload(e, body, "tmdb");
     }
 }
 
 pub fn run() void {
-    if (koru_http.streamsBusy()) return;
-    const flagged = koru_media.koru_graph.consumeHydrateFlag();
-    if (!flagged) return;
-    if (!koru_media.koru_graph.hasHydrateKeys() and envOr("KORU_TMDB_FIXTURE", "").len == 0) return;
     if (busy.swap(true, .seq_cst)) return;
     defer _ = busy.store(false, .seq_cst);
+    if (!koru_media.koru_graph.consumeHydrateFlag()) return;
+    // Filename + nfo graph even when Settings has no TMDB/TVDB keys.
+    koru_media.koru_catalog.encodeFilenameGraph();
     const allocator = std.heap.c_allocator;
     var buf: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
     const works = koru_media.koru_graph.listDistinctImdb(&buf);
@@ -251,4 +323,5 @@ pub fn run() void {
         hydrateOne(allocator, e);
     }
     koru_media.koru_catalog.encodeFilenameGraph();
+    std.debug.print("hydrate: done\n", .{});
 }
