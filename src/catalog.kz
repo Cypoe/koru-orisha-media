@@ -40,6 +40,8 @@ const SCHEMA =
     \\  mime TEXT NOT NULL,
     \\  container TEXT NOT NULL,
     \\  poster TEXT NOT NULL DEFAULT '',
+    \\  backdrop TEXT NOT NULL DEFAULT '',
+    \\  logo TEXT NOT NULL DEFAULT '',
     \\  subtitle TEXT NOT NULL DEFAULT '',
     \\  year INTEGER NOT NULL DEFAULT 0,
     \\  video_codec TEXT NOT NULL DEFAULT '',
@@ -152,7 +154,7 @@ pub const MAX_LIBRARY_ROOTS: usize = 16;
 var roots_store: [8192]u8 = undefined;
 var roots_store_len: usize = 0;
 
-const ENTRY_COLS = "id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title";
+const ENTRY_COLS = "id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo";
 const NFO_MAX: usize = 64 * 1024;
 const COVER_SCAN: usize = 256 * 1024;
 const JPEG_MAX: usize = 512 * 1024;
@@ -165,7 +167,7 @@ var nfo_title_parse_buf: [256]u8 = undefined;
 var nfo_youtube_buf: [16]u8 = undefined;
 var nfo_overlay_store: [4096]u8 = undefined;
 var nfo_overlay_len: usize = 0;
-var hydrate_overlay_store: [4096]u8 = undefined;
+var hydrate_overlay_store: [12 * 1024]u8 = undefined;
 var hydrate_overlay_len: usize = 0;
 
 const DEFAULT_CATALOG = "data/catalog.sqlite";
@@ -229,6 +231,8 @@ fn rowToEntry(stmt: ?*sqlite3_stmt, store: []u8, used: *usize) koru_media.koru_g
         .episode = episode,
         .imdb_id = storeDup(store, used, colText(stmt, 16)),
         .work_title = storeDup(store, used, colText(stmt, 17)),
+        .backdrop = storeDup(store, used, colText(stmt, 18)),
+        .logo = storeDup(store, used, colText(stmt, 19)),
     };
 }
 
@@ -280,6 +284,8 @@ fn migrateColumns() void {
     ensureColumn("episode", "ALTER TABLE entries ADD COLUMN episode INTEGER NOT NULL DEFAULT 0");
     ensureColumn("imdb_id", "ALTER TABLE entries ADD COLUMN imdb_id TEXT NOT NULL DEFAULT ''");
     ensureColumn("work_title", "ALTER TABLE entries ADD COLUMN work_title TEXT NOT NULL DEFAULT ''");
+    ensureColumn("backdrop", "ALTER TABLE entries ADD COLUMN backdrop TEXT NOT NULL DEFAULT ''");
+    ensureColumn("logo", "ALTER TABLE entries ADD COLUMN logo TEXT NOT NULL DEFAULT ''");
     if (!nfoWorksColumnExists("trailer_youtube")) {
         execSql("ALTER TABLE nfo_works ADD COLUMN trailer_youtube TEXT NOT NULL DEFAULT ''");
     }
@@ -525,7 +531,7 @@ pub fn findHero() ?koru_media.koru_graph.HeroInfo {
     if (!catalog_ready) return null;
     var stmt: ?*sqlite3_stmt = null;
     const sql =
-        \\SELECT e.id, COALESCE(NULLIF(e.work_title,''), e.title)
+        \\SELECT e.id, COALESCE(NULLIF(e.work_title,''), e.title), e.poster, e.backdrop, e.logo, e.year
         \\FROM entries e
         \\WHERE e.kind IN ('movie','tv')
         \\ORDER BY e.modified_ns DESC, e.id ASC LIMIT 1
@@ -535,6 +541,11 @@ pub fn findHero() ?koru_media.koru_graph.HeroInfo {
     if (sqlite3_step(stmt) != SQLITE_ROW) return null;
     const asset = storeDup(&graph_store, &graph_store_len, colText(stmt, 0));
     const title = storeDup(&graph_store, &graph_store_len, colText(stmt, 1));
+    const poster = storeDup(&graph_store, &graph_store_len, colText(stmt, 2));
+    const backdrop = storeDup(&graph_store, &graph_store_len, colText(stmt, 3));
+    const logo = storeDup(&graph_store, &graph_store_len, colText(stmt, 4));
+    const year_i = sqlite3_column_int64(stmt, 5);
+    const year: u32 = if (year_i < 0 or year_i > 9999) 0 else @intCast(year_i);
     const ent = entityForAsset(asset);
     var plot: []const u8 = "";
     var trailer: []const u8 = "";
@@ -546,14 +557,20 @@ pub fn findHero() ?koru_media.koru_graph.HeroInfo {
     }
     const hydrate = findHydrateForAsset(asset, findImdbForAsset(asset));
     if (plot.len == 0) plot = hydrate.plot;
+    const year_out: u32 = if (year > 0) year else hydrate.year;
     return .{
         .asset_id = asset,
         .title = title,
         .plot = plot,
         .trailer_id = trailer,
         .youtube_key = yt,
-        .has_poster = isRemoteHttp(hydrate.poster_url),
-        .poster_url = storeDup(&graph_store, &graph_store_len, hydrate.poster_url),
+        .has_poster = poster.len > 0 or isRemoteHttp(hydrate.poster_url),
+        .poster_url = if (poster.len > 0) "" else storeDup(&graph_store, &graph_store_len, hydrate.poster_url),
+        .has_backdrop = backdrop.len > 0 or isRemoteHttp(hydrate.backdrop_url),
+        .backdrop_url = if (backdrop.len > 0) "" else storeDup(&graph_store, &graph_store_len, hydrate.backdrop_url),
+        .has_logo = logo.len > 0 or isRemoteHttp(hydrate.logo_url),
+        .logo_url = if (logo.len > 0) "" else storeDup(&graph_store, &graph_store_len, hydrate.logo_url),
+        .year = year_out,
     };
 }
 
@@ -581,7 +598,7 @@ pub fn listHeroes(out: []koru_media.koru_graph.HeroInfo) []koru_media.koru_graph
     if (!catalog_ready or out.len == 0) return out[0..0];
     var stmt: ?*sqlite3_stmt = null;
     const sql =
-        \\SELECT e.id, COALESCE(NULLIF(e.work_title,''), e.title), e.path, e.poster, e.imdb_id, e.work_key
+        \\SELECT e.id, COALESCE(NULLIF(e.work_title,''), e.title), e.path, e.poster, e.imdb_id, e.work_key, e.backdrop, e.logo, e.year
         \\FROM entries e
         \\WHERE e.kind IN ('movie','tv')
         \\AND e.id IN (SELECT MIN(id) FROM entries WHERE kind IN ('movie','tv') GROUP BY CASE WHEN work_key='' THEN id ELSE work_key END)
@@ -596,6 +613,10 @@ pub fn listHeroes(out: []koru_media.koru_graph.HeroInfo) []koru_media.koru_graph
         const poster = storeDup(&hero_store, &hero_store_len, colText(stmt, 3));
         const imdb = storeDup(&hero_store, &hero_store_len, colText(stmt, 4));
         const work = storeDup(&hero_store, &hero_store_len, colText(stmt, 5));
+        const backdrop = storeDup(&hero_store, &hero_store_len, colText(stmt, 6));
+        const logo = storeDup(&hero_store, &hero_store_len, colText(stmt, 7));
+        const year_i = sqlite3_column_int64(stmt, 8);
+        const year: u32 = if (year_i < 0 or year_i > 9999) 0 else @intCast(year_i);
         const hydrate = findHydrateForAsset(asset, imdb);
         var plot: []const u8 = storeDup(&hero_store, &hero_store_len, hydrate.plot);
         var yt: []const u8 = "";
@@ -611,6 +632,7 @@ pub fn listHeroes(out: []koru_media.koru_graph.HeroInfo) []koru_media.koru_graph
             if (yt.len == 0 and nfo.youtube.len > 0) yt = storeDup(&hero_store, &hero_store_len, nfo.youtube);
         }
         const trailer = trailerIdForWork(asset, work);
+        const year_out: u32 = if (year > 0) year else hydrate.year;
         out[n] = .{
             .asset_id = asset,
             .title = title,
@@ -619,6 +641,11 @@ pub fn listHeroes(out: []koru_media.koru_graph.HeroInfo) []koru_media.koru_graph
             .youtube_key = yt,
             .has_poster = poster.len > 0 or isRemoteHttp(hydrate.poster_url),
             .poster_url = if (poster.len > 0) "" else storeDup(&hero_store, &hero_store_len, hydrate.poster_url),
+            .has_backdrop = backdrop.len > 0 or isRemoteHttp(hydrate.backdrop_url),
+            .backdrop_url = if (backdrop.len > 0) "" else storeDup(&hero_store, &hero_store_len, hydrate.backdrop_url),
+            .has_logo = logo.len > 0 or isRemoteHttp(hydrate.logo_url),
+            .logo_url = if (logo.len > 0) "" else storeDup(&hero_store, &hero_store_len, hydrate.logo_url),
+            .year = year_out,
         };
         n += 1;
     }
@@ -639,6 +666,40 @@ pub fn listPresentKinds(out: [][]const u8) [][]const u8 {
     while (sqlite3_step(stmt) == SQLITE_ROW and n < out.len) {
         out[n] = storeDup(&kind_store, &kind_store_len, colText(stmt, 0));
         n += 1;
+    }
+    return out[0..n];
+}
+
+var actor_store: [4096]u8 = undefined;
+var actor_store_len: usize = 0;
+
+/// Distinct actor names whose hydrate/nfo string contains `q`. Empty q returns none.
+pub fn searchActors(q: []const u8, out: [][]const u8) [][]const u8 {
+    actor_store_len = 0;
+    if (!catalog_ready or q.len == 0 or out.len == 0) return out[0..0];
+    var stmt: ?*sqlite3_stmt = null;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM sem_assertions WHERE property='actors' AND value LIKE '%' || ? || '%' COLLATE NOCASE LIMIT 32", -1, &stmt, null) != SQLITE_OK) return out[0..0];
+    defer _ = sqlite3_finalize(stmt);
+    bindText(stmt, 1, q);
+    var n: usize = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW and n < out.len) {
+        const raw = colText(stmt, 0);
+        var it = std.mem.splitScalar(u8, raw, '|');
+        while (it.next()) |name| {
+            if (name.len == 0) continue;
+            if (std.ascii.indexOfIgnoreCase(name, q) == null) continue;
+            var dup = false;
+            for (out[0..n]) |seen| {
+                if (std.ascii.eqlIgnoreCase(seen, name)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            out[n] = storeDup(&actor_store, &actor_store_len, name);
+            n += 1;
+            if (n >= out.len) break;
+        }
     }
     return out[0..n];
 }
@@ -877,7 +938,7 @@ pub fn encodeFilenameGraph() void {
     if (!catalog_ready) return;
     kind_store_len = 0;
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title FROM entries", -1, &stmt, null) != SQLITE_OK) return;
+    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo FROM entries", -1, &stmt, null) != SQLITE_OK) return;
     defer _ = sqlite3_finalize(stmt);
     var tmp_store: [32 * 1024]u8 = undefined;
     var works: [128][]const u8 = undefined;
@@ -973,7 +1034,7 @@ pub fn listDistinctImdb(out: []koru_media.koru_graph.Entry) []koru_media.koru_gr
     work_store_len = 0;
     if (!catalog_ready) return out[0..0];
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title FROM entries WHERE imdb_id LIKE 'tt%' GROUP BY imdb_id LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
+    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo FROM entries WHERE imdb_id LIKE 'tt%' GROUP BY imdb_id LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
     defer _ = sqlite3_finalize(stmt);
     var n: usize = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW and n < out.len) {
@@ -1005,8 +1066,8 @@ pub fn upsert(e: koru_media.koru_graph.Entry) void {
     const sql =
         \\INSERT OR REPLACE INTO entries(
         \\  id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,
-        \\  video_codec,video_brand,audio_codec,work_key,season,episode,imdb_id,work_title
-        \\) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        \\  video_codec,video_brand,audio_codec,work_key,season,episode,imdb_id,work_title,backdrop,logo
+        \\) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, null) != SQLITE_OK) return;
     defer _ = sqlite3_finalize(stmt);
@@ -1029,6 +1090,8 @@ pub fn upsert(e: koru_media.koru_graph.Entry) void {
     _ = sqlite3_bind_int64(stmt, 17, se.episode);
     bindText(stmt, 18, imdb);
     bindText(stmt, 19, wt);
+    bindText(stmt, 20, e.backdrop);
+    bindText(stmt, 21, e.logo);
     _ = sqlite3_step(stmt);
 }
 
@@ -1161,12 +1224,30 @@ pub fn findHydrateForAsset(asset_id: []const u8, imdb_id: []const u8) koru_media
     if (meta.plot.len == 0 and desc.len > 0) meta.plot = overlayDup(desc);
     const poster = assertionValue(ent, "poster_url");
     if (meta.poster_url.len == 0 and poster.len > 0) meta.poster_url = overlayDup(poster);
+    const backdrop = assertionValue(ent, "backdrop_url");
+    if (meta.backdrop_url.len == 0 and backdrop.len > 0) meta.backdrop_url = overlayDup(backdrop);
+    const logo = assertionValue(ent, "logo_url");
+    if (meta.logo_url.len == 0 and logo.len > 0) meta.logo_url = overlayDup(logo);
     const yt = assertionValue(ent, "trailer_youtube");
     if (yt.len > 0 and meta.source.len == 0) meta.source = overlayDup("graph");
     const name = assertionValue(ent, "name");
     if (meta.title.len == 0 and name.len > 0) meta.title = overlayDup(name);
     const actors = assertionValue(ent, "actors");
     if (meta.actors.len == 0 and actors.len > 0) meta.actors = overlayDup(actors);
+    const genres = assertionValue(ent, "genres");
+    if (meta.genres.len == 0 and genres.len > 0) meta.genres = overlayDup(genres);
+    const director = assertionValue(ent, "director");
+    if (meta.director.len == 0 and director.len > 0) meta.director = overlayDup(director);
+    const writers = assertionValue(ent, "writers");
+    if (meta.writers.len == 0 and writers.len > 0) meta.writers = overlayDup(writers);
+    const tagline = assertionValue(ent, "tagline");
+    if (meta.tagline.len == 0 and tagline.len > 0) meta.tagline = overlayDup(tagline);
+    const rating = assertionValue(ent, "contentRating");
+    if (meta.rating.len == 0 and rating.len > 0) meta.rating = overlayDup(rating);
+    const runtime_s = assertionValue(ent, "duration");
+    if (meta.runtime == 0 and runtime_s.len > 0) {
+        meta.runtime = std.fmt.parseInt(u32, runtime_s, 10) catch 0;
+    }
     return meta;
 }
 
@@ -1174,7 +1255,7 @@ pub fn findEntry(id: []const u8) ?koru_media.koru_graph.Entry {
     if (!catalog_ready) return null;
     find_store_len = 0;
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title FROM entries WHERE id=? LIMIT 1", -1, &stmt, null) != SQLITE_OK) return null;
+    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo FROM entries WHERE id=? LIMIT 1", -1, &stmt, null) != SQLITE_OK) return null;
     defer _ = sqlite3_finalize(stmt);
     bindText(stmt, 1, id);
     if (sqlite3_step(stmt) != SQLITE_ROW) return null;
@@ -1195,7 +1276,15 @@ fn orderSql(sort: koru_media.koru_graph.SortMode) []const u8 {
         .title => "COALESCE(NULLIF(work_title,''), title) COLLATE NOCASE ASC, id ASC",
         .id => "id ASC",
         .recent => "modified_ns DESC, COALESCE(NULLIF(work_title,''), title) COLLATE NOCASE ASC",
+        .shuffle => "RANDOM()",
     };
+}
+
+fn filterSql(filter: []const u8) []const u8 {
+    if (std.mem.eql(u8, filter, "uhd")) return " AND (path LIKE '%2160p%' OR path LIKE '%UHD%' OR path LIKE '%4K%' OR path LIKE '%2160i%')";
+    if (std.mem.eql(u8, filter, "atmos")) return " AND path LIKE '%Atmos%'";
+    if (std.mem.eql(u8, filter, "3d")) return " AND (path LIKE '%3D%' OR path LIKE '%HSBS%' OR path LIKE '%HOU%')";
+    return "";
 }
 
 fn whereSql(kind_filter: ?[]const u8, q: ?[]const u8) []const u8 {
@@ -1247,20 +1336,22 @@ fn bindWhere(stmt: ?*sqlite3_stmt, kind_filter: ?[]const u8, q: ?[]const u8) voi
 
 /// One row per work_key (Discover / Movies / Series / Music). Extras are
 /// omitted unless the kind filter is `extra`. Empty work_key stays per-file.
-pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: koru_media.koru_graph.SortMode, offset: usize, limit: usize, out: *[MAX_PAGE]koru_media.koru_graph.Entry) koru_media.koru_graph.Page {
+pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: koru_media.koru_graph.SortMode, offset: usize, limit: usize, filter: []const u8, out: *[MAX_PAGE]koru_media.koru_graph.Entry) koru_media.koru_graph.Page {
     page_store_len = 0;
     if (!catalog_ready) return .{ .items = out[0..0], .total = 0 };
     const cap = if (limit == 0) out.len else @min(out.len, limit);
-    const where = whereSql(kind_filter, q);
+    const where_base = whereSql(kind_filter, q);
+    var where_buf: [1400]u8 = undefined;
+    const where = std.fmt.bufPrint(&where_buf, "{s}{s}", .{ where_base, filterSql(filter) }) catch where_base;
     const work_group = "CASE WHEN work_key='' THEN id ELSE work_key END";
 
-    var count_sql: [1024]u8 = undefined;
-    var list_sql: [2048]u8 = undefined;
+    var count_sql: [1600]u8 = undefined;
+    var list_sql: [2800]u8 = undefined;
     const count_z = std.fmt.bufPrint(&count_sql, "SELECT COUNT(DISTINCT {s}) FROM entries {s}", .{ work_group, where }) catch return .{ .items = out[0..0], .total = 0 };
     const list_z = std.fmt.bufPrint(&list_sql, "SELECT {s} FROM entries WHERE id IN (SELECT MIN(id) FROM entries {s} GROUP BY {s}) ORDER BY {s} LIMIT {d} OFFSET {d}", .{ ENTRY_COLS, where, work_group, orderSql(sort), cap, offset }) catch return .{ .items = out[0..0], .total = 0 };
 
     var cstmt: ?*sqlite3_stmt = null;
-    var cz: [1025]u8 = undefined;
+    var cz: [1601]u8 = undefined;
     const czp = zsql(&cz, count_z) orelse return .{ .items = out[0..0], .total = 0 };
     if (sqlite3_prepare_v2(db, czp, -1, &cstmt, null) != SQLITE_OK) return .{ .items = out[0..0], .total = 0 };
     defer _ = sqlite3_finalize(cstmt);
@@ -1272,7 +1363,7 @@ pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: koru_media.ko
     }
 
     var lst: ?*sqlite3_stmt = null;
-    var lz: [2049]u8 = undefined;
+    var lz: [2801]u8 = undefined;
     const lzp = zsql(&lz, list_z) orelse return .{ .items = out[0..0], .total = total };
     if (sqlite3_prepare_v2(db, lzp, -1, &lst, null) != SQLITE_OK) return .{ .items = out[0..0], .total = total };
     defer _ = sqlite3_finalize(lst);
@@ -1290,7 +1381,7 @@ pub fn collectWorkmates(path: []const u8, except_id: []const u8, out: *[MAX_PAGE
     if (!catalog_ready) return out[0..0];
     const work = koru_media.koru_graph.workKey(path);
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title FROM entries WHERE work_key=? AND id!=? LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
+    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo FROM entries WHERE work_key=? AND id!=? LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
     defer _ = sqlite3_finalize(stmt);
     bindText(stmt, 1, work);
     bindText(stmt, 2, except_id);
@@ -1308,7 +1399,7 @@ pub fn collectWorkFiles(path: []const u8, out: *[MAX_PAGE]koru_media.koru_graph.
     if (!catalog_ready) return out[0..0];
     const work = koru_media.koru_graph.workKey(path);
     var stmt: ?*sqlite3_stmt = null;
-    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title FROM entries WHERE work_key=? ORDER BY season ASC, episode ASC, title COLLATE NOCASE ASC, id ASC LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
+    if (sqlite3_prepare_v2(db, "SELECT id,kind,title,path,bytes,modified_ns,mime,container,poster,subtitle,year,video_codec,video_brand,audio_codec,season,episode,imdb_id,work_title,backdrop,logo FROM entries WHERE work_key=? ORDER BY season ASC, episode ASC, title COLLATE NOCASE ASC, id ASC LIMIT 256", -1, &stmt, null) != SQLITE_OK) return out[0..0];
     defer _ = sqlite3_finalize(stmt);
     bindText(stmt, 1, work);
     var n: usize = 0;
@@ -1440,20 +1531,21 @@ fn dirIsUnderWork(dir_rel: []const u8, work: []const u8) bool {
     return dir_rel.len > work.len and dir_rel[work.len] == '/';
 }
 
-fn findSidecar(root: []const u8, rel: []const u8, store: *[512]u8) []const u8 {
+fn findNamedSidecar(root: []const u8, rel: []const u8, store: *[512]u8, names: []const []const u8, try_stem: bool) []const u8 {
     const slash = std.mem.lastIndexOfScalar(u8, rel, '/') orelse rel.len;
     const stem_rel = blk: {
         if (std.mem.lastIndexOfScalar(u8, rel, '.')) |d| break :blk rel[0..d];
         break :blk rel;
     };
-    const names = [_][]const u8{ "poster", "folder", "cover", "show", "banner", "fanart", "landscape" };
-    for (POSTER_EXT) |ext| {
-        var cand: [768]u8 = undefined;
-        const p = std.fmt.bufPrint(&cand, "{s}/{s}{s}", .{ root, stem_rel, ext }) catch continue;
-        if (std.fs.cwd().access(p, .{})) |_| {
-            const relp = std.fmt.bufPrint(store, "{s}{s}", .{ stem_rel, ext }) catch continue;
-            return relp;
-        } else |_| {}
+    if (try_stem) {
+        for (POSTER_EXT) |ext| {
+            var cand: [768]u8 = undefined;
+            const p = std.fmt.bufPrint(&cand, "{s}/{s}{s}", .{ root, stem_rel, ext }) catch continue;
+            if (std.fs.cwd().access(p, .{})) |_| {
+                const relp = std.fmt.bufPrint(store, "{s}{s}", .{ stem_rel, ext }) catch continue;
+                return relp;
+            } else |_| {}
+        }
     }
     const work = koru_media.koru_graph.workKey(rel);
     var dir_rel: []const u8 = if (slash < rel.len) rel[0..slash] else "";
@@ -1479,6 +1571,21 @@ fn findSidecar(root: []const u8, rel: []const u8, store: *[512]u8) []const u8 {
         dir_rel = parentDir(dir_rel);
     }
     return "";
+}
+
+fn findSidecar(root: []const u8, rel: []const u8, store: *[512]u8) []const u8 {
+    const names = [_][]const u8{ "poster", "folder", "cover", "show" };
+    return findNamedSidecar(root, rel, store, &names, true);
+}
+
+fn findBackdropSidecar(root: []const u8, rel: []const u8, store: *[512]u8) []const u8 {
+    const names = [_][]const u8{ "fanart", "landscape", "banner", "thumb", "backdrop" };
+    return findNamedSidecar(root, rel, store, &names, false);
+}
+
+fn findLogoSidecar(root: []const u8, rel: []const u8, store: *[512]u8) []const u8 {
+    const names = [_][]const u8{ "logo", "clearlogo" };
+    return findNamedSidecar(root, rel, store, &names, false);
 }
 
 fn xmlUnescapeInto(src: []const u8, store: []u8) []const u8 {
@@ -1775,9 +1882,13 @@ fn ingestFile(root: []const u8, rel: []const u8, file_dir: std.fs.Dir, basename:
     var year = yearFromName(stem);
     if (year == 0) year = yearFromName(parentName(rel));
     var poster_buf: [512]u8 = undefined;
+    var backdrop_buf: [512]u8 = undefined;
+    var logo_buf: [512]u8 = undefined;
     var sub_buf: [512]u8 = undefined;
     var poster = findSidecar(root, rel, &poster_buf);
     if (poster.len == 0) poster = extractEmbeddedCover(root, rel, &poster_buf);
+    const backdrop = findBackdropSidecar(root, rel, &backdrop_buf);
+    const logo = findLogoSidecar(root, rel, &logo_buf);
     const subtitle = findVtt(root, rel, &sub_buf);
     var brand_buf: [4]u8 = undefined;
     const brand = probeFtyp(full, &brand_buf);
@@ -1797,6 +1908,8 @@ fn ingestFile(root: []const u8, rel: []const u8, file_dir: std.fs.Dir, basename:
         .mime = mimeFor(rel),
         .container = containerFor(rel),
         .poster = poster,
+        .backdrop = backdrop,
+        .logo = logo,
         .subtitle = subtitle,
         .year = year,
         .video_codec = if (brand.len > 0) "unknown" else "",

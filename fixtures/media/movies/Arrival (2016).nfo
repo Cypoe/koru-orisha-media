@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<movie>
+  <title>Arrival</title>
+  <year>2016</year>
+  <plot>A linguist works with the military to communicate with alien visitors.</plot>
+  <outline>Language is the first weapon drawn in a conflict.</outline>
+  <premiered>2016-11-11</premiered>
+  <rating>
+    <value>7.9</value>
+  </rating>
+  <trailer>https://www.youtube.com/watch?v=tFMo3UJ4B4g</trailer>
+</movie>

@@ -19,6 +19,10 @@ pub const Entry = struct {
     mime: []const u8,
     container: []const u8,
     poster: []const u8,
+    /// Landscape fanart / backdrop sidecar (empty if absent). Never a 2:3 poster.
+    backdrop: []const u8 = "",
+    /// clearlogo / logo sidecar (empty if absent).
+    logo: []const u8 = "",
     /// Relative WebVTT sidecar path (empty if absent).
     subtitle: []const u8,
     year: u32,
@@ -47,6 +51,8 @@ pub const NfoMeta = struct {
 /// Offline TMDB/TVDB overlay. Keyed by `[tt…]` already on disk. Handlers only read.
 pub const HydrateMeta = struct {
     poster_url: []const u8 = "",
+    backdrop_url: []const u8 = "",
+    logo_url: []const u8 = "",
     actors: []const u8 = "",
     plot: []const u8 = "",
     title: []const u8 = "",
@@ -54,6 +60,12 @@ pub const HydrateMeta = struct {
     tmdb_id: []const u8 = "",
     tvdb_id: []const u8 = "",
     source: []const u8 = "",
+    genres: []const u8 = "",
+    director: []const u8 = "",
+    writers: []const u8 = "",
+    runtime: u32 = 0,
+    rating: []const u8 = "",
+    tagline: []const u8 = "",
 };
 
 pub const MAX_PAGE: usize = koru_media.koru_catalog.MAX_PAGE;
@@ -225,6 +237,15 @@ fn parseLibField(key: []const u8, prefix: []const u8) ?[]const u8 {
 
 fn copySetting(buf: []u8, len: *usize, val: []const u8) void {
     const take = @min(val.len, buf.len);
+    if (take == 0) {
+        len.* = 0;
+        return;
+    }
+    // settingsPost may pass proxyUserHeader() which already aliases this buffer.
+    if (val.ptr == buf.ptr) {
+        len.* = take;
+        return;
+    }
     @memcpy(buf[0..take], val[0..take]);
     len.* = take;
 }
@@ -393,10 +414,14 @@ fn writeSettingsFile(base: []const u8, driver: []const u8, dsn: []const u8, walk
 
 fn rememberDriver(driver: []const u8, dsn: []const u8) void {
     const dtake = @min(driver.len, settings_driver_buf.len);
-    @memcpy(settings_driver_buf[0..dtake], driver[0..dtake]);
+    if (dtake > 0 and driver.ptr != settings_driver_buf[0..].ptr) {
+        @memcpy(settings_driver_buf[0..dtake], driver[0..dtake]);
+    }
     settings_driver_len = dtake;
     const stake = @min(dsn.len, settings_dsn_buf.len);
-    @memcpy(settings_dsn_buf[0..stake], dsn[0..stake]);
+    if (stake > 0 and dsn.ptr != settings_dsn_buf[0..].ptr) {
+        @memcpy(settings_dsn_buf[0..stake], dsn[0..stake]);
+    }
     settings_dsn_len = stake;
 }
 
@@ -792,6 +817,8 @@ fn loadManifest() void {
                 .mime = mime,
                 .container = container,
                 .poster = poster,
+                .backdrop = extractAfterUnescaped(obj, "\"backdrop\"") orelse "",
+                .logo = extractAfterUnescaped(obj, "\"logo\"") orelse "",
                 .subtitle = subtitle,
                 .year = year,
                 .video_codec = video_codec,
@@ -1331,7 +1358,7 @@ pub fn pathUnderRoot(rel: []const u8, out: []u8) ?[]const u8 {
     }
     return joined;
 }
-pub const SortMode = enum { title, id, recent };
+pub const SortMode = enum { title, id, recent, shuffle };
 
 /// True when a path segment is a Jellyfin `trailers/` (or `trailer/`) folder.
 pub fn pathIsTrailer(path: []const u8) bool {
@@ -1868,8 +1895,12 @@ pub const Page = struct {
 };
 
 pub fn collectPage(kind_filter: ?[]const u8, q: ?[]const u8, sort: SortMode, offset: usize, limit: usize, out: *[MAX_PAGE]Entry) Page {
+    return collectPageFilter(kind_filter, q, sort, offset, limit, "", out);
+}
+
+pub fn collectPageFilter(kind_filter: ?[]const u8, q: ?[]const u8, sort: SortMode, offset: usize, limit: usize, filter: []const u8, out: *[MAX_PAGE]Entry) Page {
     maybeReloadManifest();
-    return koru_media.koru_catalog.collectPage(kind_filter, q, sort, offset, limit, out);
+    return koru_media.koru_catalog.collectPage(kind_filter, q, sort, offset, limit, filter, out);
 }
 
 pub fn collectFiltered(kind_filter: ?[]const u8, q: ?[]const u8, sort: SortMode, out: *[MAX_PAGE]Entry) []Entry {
@@ -1935,6 +1966,11 @@ pub const HeroInfo = struct {
     youtube_key: []const u8 = "",
     has_poster: bool = false,
     poster_url: []const u8 = "",
+    has_backdrop: bool = false,
+    backdrop_url: []const u8 = "",
+    has_logo: bool = false,
+    logo_url: []const u8 = "",
+    year: u32 = 0,
 };
 
 pub fn findHero() ?HeroInfo {
@@ -1957,4 +1993,10 @@ pub fn listDistinctImdb(out: []Entry) []Entry {
 pub fn listPresentKinds(out: [][]const u8) [][]const u8 {
     maybeReloadManifest();
     return koru_media.koru_catalog.listPresentKinds(out);
+}
+
+pub fn searchActors(q: []const u8, out: [][]const u8) [][]const u8 {
+    maybeReloadManifest();
+    loadSemantic();
+    return koru_media.koru_catalog.searchActors(q, out);
 }

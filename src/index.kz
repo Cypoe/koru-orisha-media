@@ -41,26 +41,40 @@ pub const ContentType = koru_http.ContentType;
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/library")) {
         const body = if (koru_media.koru_consumers.wantsFragment(req.prefer, req.header("HX-Request") != null))
-            koru_media.koru_consumers.libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset)
+            koru_media.koru_consumers.libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset, pq.filter)
         else
-            koru_media.koru_consumers.libraryHtml(allocator, null, pq.sort, pq.q, pq.limit, pq.offset);
+            koru_media.koru_consumers.libraryHtml(allocator, null, pq.sort, pq.q, pq.limit, pq.offset, pq.filter);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/fragments/library")) {
-        const body = koru_media.koru_consumers.libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset);
+        const body = koru_media.koru_consumers.libraryFragment(allocator, null, pq.sort, pq.q, pq.limit, pq.offset, pq.filter);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/fragments/library/")) {
         const kind = path["/fragments/library/".len..];
-        const body = koru_media.koru_consumers.libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset);
+        const body = koru_media.koru_consumers.libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset, pq.filter);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/library/")) {
         const kind = path["/library/".len..];
         const body = if (koru_media.koru_consumers.wantsFragment(req.prefer, req.header("HX-Request") != null))
-            koru_media.koru_consumers.libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset)
+            koru_media.koru_consumers.libraryFragment(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset, pq.filter)
         else
-            koru_media.koru_consumers.libraryHtml(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset);
+            koru_media.koru_consumers.libraryHtml(allocator, kind, pq.sort, pq.q, pq.limit, pq.offset, pq.filter);
+        return .{ .status = 200, .body = body, .content_type = null };
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/search")) {
+        const body = if (koru_media.koru_consumers.wantsFragment(req.prefer, req.header("HX-Request") != null))
+            koru_media.koru_consumers.searchFragment(allocator, pq.q)
+        else
+            koru_media.koru_consumers.searchHtml(allocator, pq.q);
+        return .{ .status = 200, .body = body, .content_type = null };
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/favourites")) {
+        const body = if (koru_media.koru_consumers.wantsFragment(req.prefer, req.header("HX-Request") != null))
+            koru_media.koru_consumers.favouritesFragment(allocator)
+        else
+            koru_media.koru_consumers.favouritesHtml(allocator);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/item/")) {
@@ -81,7 +95,7 @@ pub const ContentType = koru_http.ContentType;
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/art/")) {
         const id = path["/art/".len..];
-        const body = koru_media.koru_consumers.artHttp(allocator, id);
+        const body = koru_media.koru_consumers.artHttp(allocator, id, pq.role);
         return .{ .status = 200, .body = body, .content_type = null };
     }
     if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, path, "/subtitles/")) {

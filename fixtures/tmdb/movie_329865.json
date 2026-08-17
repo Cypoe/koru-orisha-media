@@ -5,6 +5,11 @@
   "imdb_id": "tt2543164",
   "overview": "Recorded TMDB movie payload for offline enrichment tests.",
   "poster_path": "/nS5GOtI1JSaMJ7a2avdN1T4RAkU.jpg",
+  "backdrop_path": "/yIZU70U9aRuMfaoPNyK4R22x0iu.jpg",
+  "tagline": "Why are they here?",
+  "runtime": 116,
+  "vote_average": 7.6,
+  "genres": [ { "id": 18, "name": "Drama" }, { "id": 878, "name": "Science Fiction" } ],
   "external_ids": {
     "imdb_id": "tt2543164",
     "tvdb_id": null
