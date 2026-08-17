@@ -102,38 +102,7 @@ Reindex: Settings → Reindex, or `bash /volume1/docker/koru-orisha-media/nas-in
 
 Optional overlay hydrate (host Python, not the image): `bash scripts/nas-hydrate.sh` or `python3 scripts/hydrate_catalog.py --catalog /volume1/docker/koru-orisha-media/data/catalog.sqlite`. No-ops when TMDB/TVDB keys are absent. Do not put keys in compose. There is no `hydrate` command in the image.
 
-GHCR remains an optional later remote; the NAS path above does not need it.
-
-## Publish later (GHCR) — optional remote
-
-You already have GitHub (`Cypoe/koru-orisha-media`). GitHub Container Registry needs no separate signup beyond GitHub.
-
-1. GitHub → **Settings → Developer settings → Personal access tokens**  
-   Create a token (classic) with `write:packages` (and `read:packages`).  
-   Or use a fine-grained token with Packages write on the repo/org.
-2. Login and push:
-
-```bash
-echo YOUR_PAT | docker login ghcr.io -u Cypoe --password-stdin
-docker tag koru-orisha-media:local ghcr.io/cypoe/koru-orisha-media:0.1.0
-docker tag koru-orisha-media:local ghcr.io/cypoe/koru-orisha-media:latest
-docker push ghcr.io/cypoe/koru-orisha-media:0.1.0
-docker push ghcr.io/cypoe/koru-orisha-media:latest
-```
-
-3. On the package page (github.com/Cypoe?tab=packages), set visibility (private/public) and link it to the repo if prompted.
-
-Optional later: a GitHub Actions workflow on tag push that runs (or downloads) a Linux build and `docker push`es version tags. Not wired in this repo yet.
-
-Then point Synology compose `image:` at `ghcr.io/cypoe/koru-orisha-media:0.1.0` and drop `build:`.
-
-## Publish later (Docker Hub) — alternative
-
-1. Create an account at [https://hub.docker.com](https://hub.docker.com).
-2. `docker login` (username/password or access token from Account Settings → Security).
-3. Tag/push, e.g. `docker.io/cypoe/koru-orisha-media:0.1.0`.
-
-GHCR is preferred here because it stays next to the existing GitHub repo.
+Day-to-day NAS updates do not need GHCR. Public releases (GHCR + GitHub Release tarball + versioned LAN tags) are documented in **[releasing.md](releasing.md)** (`bash scripts/release.sh X.Y.Z`).
 
 ## SynoCommunity SPK
 

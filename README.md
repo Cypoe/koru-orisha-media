@@ -6,10 +6,6 @@
 
 <p align="center">A direct-play personal media library. Original files, no transcode.</p>
 
-<p align="center">
-  <img src="docs/screenshots/og-medushu.png" alt="Medushu — watchful eye, bronze inlay, navy field" width="800">
-</p>
-
 ## Preview
 
 Home on the NAS with a live catalog: hero, **Recently added**, then a shelf per mount that has items.
@@ -71,4 +67,4 @@ Requires `koruc` at `$HOME/src/koru-build/zig-out/bin/koruc` and Zig 0.15.1. Fro
 | `public/app.css` | tokens and chrome |
 | `vendor/http/` | STREAM:v1 + accept loop |
 
-See [docs/packaging.md](docs/packaging.md), [ARCHITECTURE.md](ARCHITECTURE.md), [docs/protocol.md](docs/protocol.md).
+See [docs/packaging.md](docs/packaging.md), [docs/releasing.md](docs/releasing.md), [ARCHITECTURE.md](ARCHITECTURE.md), [docs/protocol.md](docs/protocol.md).

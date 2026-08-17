@@ -5,7 +5,7 @@ Scaffold only. Do **not** submit to SynoCommunity until a registry image exists 
 ## Prerequisites
 
 - [ ] Semver releases and changelog for the app
-- [ ] Published multi-purpose image tags on GHCR, e.g. `ghcr.io/cypoe/koru-orisha-media:0.x.y` ([packaging.md](packaging.md))
+- [ ] Published multi-purpose image tags on GHCR, e.g. `ghcr.io/cypoe/koru-orisha-media:0.x.y` ([releasing.md](releasing.md))
 - [ ] Confirmed Container Manager install via compose on a real DSM box
 - [ ] Icons (PACKAGE_ICON.PNG / 256) and maintainer metadata
 
