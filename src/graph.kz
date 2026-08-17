@@ -36,11 +36,12 @@ pub const Entry = struct {
     work_title: []const u8 = "",
 };
 
-/// Offline nfo overlay (plot / air date / rating). Join on work_key + season/episode.
+/// Offline nfo overlay (plot / air date / rating / YouTube trailer id).
 pub const NfoMeta = struct {
     plot: []const u8 = "",
     aired: []const u8 = "",
     rating: []const u8 = "",
+    youtube: []const u8 = "",
 };
 
 /// Offline TMDB/TVDB overlay. Keyed by `[tt…]` already on disk. Handlers only read.
@@ -676,6 +677,8 @@ pub fn ensureConfig() void {
         _ = koru_media.koru_catalog.reindex(media_root_owned);
         loaded = true;
         manifest_mtime_ns = manifestMtimeNs();
+        koru_media.koru_catalog.encodeFilenameGraph();
+        requestHydrate();
         return;
     }
     if (koru_media.koru_catalog.count() == 0) {
@@ -684,6 +687,8 @@ pub fn ensureConfig() void {
         manifest_mtime_ns = manifestMtimeNs();
         if (koru_media.koru_catalog.count() == 0 and settings_walk_on_empty and koru_media.koru_catalog.mediaHasFiles(media_root_owned)) {
             _ = koru_media.koru_catalog.reindex(media_root_owned);
+            koru_media.koru_catalog.encodeFilenameGraph();
+            requestHydrate();
         }
         return;
     }
@@ -709,12 +714,14 @@ fn semanticMtimeNs() i128 {
 
 pub fn maybeReindexFlag() void {
     ensureConfig();
-    if (koru_http.streamsBusy()) return;
     const file = std.fs.cwd().openFile(reindex_flag_owned, .{}) catch return;
     file.close();
     const n = koru_media.koru_catalog.reindex(media_root_owned);
     std.fs.cwd().deleteFile(reindex_flag_owned) catch {};
-    if (n > 0 and hasHydrateKeys()) requestHydrate();
+    if (n > 0) {
+        koru_media.koru_catalog.encodeFilenameGraph();
+        requestHydrate();
+    }
 }
 
 /// Swap in a new immutable snapshot when the file changes and no media streams
@@ -800,14 +807,14 @@ fn loadManifest() void {
                 if (se.season > 0 or se.episode > 0) {
                     koru_media.koru_catalog.upsertNfoEpisode(work, se.season, se.episode, plot, aired, rating);
                 } else {
-                    koru_media.koru_catalog.upsertNfoWork(work, plot, aired, rating);
+                    koru_media.koru_catalog.upsertNfoWork(work, plot, aired, rating, "");
                 }
             }
             const work_plot = extractAfterUnescaped(obj, "\"work_plot\"") orelse "";
             const work_aired = extractAfterUnescaped(obj, "\"work_aired\"") orelse "";
             const work_rating = extractAfterUnescaped(obj, "\"work_rating\"") orelse "";
             if (work_plot.len > 0 or work_aired.len > 0 or work_rating.len > 0) {
-                koru_media.koru_catalog.upsertNfoWork(work, work_plot, work_aired, work_rating);
+                koru_media.koru_catalog.upsertNfoWork(work, work_plot, work_aired, work_rating, "");
             }
         }
     }
@@ -1220,6 +1227,12 @@ pub fn findHydrateOverlay(imdb_id: []const u8) HydrateMeta {
     return koru_media.koru_catalog.findHydrateOverlay(imdb_id);
 }
 
+/// Overlay for an asset: `sem_assertions` first, then legacy `hydrate_works`.
+pub fn findHydrateForAsset(asset_id: []const u8, imdb_id: []const u8) HydrateMeta {
+    maybeReloadManifest();
+    return koru_media.koru_catalog.findHydrateForAsset(asset_id, imdb_id);
+}
+
 pub fn pathOk(rel: []const u8) bool {
     if (rel.len == 0) return false;
     if (std.mem.indexOf(u8, rel, "..") != null) return false;
@@ -1232,7 +1245,8 @@ pub fn mediaRoot() []const u8 {
     return media_root_owned;
 }
 
-/// Touch `reindex.requested`. The accept pump's `! walk` arm runs the walk.
+/// Touch `reindex.requested`. The accept pump's `! walk` arm runs the walk
+/// on the next tick even if a STREAM is parked.
 pub fn requestReindex() void {
     ensureConfig();
     const path = reindex_flag_owned;
@@ -1397,6 +1411,70 @@ pub fn editionLabel(rel: []const u8) []const u8 {
 pub fn editionLooks3d(rel: []const u8) bool {
     return asciiContainsIgnoreCase(rel, "3D") or asciiContainsIgnoreCase(rel, "HSBS") or
         asciiContainsIgnoreCase(rel, "H-SBS") or asciiContainsIgnoreCase(rel, "MVC");
+}
+
+fn isTokenBoundary(c: u8) bool {
+    return !std.ascii.isAlphanumeric(c);
+}
+
+fn hasQualityToken(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or hay.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) continue;
+        const left_ok = i == 0 or isTokenBoundary(hay[i - 1]);
+        const right_i = i + needle.len;
+        const right_ok = right_i == hay.len or isTokenBoundary(hay[right_i]);
+        if (left_ok and right_ok) return true;
+    }
+    return false;
+}
+
+/// Filename quality bits: `[2160p][HDR10][Atmos 7.1]` / ` - 3D HSBS`. Provider ids skipped by token match.
+pub const QualityBits = struct {
+    eight_k: bool = false,
+    uhd: bool = false,
+    hd1080: bool = false,
+    hd720: bool = false,
+    dv: bool = false,
+    hdr: bool = false,
+    atmos: bool = false,
+    dtsx: bool = false,
+    ch71: bool = false,
+    ch51: bool = false,
+    dim3d: bool = false,
+};
+
+pub fn mergeQualityBits(a: QualityBits, b: QualityBits) QualityBits {
+    return .{
+        .eight_k = a.eight_k or b.eight_k,
+        .uhd = a.uhd or b.uhd,
+        .hd1080 = a.hd1080 or b.hd1080,
+        .hd720 = a.hd720 or b.hd720,
+        .dv = a.dv or b.dv,
+        .hdr = a.hdr or b.hdr,
+        .atmos = a.atmos or b.atmos,
+        .dtsx = a.dtsx or b.dtsx,
+        .ch71 = a.ch71 or b.ch71,
+        .ch51 = a.ch51 or b.ch51,
+        .dim3d = a.dim3d or b.dim3d,
+    };
+}
+
+pub fn qualityBitsFromPath(rel: []const u8) QualityBits {
+    var b = QualityBits{};
+    if (hasQualityToken(rel, "4320p") or hasQualityToken(rel, "8k")) b.eight_k = true;
+    if (hasQualityToken(rel, "2160p") or hasQualityToken(rel, "2160i") or hasQualityToken(rel, "uhd") or hasQualityToken(rel, "4k")) b.uhd = true;
+    if (hasQualityToken(rel, "1080p") or hasQualityToken(rel, "1080i")) b.hd1080 = true;
+    if (hasQualityToken(rel, "720p")) b.hd720 = true;
+    if (hasQualityToken(rel, "dolby vision") or hasQualityToken(rel, "dolbyvision") or hasQualityToken(rel, "dovi") or hasQualityToken(rel, "dv")) b.dv = true;
+    if (hasQualityToken(rel, "hdr10+") or hasQualityToken(rel, "hdr10plus") or hasQualityToken(rel, "hdr10") or hasQualityToken(rel, "hdr")) b.hdr = true;
+    if (hasQualityToken(rel, "atmos")) b.atmos = true;
+    if (hasQualityToken(rel, "dts-x") or hasQualityToken(rel, "dtsx")) b.dtsx = true;
+    if (hasQualityToken(rel, "7.1") or hasQualityToken(rel, "7.1ch")) b.ch71 = true;
+    if (hasQualityToken(rel, "5.1") or hasQualityToken(rel, "5.1ch")) b.ch51 = true;
+    if (editionLooks3d(rel) or hasQualityToken(rel, "hou") or hasQualityToken(rel, "hsbs")) b.dim3d = true;
+    return b;
 }
 
 /// Extra grouping: soundtrack / featurette / document / trailer / extra.
@@ -1835,6 +1913,12 @@ pub fn assertionValue(entity_id: []const u8, property: []const u8) []const u8 {
     return koru_media.koru_catalog.assertionValue(entity_id, property);
 }
 
+pub fn trailerYoutubeFor(asset_id: []const u8) []const u8 {
+    const ent = koru_media.koru_catalog.entityForAsset(asset_id);
+    if (ent.len == 0) return "";
+    return koru_media.koru_catalog.assertionValue(ent, "trailer_youtube");
+}
+
 pub fn trailerAssetFor(entity_id: []const u8) []const u8 {
     return koru_media.koru_catalog.trailerAssetFor(entity_id);
 }
@@ -1849,12 +1933,20 @@ pub const HeroInfo = struct {
     plot: []const u8 = "",
     trailer_id: []const u8 = "",
     youtube_key: []const u8 = "",
+    has_poster: bool = false,
+    poster_url: []const u8 = "",
 };
 
 pub fn findHero() ?HeroInfo {
     maybeReloadManifest();
     loadSemantic();
     return koru_media.koru_catalog.findHero();
+}
+
+pub fn listHeroes(out: []HeroInfo) []HeroInfo {
+    maybeReloadManifest();
+    loadSemantic();
+    return koru_media.koru_catalog.listHeroes(out);
 }
 
 pub fn listDistinctImdb(out: []Entry) []Entry {

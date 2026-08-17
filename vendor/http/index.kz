@@ -208,14 +208,14 @@ fn idleSecs() ?u32 {
     const listen_fd = server.inner.stream.handle;
 
     // While STREAM:v1 bodies are parked, poll listen + those sockets so a movie
-    // does not stall / or posters. `walk()` is an effect: the body splices into
-    // the caller, so module names go through `$mod`.
+    // does not stall / or posters. `walk()` / `hydrate()` still run so an
+    // explicit Settings flag is not delayed until STREAM drain. `walk()` is an
+    // effect: the body splices into the caller, so module names go through `$mod`.
     wait: while (true) {
         $mod.pumpAllParked();
-        if ($mod.parkedCount() == 0) {
-            walk();
-            hydrate();
-        }
+        // Explicit reindex/hydrate flags run even while a STREAM is parked.
+        walk();
+        hydrate();
         const npark = $mod.parkedCount();
         var pfds: [1 + $mod.MAX_STREAMS]std.posix.pollfd = undefined;
         pfds[0] = .{ .fd = listen_fd, .events = std.posix.POLL.IN, .revents = 0 };
