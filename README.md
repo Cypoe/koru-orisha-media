@@ -8,13 +8,13 @@
 
 ## Preview
 
-Home on the NAS with a live catalog: hero, **Recently added**, then a shelf per mount that has items.
+Narrow home on the NAS: overlay splash, Home / Favourites chips, then collection tiles and Recently added.
 
 <p align="center">
-  <img src="docs/screenshots/home.jpg" alt="Medushu home on the NAS — Andor hero, Recently added, Movies and Series shelves" width="800">
+  <img src="docs/screenshots/home.jpg" alt="Medushu home on a phone-width viewport — overlay hero, chips, collection tiles" width="280">
 </p>
 
-Home shows **Recently added**, then a shelf for each mount that has items. Posters carry filename quality pills (`UHD/4K`, `ATMOS`, `3D`). Item and play pages use a single **Back to Movies / Series / Music** control; the sidebar already has Library.
+Home shows a landscape hero, **Recently added**, then posters with filename quality pills (`UHD/4K`, `ATMOS`, `3D`). Item and play pages use a single **Back to Movies / Series / Music** control; the sidebar already has Library.
 
 - SQLite catalog walked by this binary (Settings → Reindex starts on the next accept tick, including while something is playing)
 - Hydrate reads local nfo and `[tt…]` IMDb ids without TMDB/TVDB keys (Cinemeta); optional keys still enrich
