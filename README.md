@@ -10,6 +10,14 @@
   <img src="docs/screenshots/og-medushu.png" alt="Medushu — watchful eye, bronze inlay, navy field" width="800">
 </p>
 
+## Preview
+
+Home on the NAS with a live catalog: hero, **Recently added**, then a shelf per mount that has items.
+
+<p align="center">
+  <img src="docs/screenshots/home.jpg" alt="Medushu home on the NAS — Andor hero, Recently added, Movies and Series shelves" width="800">
+</p>
+
 Home shows **Recently added**, then a shelf for each mount that has items. Posters carry filename quality pills (`UHD/4K`, `ATMOS`, `3D`). Item and play pages use a single **Back to Movies / Series / Music** control; the sidebar already has Library.
 
 - SQLite catalog walked by this binary (Settings → Reindex starts on the next accept tick, including while something is playing)
