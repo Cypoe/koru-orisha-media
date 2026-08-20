@@ -17,6 +17,8 @@ echo "== unit: enrich_tmdb =="
 python3 scripts/test_enrich_tmdb.py -v
 echo "== unit: hydrate =="
 python3 scripts/test_hydrate.py -v
+echo "== unit: hydrate https (skip if offline) =="
+python3 scripts/test_hydrate_https.py -v
 echo "== unit: manifest parse =="
 python3 scripts/test_manifest_parse.py -v
 
