@@ -29,6 +29,8 @@ Windows/WSL: native git for push/pull; WSL bash for compile and Docker. See [doc
 ```bash
 bash scripts/dev-wsl.sh          # http://127.0.0.1:3090/  fixtures + .pw/dev/catalog.sqlite
 # later: SKIP_COMPILE=1 bash scripts/dev-wsl.sh
+bash scripts/dev-nas-link.sh     # map NAS movies/shows/… into .pw/dev/media
+# then SKIP_COMPILE=1 bash scripts/dev-wsl.sh  → live nfo + Cinemeta hydrate
 ```
 
 Compose / NAS:
@@ -41,9 +43,9 @@ bash scripts/nas-deploy.sh       # musl image → registry → ssh compose recre
 
 ## Index and hydrate
 
-Settings → **Reindex** or `bash scripts/nas-index.sh` touches `reindex.requested`. The accept pump’s `! walk` arm runs on the next tick even if a STREAM is parked.
+Settings → **Reindex** or `bash scripts/nas-index.sh` touches `reindex.requested`. The accept pump’s `! walk` arm runs the **whole walk on that tick** (it does not wait for STREAM idle, and it does hold accept/pump until the walk finishes).
 
-Settings → **Hydrate now** encodes filename + nfo into the graph, then fetches posters/plot for `[tt…]` ids. TMDB/TVDB keys are optional.
+Settings → **Hydrate now** encodes filename + nfo into the graph, then fetches posters/plot/trailers for `[tt…]` ids **one title per accept tick** so HTTPS does not freeze playback. TMDB/TVDB keys are optional. Live Cinemeta tests: `python3 scripts/test_hydrate_https.py`.
 
 Python `scripts/index_media.py` / `scripts/hydrate_catalog.py` are CI/fixture only — not on the NAS.
 
@@ -51,6 +53,7 @@ Python `scripts/index_media.py` / `scripts/hydrate_catalog.py` are CI/fixture on
 
 ```bash
 bash scripts/test_all.sh
+python3 scripts/test_hydrate_https.py   # live Cinemeta; skips if offline
 ```
 
 Requires `koruc` at `$HOME/src/koru-build/zig-out/bin/koruc` and Zig 0.15.1. Frontend JS: `bash scripts/build-frontend.sh`.
