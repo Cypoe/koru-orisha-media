@@ -1,0 +1,47 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<tvshow>
+  <plot>In einer Zeit der Gefahren, Täuschung und Intrigen erkennt Cassian Andor, welchen Unterschied er im Kampf gegen das tyrannische, galaktische Imperium machen kann. Er beschreitet einen Weg, der ihn zum Helden der Rebellion werden lässt.</plot>
+  <outline>In einer Zeit der Gefahren, Täuschung und Intrigen erkennt Cassian Andor, welchen Unterschied er im Kampf gegen das tyrannische, galaktische Imperium machen kann. Er beschreitet einen Weg, der ihn zum Helden der Rebellion werden lässt.</outline>
+  <lockdata>false</lockdata>
+  <dateadded>2026-08-10 20:14:59</dateadded>
+  <title>Andor</title>
+  <originaltitle>Andor</originaltitle>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=gONjqZg93Zk</trailer>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=KFtt0-G4c3s</trailer>
+  <trailer>plugin://plugin.video.youtube/play/?video_id=rfI_4eN3rvs</trailer>
+  <rating>8.3</rating>
+  <year>2022</year>
+  <mpaa>FSK-12</mpaa>
+  <imdb_id>tt9253284</imdb_id>
+  <tmdbid>83867</tmdbid>
+  <premiered>2022-09-21</premiered>
+  <releasedate>2022-09-21</releasedate>
+  <enddate>2025-05-13</enddate>
+  <runtime>0</runtime>
+  <genre>Action &amp; Adventure</genre>
+  <genre>Drama</genre>
+  <genre>Sci-Fi &amp; Fantasy</genre>
+  <studio />
+  <studio>Disney+</studio>
+  <tag>audacious</tag>
+  <tag>imperialism</tag>
+  <tag>political thriller</tag>
+  <tag>prequel</tag>
+  <tag>rebellion</tag>
+  <tag>revolutionary</tag>
+  <tag>space</tag>
+  <tag>space war</tag>
+  <tag>spy thriller</tag>
+  <tvdbid>393189</tvdbid>
+  <art>
+    <poster>/volume1/shows/Andor [tt9253284]/folder.jpg</poster>
+    <fanart>/volume1/shows/Andor [tt9253284]/backdrop.jpg</fanart>
+  </art>
+  <id>393189</id>
+  <episodeguide>
+    <url cache="393189.xml">http://www.thetvdb.com/api/1D62F2F90030C444/series/393189/all/de.zip</url>
+  </episodeguide>
+  <season>-1</season>
+  <episode>-1</episode>
+  <status>Ended</status>
+</tvshow>
