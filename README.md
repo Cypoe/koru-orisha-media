@@ -11,7 +11,7 @@
 Narrow home on the NAS: overlay splash, Home / Favourites chips, then collection tiles and Recently added.
 
 <p align="center">
-  <img src="docs/screenshots/home.jpg" alt="Medushu home on a phone-width viewport — overlay hero, chips, collection tiles" width="280">
+  <img src="docs/screenshots/home.png" alt="Medushu home on a phone-width viewport — overlay hero, chips, collection tiles" width="280">
 </p>
 
 Home shows a landscape hero, **Recently added**, then posters with filename quality pills (`UHD/4K`, `ATMOS`, `3D`). Item and play pages use a single **Back to Movies / Series / Music** control; the sidebar already has Library.

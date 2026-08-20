@@ -5,6 +5,8 @@ dist/
 *.o
 *.pyc
 .zig-cache/
+.agents/
+.cursor/
 backend.zig
 backend_output_emitted.zig
 output_emitted.zig
