@@ -16,9 +16,7 @@ std/vendor:bindings {
     json: ./vendor/json
 }
 
-http:handler =
-    media:dispatch(req)
-    | result r -> { status: r.status, body: r.body, content_type: r.content_type }
+http:handler = media:dispatch(req): r -> { status: r.status, body: r.body, content_type: r.content_type }
 
 tor loop { server: *ServerHandle }
 loop =
