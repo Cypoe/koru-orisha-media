@@ -14,9 +14,9 @@
 # cannot read ACL-backed shares and the indexer walks empty /media placeholders.
 # Do not set KORU_IDLE_SECS.
 # musicVidoes is the existing DSM share name (typo kept).
-# WebStation alias: KORU_BASE_PATH must match the alias (live: /korisha).
+# WebStation alias: KORU_BASE_PATH must match the alias (live: /medusha).
 # Any alias works except /media — that name is the byte-stream route (GET /media/{id}).
-# Settings (/korisha/settings) chooses which /media/* folders the binary indexer walks
+# Settings (/medusha/settings) chooses which /media/* folders the binary indexer walks
 # and tags each with capability/affordances. Bind mounts below are Compose/DSM;
 # the process cannot remount shares. Add a host bind here before enabling a new path.
 # /data and /config are host binds so catalog + settings.conf survive Watchtower.
@@ -40,7 +40,7 @@ services:
       - KORU_MANIFEST=/data/manifest.json
       - KORU_SEMANTIC=/data/semantic.json
       - KORU_CONFIG=/config/settings.conf
-      - KORU_BASE_PATH=/korisha
+      - KORU_BASE_PATH=/medusha
     volumes:
       - /volume1/docker/koru-orisha-media/config:/config
       - /volume1/docker/koru-orisha-media/data:/data

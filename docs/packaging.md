@@ -43,7 +43,7 @@ Container layout:
 
 Compose defaults are long-lived (no `KORU_IDLE_SECS`). The process listens on **3090** inside the container ([`main.k`](../main.k)); map the host port in `compose.yaml`.
 
-Empty catalog (or `KORU_REINDEX=1`) walks enabled library mounts under `/media` inside the binary. Configure mounts and Reindex at `/settings` (prefix-aware: `/korisha/settings`). `semantic.json` is not required for browse or play. `KORU_BASE_PATH` (live alias `/korisha`) prefixes every app URL so a Synology WebStation alias does not collide with `GET /media/{id}`. Any alias works **except** `/media` (same name as the byte route).
+Empty catalog (or `KORU_REINDEX=1`) walks enabled library mounts under `/media` inside the binary. Configure mounts and Reindex at `/settings` (prefix-aware: `/medusha/settings`). `semantic.json` is not required for browse or play. `KORU_BASE_PATH` (live alias `/medusha`) prefixes every app URL so a Synology WebStation alias does not collide with `GET /media/{id}`. Any alias works **except** `/media` (same name as the byte route).
 
 The runtime still uses `http:run-accept-loop` (not `orisha:serve`). `STREAM:v1` parks on WouldBlock and `accept` polls listen plus in-flight stream fds, so a movie does not stall `/` or posters. Do not `import orisha/pump` until koruc stem-dedup lands.
 
@@ -64,7 +64,7 @@ Reindex on the NAS: Settings → **Reindex**, or `bash nas-index.sh` (both touch
 
 Optional TMDB/TVDB posters and plot: Settings stores keys in `settings.conf` on the config bind (never compose `.env` in the image). The musl binary's `! hydrate` arm encodes provider JSON into the graph. Titles with an IMDb `[tt…]` id hydrate via Cinemeta with no keys. Python [`scripts/hydrate_catalog.py`](../scripts/hydrate_catalog.py) is CI / recorded-fixture only and writes the same `sem_*` shape. Scratch TLS uses the copied CA file (`SSL_CERT_FILE`).
 
-WebStation: set `KORU_BASE_PATH=/korisha` (or any alias **except** `/media`) so HTML `href`/`src` stay under the alias. Player `src` is `/korisha/media/{id}`, not DSM `/media/...`.
+WebStation: set `KORU_BASE_PATH=/medusha` (or any alias **except** `/media`) so HTML `href`/`src` stay under the alias. Player `src` is `/medusha/media/{id}`, not DSM `/media/...`.
 
 ## Docker CLI over SSH (no `docker` group)
 
@@ -94,7 +94,7 @@ Do not set `KORU_IDLE_SECS` on the NAS. `semantic.json` is an optional overlay (
 3. Copy [`compose.nas.yaml`](../compose.nas.yaml) to `/volume1/docker/koru-orisha-media/compose.yml` (`bash scripts/nas-sync.sh`) and create the project. CM pulls `sigmanas.local:9500/koru-orisha-media:latest`.
 4. Bind library shares onto `/media/movies`, `/media/shows`, `/media/music`, `/media/books`, `/media/musicVideos`. Settings can add more rows only after Compose binds them.
 5. Map `…/koru-orisha-media/config` → `/config` and `…/data` → `/data`. `PUID`/`PGID` `1026`/`100` plus `group_add: "101"` on SigmaNAS.
-6. Publish port `3090`. Empty catalog walks enabled `/media` folders on boot when those binds have files. WebStation alias: `KORU_BASE_PATH=/korisha` (not `/media`), also settable at Settings. Settings: `http://sigmanas:3090/korisha/settings`.
+6. Publish port `3090`. Empty catalog walks enabled `/media` folders on boot when those binds have files. WebStation alias: `KORU_BASE_PATH=/medusha` (not `/media`), also settable at Settings. Settings: `http://sigmanas:3090/medusha/settings`.
 
 Updates: `bash scripts/nas-deploy.sh` (build, push, recreate with `--pull always`). Optional Watchtower later.
 

@@ -31,6 +31,17 @@ bash scripts/dev-wsl.sh
 SKIP_COMPILE=1 bash scripts/dev-wsl.sh
 ```
 
+To browse the NAS library (nfo, posters, `[tt…]` folders) instead of the tiny fixtures:
+
+```bash
+bash scripts/dev-nas-link.sh
+SKIP_COMPILE=1 bash scripts/dev-wsl.sh
+```
+
+That maps `\\sigmanas\movies` (and shows/music/books/musicVidoes) into `.pw/dev/media` and uses `.pw/dev/nas-catalog.sqlite`. Hydrate then hits Cinemeta over HTTPS (no recorded TMDB fixture). If WSL does not show `/mnt/<letter>` yet, `wsl --shutdown` once and re-run the link script. `bash scripts/dev-nas-link.sh unlink` removes the maps.
+
+Live poster/trailer ingest: `python3 scripts/test_hydrate_https.py` (skips if offline; `KORU_TEST_HYDRATE_LIVE=1` fails instead).
+
 After `src/frontend/host.kjs` changes: `bash scripts/build-frontend.sh`. Handler/Zig changes need a full `bash scripts/build.sh` (or omit `SKIP_COMPILE`). Catalog and hydrate flags live under `.pw/dev/` (not committed).
 
 Scripts resolve the repo root from their own location (`dirname`), so they no longer depend on a hardcoded `/mnt/c/Users/...` path.

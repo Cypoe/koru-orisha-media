@@ -7,7 +7,7 @@ alwaysApply: true
 
 Repo is on Windows; **compile and Docker via WSL bash**. Network git (`push`/`pull`) via native Windows git.
 
-- Fast UI loop: `bash scripts/dev-wsl.sh` → http://127.0.0.1:3090/ (fixtures + `.pw/dev/catalog.sqlite`). Later: `SKIP_COMPILE=1 bash scripts/dev-wsl.sh`.
+- Fast UI loop: `bash scripts/dev-wsl.sh` → http://127.0.0.1:3090/ (fixtures + `.pw/dev/catalog.sqlite`). Later: `SKIP_COMPILE=1 bash scripts/dev-wsl.sh`. NAS library: `bash scripts/dev-nas-link.sh` then the same dev script (`.pw/dev/media` + `nas-catalog.sqlite`).
 - CSS `public/app.css` is live. Fragments are live **paths**; new/renamed fragment files need a binary rebuild. `host.kjs` → `bash scripts/build-frontend.sh`. Koru/Zig → `bash scripts/build.sh`.
 - Stop the listener with `pkill -x media-server` (not `-f` the path). `consumers.kz` must stay **LF** or koruc emits a nested `const std` and Zig fails.
 - Local image: `bash scripts/build-image.sh` then `docker compose up` (`compose.yaml`, port 3090, binds `/media` `/data` `/config`). Runtime is `FROM scratch` + `public/` — no koruc in the image.

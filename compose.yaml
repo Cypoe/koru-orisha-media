@@ -25,7 +25,7 @@ services:
       # Overlay tables only (no provider HTTP). Hydrate is host-side Python:
       # KORU_HYDRATE: "1"
       # WebStation-style path prefix (empty in local compose). Not /media:
-      # KORU_BASE_PATH: /korisha
+      # KORU_BASE_PATH: /medusha
     volumes:
       - ./media:/media:ro
       - ./data:/data

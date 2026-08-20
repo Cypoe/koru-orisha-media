@@ -30,7 +30,7 @@ Do not native-cross-compile `media-server` inside [spksrc](https://github.com/Sy
 | Package `data` dir | `/data` | `catalog.sqlite` (writable) |
 | Host port (wizard) | `3090` | Process listen port is fixed in-container |
 
-Env inside the container matches the runtime image: `KORU_MEDIA_ROOT=/media`, `KORU_CATALOG=/data/catalog.sqlite`. Empty catalog walks enabled library mounts on boot (`KORU_REINDEX=1` forces a walk). Settings at `/settings` (or `/korisha/settings`) configures those mounts and flags the same binary reindex. Host Python (`index_media.py` / `hydrate_catalog.py`) is not the NAS indexer.
+Env inside the container matches the runtime image: `KORU_MEDIA_ROOT=/media`, `KORU_CATALOG=/data/catalog.sqlite`. Empty catalog walks enabled library mounts on boot (`KORU_REINDEX=1` forces a walk). Settings at `/settings` (or `/medusha/settings`) configures those mounts and flags the same binary reindex. Host Python (`index_media.py` / `hydrate_catalog.py`) is not the NAS indexer.
 
 ## Follow-up execution steps
 
