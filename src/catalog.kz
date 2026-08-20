@@ -167,6 +167,7 @@ var nfo_title_parse_buf: [256]u8 = undefined;
 var nfo_youtube_buf: [16]u8 = undefined;
 var nfo_overlay_store: [4096]u8 = undefined;
 var nfo_overlay_len: usize = 0;
+var nfo_imdb_buf: [16]u8 = undefined;
 var hydrate_overlay_store: [12 * 1024]u8 = undefined;
 var hydrate_overlay_len: usize = 0;
 
@@ -1673,6 +1674,7 @@ const NfoParse = struct {
     aired: []const u8 = "",
     rating: []const u8 = "",
     youtube: []const u8 = "",
+    imdb: []const u8 = "",
     episode_scope: bool = false,
     work_scope: bool = false,
 };
@@ -1699,6 +1701,37 @@ fn youtubeKeyFromTrailer(url: []const u8, store: []u8) []const u8 {
             const key = copyYoutubeId(url[start..], store);
             if (key.len == 11) return key;
         }
+    }
+    return "";
+}
+
+fn copyTtId(digits: []const u8, store: *[16]u8) []const u8 {
+    if (digits.len == 0 or digits.len + 2 > store.len) return "";
+    store[0] = 't';
+    store[1] = 't';
+    @memcpy(store[2 .. 2 + digits.len], digits);
+    return store[0 .. 2 + digits.len];
+}
+
+fn imdbFromNfoText(text: []const u8, store: *[16]u8) []const u8 {
+    var i: usize = 0;
+    while (i < text.len) {
+        const rest = text[i..];
+        const at = std.ascii.indexOfIgnoreCase(rest, "<uniqueid") orelse break;
+        const abs = i + at;
+        const gt = std.mem.indexOfPos(u8, text, abs, ">") orelse break;
+        const attrs = text[abs..gt];
+        const close_rel = std.ascii.indexOfIgnoreCase(text[gt + 1 ..], "</uniqueid>") orelse break;
+        const inner = std.mem.trim(u8, text[gt + 1 .. gt + 1 + close_rel], " \t\r\n");
+        i = gt + 1 + close_rel + 11;
+        const typed = std.ascii.indexOfIgnoreCase(attrs, "imdb") != null;
+        if (inner.len < 3 or !std.ascii.eqlIgnoreCase(inner[0..2], "tt")) continue;
+        if (!typed and std.ascii.indexOfIgnoreCase(attrs, "type=") != null) continue;
+        var k: usize = 2;
+        while (k < inner.len and inner[k] >= '0' and inner[k] <= '9') : (k += 1) {}
+        if (k < 3) continue;
+        const id = copyTtId(inner[2..k], store);
+        if (id.len > 0) return id;
     }
     return "";
 }
@@ -1738,6 +1771,7 @@ fn parseNfoBytes(text: []const u8) NfoParse {
         .aired = aired_or,
         .rating = nfoRatingOf(text, &nfo_rating_buf),
         .youtube = firstYoutubeFromNfo(text, &nfo_youtube_buf),
+        .imdb = imdbFromNfoText(text, &nfo_imdb_buf),
         .episode_scope = std.ascii.indexOfIgnoreCase(text, "episodedetails") != null,
         .work_scope = std.ascii.indexOfIgnoreCase(text, "<tvshow") != null or std.ascii.indexOfIgnoreCase(text, "<movie") != null,
     };
@@ -1894,8 +1928,33 @@ fn ingestFile(root: []const u8, rel: []const u8, file_dir: std.fs.Dir, basename:
     const brand = probeFtyp(full, &brand_buf);
     const se = koru_media.koru_graph.parseSeasonEpisode(rel);
     var imdb_buf: [16]u8 = undefined;
-    const imdb_id = koru_media.koru_graph.parseImdbId(rel, &imdb_buf);
+    var imdb_id = koru_media.koru_graph.parseImdbId(rel, &imdb_buf);
+    if (imdb_id.len == 0) {
+        if (sibling) |p| {
+            if (p.imdb.len > 0) {
+                const n = @min(p.imdb.len, imdb_buf.len);
+                @memcpy(imdb_buf[0..n], p.imdb[0..n]);
+                imdb_id = imdb_buf[0..n];
+            }
+        }
+    }
     const work = koru_media.koru_graph.workKey(rel);
+    if (sibling) |parsed| {
+        applyNfoOverlay(work, se.season, se.episode, parsed, false);
+    }
+    if (imdb_id.len == 0) {
+        const names = [_][]const u8{ "tvshow.nfo", "movie.nfo" };
+        for (names) |name| {
+            var work_nfo: [1024]u8 = undefined;
+            const full_nfo = std.fmt.bufPrint(&work_nfo, "{s}/{s}/{s}", .{ root, work, name }) catch continue;
+            const parsed = loadNfoFull(full_nfo) orelse continue;
+            if (parsed.imdb.len == 0) continue;
+            const n = @min(parsed.imdb.len, imdb_buf.len);
+            @memcpy(imdb_buf[0..n], parsed.imdb[0..n]);
+            imdb_id = imdb_buf[0..n];
+            break;
+        }
+    }
     var wt_buf: [256]u8 = undefined;
     const work_title = koru_media.koru_graph.workDisplayTitle(work, &wt_buf);
     const e = koru_media.koru_graph.Entry{
@@ -1921,9 +1980,6 @@ fn ingestFile(root: []const u8, rel: []const u8, file_dir: std.fs.Dir, basename:
         .work_title = work_title,
     };
     upsert(e);
-    if (sibling) |parsed| {
-        applyNfoOverlay(work, se.season, se.episode, parsed, false);
-    }
     ingestWorkNfo(root, work, "tvshow.nfo");
     ingestWorkNfo(root, work, "movie.nfo");
     return true;

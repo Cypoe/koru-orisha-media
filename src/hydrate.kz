@@ -1,13 +1,15 @@
 // media/hydrate — encode TMDB/TVDB JSON into the graph. Not on GET /library.
-// Fixture path uses recorded JSON (same files Python tests use). Live HTTPS
-// uses Cinemeta for `[tt…]` ids with no keys, then optional TMDB/TVDB Settings
-// keys. One hydrate at a time.
+// Recorded JSON is used only when KORU_TMDB_FIXTURE is set. Live HTTPS uses
+// Cinemeta for `[tt…]` ids with no keys, then optional TMDB/TVDB Settings
+// keys. One title per accept tick. One hydrate session at a time.
 
 const std = @import("std");
 
 var busy = std.atomic.Value(bool).init(false);
 var http_body: [256 * 1024]u8 = undefined;
 var json_file_buf: [256 * 1024]u8 = undefined;
+var hydrate_active = false;
+var hydrate_cursor: usize = 0;
 
 fn envOr(name: []const u8, fallback: []const u8) []const u8 {
     return std.posix.getenv(name) orelse fallback;
@@ -280,30 +282,19 @@ fn httpsGet(allocator: std.mem.Allocator, url: []const u8, token: []const u8) ?[
 
 fn fixturePayload(imdb: []const u8, tmdb_id: []const u8) ?[]const u8 {
     const dir = envOr("KORU_TMDB_FIXTURE", "");
-    if (dir.len > 0) {
-        var path_buf: [512]u8 = undefined;
-        if (tmdb_id.len > 0) {
-            const p = std.fmt.bufPrint(&path_buf, "{s}/movie_{s}.json", .{ dir, tmdb_id }) catch null;
-            if (p) |path| if (readFile(path)) |body| return body;
-            const p2 = std.fmt.bufPrint(&path_buf, "{s}/tv_{s}.json", .{ dir, tmdb_id }) catch null;
-            if (p2) |path| if (readFile(path)) |body| return body;
-        }
-        if (imdb.len > 0) {
-            const p = std.fmt.bufPrint(&path_buf, "{s}/find_{s}.json", .{ dir, imdb }) catch null;
-            if (p) |path| if (readFile(path)) |body| return body;
-        }
-        if (readFile(dir)) |body| return body;
-    }
+    if (dir.len == 0) return null;
+    var path_buf: [512]u8 = undefined;
     if (tmdb_id.len > 0) {
-        var path_buf: [128]u8 = undefined;
-        const p = std.fmt.bufPrint(&path_buf, "fixtures/tmdb/movie_{s}.json", .{tmdb_id}) catch null;
+        const p = std.fmt.bufPrint(&path_buf, "{s}/movie_{s}.json", .{ dir, tmdb_id }) catch null;
         if (p) |path| if (readFile(path)) |body| return body;
+        const p2 = std.fmt.bufPrint(&path_buf, "{s}/tv_{s}.json", .{ dir, tmdb_id }) catch null;
+        if (p2) |path| if (readFile(path)) |body| return body;
     }
     if (imdb.len > 0) {
-        var path_buf: [128]u8 = undefined;
-        const p = std.fmt.bufPrint(&path_buf, "fixtures/tmdb/find_{s}.json", .{imdb}) catch null;
+        const p = std.fmt.bufPrint(&path_buf, "{s}/find_{s}.json", .{ dir, imdb }) catch null;
         if (p) |path| if (readFile(path)) |body| return body;
     }
+    if (readFile(dir)) |body| return body;
     return null;
 }
 
@@ -446,16 +437,32 @@ fn hydrateOne(allocator: std.mem.Allocator, e: koru_media.koru_graph.Entry) void
 pub fn run() void {
     if (busy.swap(true, .seq_cst)) return;
     defer _ = busy.store(false, .seq_cst);
-    if (!koru_media.koru_graph.consumeHydrateFlag()) return;
-    // Filename + nfo graph even when Settings has no TMDB/TVDB keys.
-    koru_media.koru_catalog.encodeFilenameGraph();
+    if (koru_media.koru_graph.consumeHydrateFlag()) {
+        hydrate_active = true;
+        hydrate_cursor = 0;
+        // Filename + nfo graph even when Settings has no TMDB/TVDB keys.
+        koru_media.koru_catalog.encodeFilenameGraph();
+        std.debug.print("hydrate: start\n", .{});
+    }
+    if (!hydrate_active) return;
     const allocator = std.heap.c_allocator;
     var buf: [koru_media.koru_graph.MAX_PAGE]koru_media.koru_graph.Entry = undefined;
     const works = koru_media.koru_graph.listDistinctImdb(&buf);
-    std.debug.print("hydrate: {d} imdb work(s)\n", .{works.len});
-    for (works) |e| {
-        hydrateOne(allocator, e);
+    if (hydrate_cursor >= works.len) {
+        koru_media.koru_catalog.encodeFilenameGraph();
+        hydrate_active = false;
+        hydrate_cursor = 0;
+        std.debug.print("hydrate: done ({d} work(s))\n", .{works.len});
+        return;
     }
-    koru_media.koru_catalog.encodeFilenameGraph();
-    std.debug.print("hydrate: done\n", .{});
+    const e = works[hydrate_cursor];
+    std.debug.print("hydrate: {d}/{d} {s}\n", .{ hydrate_cursor + 1, works.len, e.imdb_id });
+    hydrateOne(allocator, e);
+    hydrate_cursor += 1;
+    if (hydrate_cursor >= works.len) {
+        koru_media.koru_catalog.encodeFilenameGraph();
+        hydrate_active = false;
+        hydrate_cursor = 0;
+        std.debug.print("hydrate: done ({d} work(s))\n", .{works.len});
+    }
 }
