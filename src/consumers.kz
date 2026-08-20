@@ -293,10 +293,11 @@ fn kindBadge(kind: []const u8) []const u8 {
     return "FILE";
 }
 
-fn cardTitle(e: koru_media.koru_graph.Entry) []const u8 {
-    if (std.mem.eql(u8, e.kind, "tv") or std.mem.eql(u8, e.kind, "audio")) {
-        if (e.work_title.len > 0) return e.work_title;
-    }
+fn cardTitle(e: koru_media.koru_graph.Entry, buf: []u8) []const u8 {
+    if (e.work_title.len > 0) return e.work_title;
+    const work = koru_media.koru_graph.workKey(e.path);
+    const shown = koru_media.koru_graph.workDisplayTitle(work, buf);
+    if (shown.len > 0) return shown;
     return e.title;
 }
 
@@ -377,7 +378,8 @@ fn yearCaption(e: koru_media.koru_graph.Entry, buf: []u8) []const u8 {
 }
 
 fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
-    const shown = cardTitle(e);
+    var title_buf: [256]u8 = undefined;
+    const shown = cardTitle(e, &title_buf);
     const title = htmlEscaped(allocator, shown);
     defer if (title.ptr != shown.ptr) allocator.free(title);
     const id_esc = htmlEscaped(allocator, e.id);
@@ -422,7 +424,8 @@ fn appendPosterCard(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: ko
 }
 
 fn appendMusicRow(allocator: std.mem.Allocator, out: *std.ArrayList(u8), e: koru_media.koru_graph.Entry) void {
-    const shown = cardTitle(e);
+    var title_buf: [256]u8 = undefined;
+    const shown = cardTitle(e, &title_buf);
     const title = htmlEscaped(allocator, shown);
     defer if (title.ptr != shown.ptr) allocator.free(title);
     const id_esc = htmlEscaped(allocator, e.id);
@@ -1371,7 +1374,7 @@ pub fn settingsPost(allocator: std.mem.Allocator, body: ?[]const u8) []const u8 
     const linked = std.ascii.eqlIgnoreCase(drv_trim, "sqlite");
     if (std.mem.eql(u8, action, "hydrate")) {
         koru_media.koru_graph.requestHydrate();
-        return settingsHtml(allocator, "Saved. Hydrate is flagged — the next accept tick encodes the catalogue.");
+        return settingsHtml(allocator, "Saved. Hydrate is flagged — the accept pump encodes nfo then fetches posters one title per tick.");
     }
     if (std.mem.eql(u8, action, "reindex")) {
         koru_media.koru_graph.requestReindex();
@@ -1934,17 +1937,21 @@ fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), fi
         if (!koru_media.koru_graph.pathIsTrailer(f.path)) continue;
         const id_esc = htmlEscaped(allocator, f.id);
         defer if (id_esc.ptr != f.id.ptr) allocator.free(id_esc);
+        var href_buf: [280]u8 = undefined;
+        const href = std.fmt.bufPrint(&href_buf, "{s}/play/{s}", .{ bp(), id_esc }) catch continue;
         if (n == 0) {
             appendFrag(allocator, html, "components/chip-trailer.html", &.{
-                .{ .k = "id", .v = id_esc },
+                .{ .k = "href", .v = href },
                 .{ .k = "label", .v = "Trailer" },
+                .{ .k = "attrs", .v = "" },
             });
         } else {
             const t = htmlEscaped(allocator, f.title);
             defer if (t.ptr != f.title.ptr) allocator.free(t);
             appendFrag(allocator, html, "components/chip-trailer.html", &.{
-                .{ .k = "id", .v = id_esc },
+                .{ .k = "href", .v = href },
                 .{ .k = "label", .v = t },
+                .{ .k = "attrs", .v = "" },
             });
         }
         n += 1;
@@ -1952,9 +1959,10 @@ fn appendTrailerChips(allocator: std.mem.Allocator, html: *std.ArrayList(u8), fi
     if (youtube.len == 11) {
         var href_buf: [64]u8 = undefined;
         const href = std.fmt.bufPrint(&href_buf, "https://www.youtube.com/watch?v={s}", .{youtube}) catch return;
-        appendFrag(allocator, html, "components/chip.html", &.{
+        appendFrag(allocator, html, "components/chip-trailer.html", &.{
             .{ .k = "href", .v = href },
-            .{ .k = "label", .v = "YouTube trailer" },
+            .{ .k = "label", .v = "Trailer" },
+            .{ .k = "attrs", .v = " rel=\"noopener noreferrer\" target=\"_blank\"" },
         });
     }
 }

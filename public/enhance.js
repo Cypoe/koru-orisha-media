@@ -190,12 +190,12 @@ const main_module = {
       const save = function () {
       try {
       localStorage.setItem(resumeKey(id), String(player.currentTime || 0));
-      const titleEl = document.querySelector(".play-title, .item-faded-title, h1");
-      const artEl = document.querySelector(".item-hero-art img, .hero-poster, #player");
+      const titleEl = document.querySelector(".play-title, .item-faded-title, .hero-faded-title, h1");
+      const artEl = document.querySelector(".item-hero-art img, .item-poster img, .hero-poster");
       saveContinueEntry(
       id,
       titleEl ? titleEl.textContent.trim() : "",
-      artEl && artEl.getAttribute ? artEl.getAttribute("src") || artEl.getAttribute("poster") || "" : "",
+      artEl && artEl.getAttribute ? artEl.getAttribute("src") || "" : "",
       player.currentTime || 0,
       player.duration || 0
       );
@@ -503,6 +503,14 @@ const main_module = {
       let i = 0;
       const dots = carousel.querySelectorAll("[data-hero-dot]");
       let timer = 0;
+      const HERO_POSTER_MS = 7000;
+      function slideHasTeaser(slide) {
+      return !!(
+      slide.querySelector("video.hero-teaser") ||
+      slide.querySelector("iframe.hero-teaser") ||
+      slide.querySelector(".hero-teaser[data-youtube]")
+      );
+      }
       function clearHeroTimer() {
       if (timer) window.clearTimeout(timer);
       timer = 0;
@@ -532,17 +540,18 @@ const main_module = {
       });
       if (slides.length < 2) return;
       const active = slides[i];
+      if (slideHasTeaser(active)) {
       const teaser = active.querySelector("video.hero-teaser");
-      let waitMs = 7000;
       if (teaser) {
       teaser.onended = function () {
       show(i + 1);
       };
-      waitMs = 30000;
+      }
+      return;
       }
       timer = window.setTimeout(function () {
       show(i + 1);
-      }, waitMs);
+      }, HERO_POSTER_MS);
       }
       show(0);
       dots.forEach(function (d) {
@@ -564,7 +573,14 @@ const main_module = {
       if (!key) return;
       const iframe = document.createElement("iframe");
       iframe.className = "hero-teaser";
-      iframe.setAttribute("src", "https://www.youtube.com/embed/" + key + "?autoplay=1&mute=1&controls=0&loop=1&playlist=" + key);
+      iframe.setAttribute(
+      "src",
+      "https://www.youtube.com/embed/" +
+      key +
+      "?autoplay=1&mute=1&controls=0&loop=1&playlist=" +
+      key +
+      "&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&disablekb=1&fs=0&cc_load_policy=0"
+      );
       iframe.setAttribute("allow", "autoplay; encrypted-media");
       iframe.setAttribute("title", "Trailer");
       box.appendChild(iframe);
@@ -789,12 +805,22 @@ const main_module = {
       return list;
       }
 
+      function continueArtSrc(id, art) {
+      if (art && art.indexOf("/media/") === -1 && art.indexOf("blob:") !== 0) return art;
+      return withAppBase("/art/" + id);
+      }
+
       function saveContinueEntry(id, title, art, t, duration) {
       if (!id || !(t > 2)) return;
+      const prev = loadContinue().find(function (c) {
+      return c && c.id === id;
+      });
+      const nextTitle = (title && title.trim()) || (prev && prev.title) || "";
+      const nextArt = continueArtSrc(id, art || (prev && prev.art) || "");
       let list = loadContinue().filter(function (c) {
       return c && c.id !== id;
       });
-      list.unshift({ id: id, title: title || "", art: art || "", t: t, duration: duration || 0 });
+      list.unshift({ id: id, title: nextTitle, art: nextArt, t: t, duration: duration || 0 });
       if (list.length > 12) list = list.slice(0, 12);
       try {
       localStorage.setItem(continueKey(), JSON.stringify(list));
@@ -830,12 +856,10 @@ const main_module = {
       a.href = withAppBase("/play/" + c.id);
       const frame = document.createElement("span");
       frame.className = "resume-frame";
-      if (c.art) {
       const img = document.createElement("img");
-      img.src = c.art;
+      img.src = continueArtSrc(c.id, c.art);
       img.alt = c.title || "";
       frame.appendChild(img);
-      }
       const pct = c.duration > 0 ? Math.min(100, Math.round((c.t / c.duration) * 100)) : 8;
       const bar = document.createElement("span");
       bar.className = "resume-progress";
@@ -850,7 +874,7 @@ const main_module = {
       a.appendChild(frame);
       const title = document.createElement("span");
       title.className = "resume-title";
-      title.textContent = c.title || c.id;
+      title.textContent = c.title || "";
       a.appendChild(title);
       li.appendChild(a);
       list.appendChild(li);
@@ -1005,9 +1029,18 @@ const main_module = {
       }
       }
 
+      function relabelTrailerChips() {
+      document.querySelectorAll(".item-icon-row a[href*='youtube.com/'], .item-icon-row a.trailer").forEach(function (a) {
+      a.classList.remove("chip");
+      a.classList.add("btn", "trailer");
+      if ((a.textContent || "").toLowerCase().indexOf("trailer") >= 0) a.textContent = "Trailer";
+      });
+      }
+
       function enhanceAfterSwap() {
       reclaimPlayer();
       enhanceHero();
+      relabelTrailerChips();
       bindKinoToggle();
       bindEditionSelect();
       bindPersistChrome();

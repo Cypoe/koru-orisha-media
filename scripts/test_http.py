@@ -213,7 +213,7 @@ def main() -> int:
         check(b'class="overview"' in body, "series item plot uses overview")
         check(b"nfo-aired" in body and b"2022-09-21" in body, "series item shows nfo aired")
         check(b"nfo-rating" in body and b"8.4" in body, "series item shows nfo rating")
-        check(b'class="chip trailer"' in body and b"/play/m_andtrl" in body, "series item trailer chip direct-plays")
+        check(b'class="btn trailer"' in body and b"/play/m_andtrl" in body, "series item trailer chip direct-plays")
         check(b"Cassian Andor's journey begins" not in body, "series item uses work plot not episode plot")
 
         st, jhdrs, jseries = http("GET", f"/item/{andor_ep['id']}?format=jsonld")
@@ -395,6 +395,7 @@ def main() -> int:
 
         st, hdrs, body = http("GET", "/enhance.js")
         check(st == 200 and b"localStorage" in body, "enhance.js served")
+        check(b"modestbranding=1" in body and b"iv_load_policy=3" in body, "home youtube teaser hides player chrome")
         check(b"isSafeSwapTarget" in body and b"playerIdentityOk" in body, "enhance player identity guards")
         check(b"#persist" in body, "enhance persist player")
         check(b"popOutToPersist" in body and b"kino-toggle" in body, "enhance pops persist and binds kino")
@@ -426,6 +427,8 @@ def main() -> int:
         check(b"::-webkit-scrollbar" in body and b"scrollbar-width" in body, "app.css styles dark scrollbars")
         check(b"hero-carousel" in body and b"kino-toggle" in body, "app.css has hero carousel + kino toggle")
         check(b"aspect-ratio: 16 / 9" in body and b"my-media" in body, "app.css uses a landscape hero with My Media tiles")
+        check(b"video::-webkit-media-controls" not in body, "app.css does not paint WebKit media controls over the picture")
+        check(b"max-width: 9.5rem" in body and b".poster-row .poster-card" in body, "home poster row keeps a uniform card width")
         check(b"item-hero-stage" in body and b"topbar-search" in body, "app.css overlays poster on the item banner")
         check(b"topbar-tools" in body, "app.css floats a compact topbar control cluster")
         check(b"topbar-search:focus-within" in body, "app.css expands collapsed mobile search on focus")
